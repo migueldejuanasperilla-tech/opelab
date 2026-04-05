@@ -1,0 +1,2222 @@
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { PDFDocument } from "pdf-lib";
+
+// ── SM-2 ────────────────────────────────────────────────────────────────────
+function sm2Update(sr, q) {
+  let { interval=1, reps=0, ef=2.5 } = sr||{};
+  if(q>=3){if(reps===0)interval=1;else if(reps===1)interval=6;else interval=Math.round(interval*ef);reps++;}
+  else{reps=0;interval=1;}
+  ef=Math.max(1.3,ef+0.1-(5-q)*(0.08+(5-q)*0.02));
+  return{interval,reps,ef,next:Date.now()+interval*86400000};
+}
+const isDue=sr=>!sr?.next||Date.now()>=sr.next;
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const shuffle=arr=>{const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;};
+const fmtDate=d=>new Date(d).toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'});
+const fmtTime=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+
+// ── Storage (localStorage) ──────────────────────────────────────────────────────
+function load(k,fb){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch{return fb;}}
+function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
+
+// ── IndexedDB — PDFs y preguntas (sin límite de tamaño) ───────────────────────
+const IDB_NAME='opelab_pdfs', IDB_STORE='pdfs', IDB_QS_STORE='questions';
+function idbOpen(){
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open(IDB_NAME,2); // version 2 adds questions store
+    r.onupgradeneeded=e=>{
+      const db=e.target.result;
+      if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      if(!db.objectStoreNames.contains(IDB_QS_STORE)) db.createObjectStore(IDB_QS_STORE);
+    };
+    r.onsuccess=e=>res(e.target.result);
+    r.onerror=rej;
+  });
+}
+async function idbSave(key,blob){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).put(blob,key);tx.oncomplete=res;tx.onerror=rej;});}
+async function idbLoad(key){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readonly');const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result||null);r.onerror=rej;});}
+async function idbDel(key){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).delete(key);tx.oncomplete=res;tx.onerror=rej;});}
+
+// Questions store — cada pregunta es un registro independiente keyed by q.id
+async function idbSaveQ(q){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_QS_STORE,'readwrite');tx.objectStore(IDB_QS_STORE).put(q,q.id);tx.oncomplete=res;tx.onerror=rej;});}
+async function idbDelQ(id){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_QS_STORE,'readwrite');tx.objectStore(IDB_QS_STORE).delete(id);tx.oncomplete=res;tx.onerror=rej;});}
+async function idbLoadAllQs(){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_QS_STORE,'readonly');const r=tx.objectStore(IDB_QS_STORE).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=rej;});}
+async function idbClearQs(){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_QS_STORE,'readwrite');tx.objectStore(IDB_QS_STORE).clear();tx.oncomplete=res;tx.onerror=rej;});}
+// Clave por tema (para el mapa de metadata)
+const topicPdfKey=t=>'pdf_'+t.replace(/[^a-zA-Z0-9]/g,'').slice(0,40);
+// Clave por archivo individual en IndexedDB
+const topicFilePdfKey=(t,id)=>topicPdfKey(t)+'_'+id;
+// Convertir Blob/File a base64 para la API
+const blobToB64=blob=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(blob);});
+
+// ── Merge PDFs respetando el límite de 90 páginas de la API ──────────────────
+const MAX_TOTAL_PAGES=10;
+async function mergePdfsWithLimit(blobs){
+  const merged=await PDFDocument.create();
+  let total=0;
+  for(const blob of blobs){
+    if(total>=MAX_TOTAL_PAGES)break;
+    try{
+      const buf=await blob.arrayBuffer();
+      const src=await PDFDocument.load(buf,{ignoreEncryption:true});
+      const available=Math.min(src.getPageCount(),MAX_TOTAL_PAGES-total);
+      if(available<=0)break;
+      const indices=Array.from({length:available},(_,i)=>i);
+      const pages=await merged.copyPages(src,indices);
+      pages.forEach(p=>merged.addPage(p));
+      total+=available;
+    }catch(e){console.warn('Error merging PDF:',e);}
+  }
+  const bytes=await merged.save();
+  return{file:new File([bytes],'merged.pdf',{type:'application/pdf'}),pages:total};
+}
+const CHUNK_PAGES=30;
+async function splitPdfIfNeeded(file){
+  const buf=await file.arrayBuffer();
+  const src=await PDFDocument.load(buf,{ignoreEncryption:true});
+  const total=src.getPageCount();
+  if(total<=CHUNK_PAGES) return [{file,name:file.name,pages:`1–${total}`,total}];
+  const chunks=[];
+  for(let s=0;s<total;s+=CHUNK_PAGES){
+    const e=Math.min(s+CHUNK_PAGES,total);
+    const doc=await PDFDocument.create();
+    const indices=Array.from({length:e-s},(_,i)=>s+i);
+    const copied=await doc.copyPages(src,indices);
+    copied.forEach(p=>doc.addPage(p));
+    const bytes=await doc.save();
+    const blob=new Blob([bytes],{type:'application/pdf'});
+    const base=file.name.replace(/\.pdf$/i,'');
+    const name=`${base}_p${s+1}-${e}.pdf`;
+    chunks.push({file:new File([blob],name,{type:'application/pdf'}),name,pages:`${s+1}–${e}`,total:e-s});
+  }
+  return chunks;
+}
+
+// ── Theme ────────────────────────────────────────────────────────────────────
+const T={
+  bg:'#f0f4f8',surface:'#ffffff',card:'#f8fafc',
+  border:'#e2e8f0',border2:'#cbd5e1',
+  text:'#0f172a',muted:'#475569',dim:'#94a3b8',
+  blue:'#2563eb',blueDk:'#1d4ed8',blueS:'#dbeafe',blueText:'#1e3a8a',
+  green:'#16a34a',greenDk:'#15803d',greenS:'#dcfce7',greenText:'#14532d',
+  teal:'#0d9488',tealDk:'#0f766e',tealS:'#ccfbf1',tealText:'#134e4a',
+  amber:'#d97706',amberS:'#fef3c7',amberText:'#78350f',
+  red:'#dc2626',redDk:'#b91c1c',redS:'#fee2e2',redText:'#7f1d1d',
+  purple:'#7c3aed',purpleDk:'#6d28d9',purpleS:'#ede9fe',purpleText:'#3b0764',
+  orange:'#ea580c',orangeS:'#fff7ed',orangeText:'#7c2d12',
+};
+const FONT="'Inter',system-ui,sans-serif";
+const sh={sm:'0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04)',md:'0 4px 6px rgba(0,0,0,.05),0 2px 4px rgba(0,0,0,.04)'};
+
+// ── Sections ─────────────────────────────────────────────────────────────────
+const SECTIONS=[
+  {id:'comun',name:'Temario Común y Legislación',emoji:'⚖️',color:'#475569',colorS:'#f1f5f9',colorBorder:'#cbd5e1',desc:'Constitución, autonomía CLM, leyes sanitarias, SESCAM, legislación laboral y ética',tietz:'—',henry:'—',temas:[1,2,3,4,5,6],
+   topics:['T1. Constitución Española: derechos fundamentales y protección de la salud','T1. Estatuto de Autonomía CLM: instituciones y competencias de la Junta. Igualdad y violencia de género','T2. Ley General de Sanidad: organización del SNS, áreas de salud, CCAA','T2. SESCAM: funciones, organización y estructura. Ley de Ordenación Sanitaria CLM','T3. Ley de cohesión y calidad del SNS: prestaciones, garantías, Consejo Interterritorial','T4. Estatuto Marco del personal estatutario. Ley de Prevención de Riesgos Laborales','T5. Ley de derechos y deberes en salud CLM. Documentación sanitaria (Decreto 24/2011)','T6. Plan Dignifica SESCAM: humanización de la asistencia. Estratificación de crónicos']},
+  {id:'fundamentos',name:'Fundamentos del Laboratorio',emoji:'🏛️',color:T.blue,colorS:T.blueS,colorBorder:'#93c5fd',desc:'Preanalítica, control de calidad, postanalítica, estadística, gestión, ISO 15189, SIL, instrumentación',tietz:'Secc. I–II caps. 1–9, 16–30',henry:'Parte 1 caps. 1–14',temas:[7,8,9,10,11,12,13,14],
+   topics:['T7. Fase preanalítica: obtención, transporte, conservación y criterios de rechazo de muestras','T8. Control de calidad analítico: CCI, PECS/EQA, reglas de Westgard, Seis Sigma, variabilidad biológica','T9. Fase postanalítica: informe del laboratorio, valores de referencia, valores críticos, valor del cambio','T10. Bioestadística: descriptiva, inferencial, correlación, evaluación de pruebas diagnósticas (Se/Sp/VPP/VPN)','T11. Gestión del laboratorio clínico: gestión por procesos, RRHH, indicadores, cuadros de mando','T12. Modelos de gestión de calidad: ISO 15189, Joint Commission, EFQM. Bioética, protección de datos','T13. SIL, inteligencia artificial, Big Data y ciberseguridad en el laboratorio clínico','T14. Principios metodológicos: espectrofotometría, electroforesis, cromatografía, masas, POCT, automatización']},
+  {id:'bioquimica',name:'Bioquímica Clínica',emoji:'🧬',color:'#7c3aed',colorS:'#ede9fe',colorBorder:'#c4b5fd',desc:'Gases, riñón, mineral, glucosa, lípidos, proteínas, hígado, corazón, inflamación, endocrinología, fármacos',tietz:'Secc. III–IV caps. 31–51',henry:'Parte 2 caps. 15–28',temas:[15,16,17,18,19,20,21,22,23,24,25,26,27],
+   topics:['T15. Equilibrio ácido-base y gases sanguíneos: fisiología, gasometría arterial, cooximetría','T16. Función renal y equilibrio hidroelectrolítico: FGe, proteinuria, osmolalidad, patología tubular','T17. Metabolismo mineral: hierro, calcio, magnesio, fósforo, metabolismo óseo y vitamina D','T18. Hidratos de carbono: metabolismo glucídico, diabetes mellitus, HbA1c, insulina, péptido C','T19. Lípidos y lipoproteínas: dislipemias, síndrome metabólico, riesgo cardiovascular','T20. Proteínas plasmáticas: electroforesis, paraproteínas, cadenas ligeras libres, enzimología, porfirias','T21. Función hepatobiliar: marcadores, hepatopatía aguda y crónica, índices de fibrosis, autoinmunidad hepática','T22. Función cardiaca y muscular: troponinas, BNP, síndrome coronario agudo, insuficiencia cardíaca','T23. Marcadores de inflamación y sepsis: PCR, PCT, IL-6, ferritina, dímero D','T24. Función gastrointestinal: páncreas, malabsorción, EII, estudio de heces, sangre oculta','T25. Marcadores tumorales: PSA, AFP, CEA, CA 125, CA 19-9; biopsia líquida, ADN circulante','T26. Función endocrina: hipotálamo-hipófisis, tiroides, paratiroides, suprarrenal, hormonas sexuales','T27. Monitorización de fármacos: farmacocinética, fármacos biológicos, drogas de abuso, intoxicaciones']},
+  {id:'liquidos',name:'Orina, Líquidos y Reproducción',emoji:'💧',color:'#0284c7',colorS:'#e0f2fe',colorBorder:'#7dd3fc',desc:'Análisis de orina, líquidos biológicos, seminograma, reproducción asistida y cribado prenatal',tietz:'Cap. 45, 58–59',henry:'Parte 3 caps. 29–30',temas:[28,29,30,31],
+   topics:['T28. Estudio de la orina: análisis bioquímico, sedimento urinario, litiasis renal','T29. Líquidos biológicos: ascítico, cefalorraquídeo, pleural, amniótico, pericárdico, sinovial','T30. Líquido seminal: seminograma (criterios OMS), FIV, ICSI, inseminación artificial, donación de gametos','T31. Embarazo: cribado bioquímico de cromosomopatías, DPNI, trastornos hipertensivos del embarazo']},
+  {id:'hematologia',name:'Hematología',emoji:'🩸',color:T.red,colorS:T.redS,colorBorder:'#fca5a5',desc:'Hemograma, hematopoyesis, eritrocitos, leucocitos neoplásicos y no neoplásicos, plaquetas',tietz:'Secc. VII caps. 74–78',henry:'Parte 4 caps. 31–35',temas:[32,33,34,35,36,37],
+   topics:['T32. Hemograma: principios de automatización, tinción y morfología de frotis sanguíneo, VSG','T33. Hematopoyesis: médula ósea, eritropoyesis, leucopoyesis, trombopoyesis','T34. Patologías eritrocitarias: anemias, hemoglobinopatías, talasemias, poliglobulias','T35. Trastornos leucocitarios no neoplásicos: alteraciones en granulocitos, linfocitos, monocitos, eosinófilos','T36. Trastornos leucocitarios neoplásicos: leucemias, linfomas, mieloma múltiple, SMD, síndromes mieloproliferativos','T37. Trastornos plaquetarios: trombocitopenias, trombocitosis y disfunción plaquetaria']},
+  {id:'hemostasia',name:'Hemostasia y Transfusión',emoji:'🔴',color:T.orange,colorS:T.orangeS,colorBorder:'#fdba74',desc:'Coagulación, fibrinólisis, anticoagulación, inmunohematología y medicina transfusional',tietz:'Caps. 79–81, 90–93',henry:'Parte 4–5 caps. 36–43',temas:[38,39],
+   topics:['T38. Hemostasia y trombosis: factores de coagulación, TP/TTPA/fibrinógeno, fibrinólisis, anticoagulantes (NACO)','T38. Trombofilia: estudio de trombosis venosa y arterial. Control del tratamiento anticoagulante','T39. Inmunohematología: sistemas ABO y Rh, anticuerpos irregulares, prueba de Coombs, crossmatch','T39. Medicina transfusional: componentes sanguíneos, indicaciones, reacciones adversas, hemovigilancia']},
+  {id:'microbiologia',name:'Microbiología',emoji:'🦠',color:T.green,colorS:T.greenS,colorBorder:'#86efac',desc:'Bacteriología, micobacterias, hongos, parásitos, virus, serología y patologías infecciosas',tietz:'Secc. VIII caps. 82–89',henry:'Parte 7 caps. 57–66',temas:[40,41,42,43,44,45,46,47,48,49,50],
+   topics:['T40. Muestras microbiológicas: obtención, procesamiento, medios de cultivo, tinciones','T41. Identificación microbiológica: antibiograma (EUCAST/CLSI), mecanismos de resistencia, MALDI-TOF','T42. Bacterias aerobias de interés clínico: Gram positivos y Gram negativos','T43. Bacterias anaerobias: Clostridium, Bacteroides, Actinomyces, diagnóstico y clínica','T44. Micobacterias: M. tuberculosis, NTM, Ziehl-Neelsen, MGIT 960, IGRA, PCR, tratamiento','T45. Otros microorganismos: micoplasmas, espiroquetas, clamidias, rickettsias, enfermedades emergentes','T46. Micología: levaduras (Candida, Cryptococcus), hongos filamentosos (Aspergillus), antifúngicos','T47. Parasitología: técnicas de diagnóstico, parásitos de interés clínico, tratamiento antiparasitario','T48. Virología: VIH, hepatitis A/B/C, virus respiratorios, PCR en tiempo real, priones','T49. Diagnóstico serológico: detección de antígenos y anticuerpos, pruebas de cribado y confirmación','T50. Patologías infecciosas: sepsis, infecciones nosocomiales, meningitis, ITS, paciente inmunodeprimido']},
+  {id:'molecular',name:'Biología Molecular y Genética',emoji:'🧪',color:T.teal,colorS:T.tealS,colorBorder:'#5eead4',desc:'Genética humana, citogenética, farmacogenómica y biología molecular diagnóstica',tietz:'Secc. VI caps. 62–73',henry:'Parte 8 caps. 67–75',temas:[51,52,53,54],
+   topics:['T51. Genética humana: mutaciones, patrones de herencia, árboles genealógicos','T52. Citogenética: cariotipo, anomalías cromosómicas estructurales y numéricas, diagnóstico prenatal y preimplantacional','T53. Genética aplicada: farmacogenética, cribado poblacional, bases moleculares del cáncer, medicina de precisión','T54. Biología molecular diagnóstica: PCR, NGS, hibridación, array-CGH, exomas, biopsia líquida']},
+  {id:'inmunologia',name:'Inmunología',emoji:'🛡️',color:'#0d9488',colorS:'#ccfbf1',colorBorder:'#5eead4',desc:'Sistema inmune, HLA y trasplante, alergias, autoinmunidad sistémica y de órgano, inmunodeficiencias',tietz:'Secc. X caps. 94–100',henry:'Parte 6 caps. 44–56',temas:[55,56,57,58,59,60],
+   topics:['T55. Inmunología: sistema inmunitario, complemento, citometría de flujo, poblaciones leucocitarias','T56. Histocompatibilidad: HLA, técnicas de tipificación, trasplante de órganos y tejidos','T57. Enfermedades alérgicas: IgE total y específica, mecanismos de hipersensibilidad, anafilaxia, enfermedad celíaca','T58. Enfermedades autoinmunes órgano-específicas: autoanticuerpos (anti-TPO, anti-MBG, AMA, ANCA órgano-específicos)','T59. Enfermedades autoinmunes sistémicas: ANA, anti-dsDNA, anti-ENA, ANCA, FR, anti-CCP, algoritmos diagnósticos','T60. Inmunodeficiencias congénitas y adquiridas: clasificación, diagnóstico de laboratorio']},
+];
+const ALL_TOPICS=SECTIONS.flatMap(s=>s.topics);
+
+// ── Mapeo tema SESCAM → capítulos Tietz & Henry ──────────────────────────────
+// Tietz: Textbook of Laboratory Medicine (Rifai et al., 2022)
+// Henry: El Laboratorio en el Diagnóstico Clínico (McPherson & Pincus, 2022)
+const TOPIC_REFS={
+  // ── Temario Común (sin referencia en los libros de laboratorio) ──────────
+  'T1. Constitución Española: derechos fundamentales y protección de la salud':{tietz:'—',henry:'—'},
+  'T1. Estatuto de Autonomía CLM: instituciones y competencias de la Junta. Igualdad y violencia de género':{tietz:'—',henry:'—'},
+  'T2. Ley General de Sanidad: organización del SNS, áreas de salud, CCAA':{tietz:'—',henry:'—'},
+  'T2. SESCAM: funciones, organización y estructura. Ley de Ordenación Sanitaria CLM':{tietz:'—',henry:'—'},
+  'T3. Ley de cohesión y calidad del SNS: prestaciones, garantías, Consejo Interterritorial':{tietz:'—',henry:'—'},
+  'T4. Estatuto Marco del personal estatutario. Ley de Prevención de Riesgos Laborales':{tietz:'—',henry:'—'},
+  'T5. Ley de derechos y deberes en salud CLM. Documentación sanitaria (Decreto 24/2011)':{tietz:'—',henry:'—'},
+  'T6. Plan Dignifica SESCAM: humanización de la asistencia. Estratificación de crónicos':{tietz:'—',henry:'—'},
+  // ── Fundamentos ─────────────────────────────────────────────────────────
+  'T7. Fase preanalítica: obtención, transporte, conservación y criterios de rechazo de muestras':{
+    tietz:'Caps. 4–5',tietzD:'Cap.4 Specimen Collection · Cap.5 Preanalytical Variation',
+    henry:'Cap. 3',henryD:'Cap.3 Fase preanalítica'},
+  'T8. Control de calidad analítico: CCI, PECS/EQA, reglas de Westgard, Seis Sigma, variabilidad biológica':{
+    tietz:'Caps. 6, 8',tietzD:'Cap.6 Quality Control · Cap.8 Biological Variation & Analytical Performance Specs',
+    henry:'Cap. 11',henryD:'Cap.11 Control de calidad'},
+  'T9. Fase postanalítica: informe del laboratorio, valores de referencia, valores críticos, valor del cambio':{
+    tietz:'Caps. 2, 9',tietzD:'Cap.2 Statistical Methodologies · Cap.9 Reference Intervals',
+    henry:'Caps. 8–9',henryD:'Cap.8 Fase postanalítica · Cap.9 Interpretación de resultados'},
+  'T10. Bioestadística: descriptiva, inferencial, correlación, evaluación de pruebas diagnósticas (Se/Sp/VPP/VPN)':{
+    tietz:'Cap. 2',tietzD:'Cap.2 Statistical Methodologies in Laboratory Medicine',
+    henry:'Cap. 10',henryD:'Cap.10 Estadísticas de laboratorio'},
+  'T11. Gestión del laboratorio clínico: gestión por procesos, RRHH, indicadores, cuadros de mando':{
+    tietz:'Caps. 3, 14',tietzD:'Cap.3 Governance, Risk and Quality Management · Cap.14 Laboratory Stewardship',
+    henry:'Caps. 1–2, 13',henryD:'Cap.1 Conceptos generales · Cap.2 Optimización del flujo · Cap.13 Gestión económica'},
+  'T12. Modelos de gestión de calidad: ISO 15189, Joint Commission, EFQM. Bioética, protección de datos':{
+    tietz:'Caps. 3, 7',tietzD:'Cap.3 Governance & Quality · Cap.7 Standardization and Harmonization',
+    henry:'Caps. 1, 14',henryD:'Cap.1 Conceptos generales · Cap.14 Ética en la medicina de laboratorio'},
+  'T13. SIL, inteligencia artificial, Big Data y ciberseguridad en el laboratorio clínico':{
+    tietz:'Caps. 13, 29',tietzD:'Cap.13 Machine Learning & Big Data · Cap.29 Automation in the Clinical Laboratory',
+    henry:'Cap. 12',henryD:'Cap.12 Informática del laboratorio clínico'},
+  'T14. Principios metodológicos: espectrofotometría, electroforesis, cromatografía, masas, POCT, automatización':{
+    tietz:'Caps. 16–20, 26, 28–30',tietzD:'Cap.16 Optical · Cap.17 Electrochemistry · Cap.18 Electrophoresis · Cap.19 Chromatography · Cap.20 Mass Spectrometry · Cap.26 Immunochemical · Cap.28 Cytometry · Cap.29 Automation · Cap.30 POCT',
+    henry:'Caps. 4–7',henryD:'Cap.4 Instrumentación · Cap.5 Espectrometría de masas · Cap.6 Automatización · Cap.7 POCT'},
+  // ── Bioquímica Clínica ──────────────────────────────────────────────────
+  'T15. Equilibrio ácido-base y gases sanguíneos: fisiología, gasometría arterial, cooximetría':{
+    tietz:'Caps. 37, 50',tietzD:'Cap.37 Electrolytes and Blood Gases · Cap.50 Disorders of Water, Electrolytes and Acid-Base',
+    henry:'Cap. 15',henryD:'Cap.15 Función renal, agua, electrólitos y equilibrio acidobásico'},
+  'T16. Función renal y equilibrio hidroelectrolítico: FGe, proteinuria, osmolalidad, patología tubular':{
+    tietz:'Caps. 34, 49–50',tietzD:'Cap.34 Kidney Function Tests · Cap.49 Kidney Disease · Cap.50 Disorders of Water/Electrolytes',
+    henry:'Cap. 15',henryD:'Cap.15 Evaluación de la función renal, agua, electrólitos y equilibrio acidobásico'},
+  'T17. Metabolismo mineral: hierro, calcio, magnesio, fósforo, metabolismo óseo y vitamina D':{
+    tietz:'Caps. 39–40, 54',tietzD:'Cap.39 Vitamins and Trace Elements · Cap.40 Iron Metabolism · Cap.54 Bone and Mineral Metabolism',
+    henry:'Caps. 16, 27',henryD:'Cap.16 Marcadores bioquímicos del metabolismo óseo · Cap.27 Vitaminas y oligoelementos'},
+  'T18. Hidratos de carbono: metabolismo glucídico, diabetes mellitus, HbA1c, insulina, péptido C':{
+    tietz:'Caps. 35, 47',tietzD:'Cap.35 Carbohydrates · Cap.47 Diabetes Mellitus',
+    henry:'Cap. 17',henryD:'Cap.17 Hidratos de carbono'},
+  'T19. Lípidos y lipoproteínas: dislipemias, síndrome metabólico, riesgo cardiovascular':{
+    tietz:'Cap. 36',tietzD:'Cap.36 Lipids and Lipoproteins',
+    henry:'Caps. 18–19',henryD:'Cap.18 Lípidos y dislipoproteinemia · Cap.19 Lesión cardíaca, ateroesclerosis y enfermedad trombótica'},
+  'T20. Proteínas plasmáticas: electroforesis, paraproteínas, cadenas ligeras libres, enzimología, porfirias':{
+    tietz:'Caps. 31–32, 41',tietzD:'Cap.31 Amino Acids, Peptides & Proteins · Cap.32 Serum Enzymes · Cap.41 Porphyrins and Porphyrias',
+    henry:'Caps. 20–21',henryD:'Cap.20 Proteínas específicas · Cap.21 Enzimología clínica'},
+  'T21. Función hepatobiliar: marcadores, hepatopatía aguda y crónica, índices de fibrosis, autoinmunidad hepática':{
+    tietz:'Cap. 51',tietzD:'Cap.51 Liver Disease',
+    henry:'Cap. 22',henryD:'Cap.22 Evaluación de la función hepática'},
+  'T22. Función cardiaca y muscular: troponinas, BNP, síndrome coronario agudo, insuficiencia cardíaca':{
+    tietz:'Cap. 48',tietzD:'Cap.48 Cardiac Function',
+    henry:'Cap. 19',henryD:'Cap.19 Lesión cardíaca, ateroesclerosis y enfermedad trombótica'},
+  'T23. Marcadores de inflamación y sepsis: PCR, PCT, IL-6, ferritina, dímero D':{
+    tietz:'Caps. 31, 82',tietzD:'Cap.31 Proteins (PCR, ferritina) · Cap.82 Introduction to Infectious Diseases (sepsis)',
+    henry:'Cap. 20',henryD:'Cap.20 Proteínas específicas (PCR, reactantes de fase aguda)'},
+  'T24. Función gastrointestinal: páncreas, malabsorción, EII, estudio de heces, sangre oculta':{
+    tietz:'Cap. 52',tietzD:'Cap.52 Gastric, Intestinal, and Pancreatic Function',
+    henry:'Cap. 23',henryD:'Cap.23 Diagnóstico de laboratorio de los trastornos digestivos y pancreáticos'},
+  'T25. Marcadores tumorales: PSA, AFP, CEA, CA 125, CA 19-9; biopsia líquida, ADN circulante':{
+    tietz:'Caps. 33, 71',tietzD:'Cap.33 Tumor Markers · Cap.71 Circulating Tumor Cells and Circulating Nucleic Acids in Oncology',
+    henry:'Cap. 76',henryD:'Cap.76 Diagnóstico y tratamiento del cáncer mediante marcadores serológicos y de otros líquidos'},
+  'T26. Función endocrina: hipotálamo-hipófisis, tiroides, paratiroides, suprarrenal, hormonas sexuales':{
+    tietz:'Caps. 38, 55–58',tietzD:'Cap.38 Hormones · Cap.55 Pituitary · Cap.56 Adrenal Cortex · Cap.57 Thyroid · Cap.58 Reproductive Endocrinology',
+    henry:'Caps. 25–26',henryD:'Cap.25 Evaluación de la función endocrina · Cap.26 Función reproductora y embarazo'},
+  'T27. Monitorización de fármacos: farmacocinética, fármacos biológicos, drogas de abuso, intoxicaciones':{
+    tietz:'Caps. 42–44',tietzD:'Cap.42 Therapeutic Drugs and Their Management · Cap.43 Clinical Toxicology · Cap.44 Toxic Elements',
+    henry:'Cap. 24',henryD:'Cap.24 Toxicología y monitorización de los medicamentos'},
+  // ── Orina, Líquidos y Reproducción ─────────────────────────────────────
+  'T28. Estudio de la orina: análisis bioquímico, sedimento urinario, litiasis renal':{
+    tietz:'Cap. 45',tietzD:'Cap.45 Body Fluids (sección orina)',
+    henry:'Cap. 29',henryD:'Cap.29 Análisis básico de la orina'},
+  'T29. Líquidos biológicos: ascítico, cefalorraquídeo, pleural, amniótico, pericárdico, sinovial':{
+    tietz:'Cap. 45',tietzD:'Cap.45 Body Fluids',
+    henry:'Cap. 30',henryD:'Cap.30 Líquidos cefalorraquídeo, sinovial, seroso y muestras alternativas'},
+  'T30. Líquido seminal: seminograma (criterios OMS), FIV, ICSI, inseminación artificial, donación de gametos':{
+    tietz:'Cap. 58',tietzD:'Cap.58 Reproductive Endocrinology and Related Disorders',
+    henry:'Cap. 26',henryD:'Cap.26 Función reproductora y embarazo'},
+  'T31. Embarazo: cribado bioquímico de cromosomopatías, DPNI, trastornos hipertensivos del embarazo':{
+    tietz:'Caps. 59, 72',tietzD:'Cap.59 Pregnancy and Its Disorders · Cap.72 Circulating Nucleic Acids for Prenatal Diagnostics',
+    henry:'Cap. 26',henryD:'Cap.26 Función reproductora y embarazo'},
+  // ── Hematología ─────────────────────────────────────────────────────────
+  'T32. Hemograma: principios de automatización, tinción y morfología de frotis sanguíneo, VSG':{
+    tietz:'Caps. 74–76',tietzD:'Cap.74 Automated Hematology · Cap.75 Leukocyte Morphology · Cap.76 Red Blood Cell Morphology and Indices',
+    henry:'Cap. 31',henryD:'Cap.31 Examen básico de la sangre y la médula ósea'},
+  'T33. Hematopoyesis: médula ósea, eritropoyesis, leucopoyesis, trombopoyesis':{
+    tietz:'Cap. 74',tietzD:'Cap.74 Automated Hematology (sección hematopoyesis)',
+    henry:'Cap. 32',henryD:'Cap.32 Hematopoyesis'},
+  'T34. Patologías eritrocitarias: anemias, hemoglobinopatías, talasemias, poliglobulias':{
+    tietz:'Caps. 76–78',tietzD:'Cap.76 Red Blood Cell Morphology · Cap.77 Hemoglobin and Hemoglobinopathies · Cap.78 Enzymes of the Red Blood Cell',
+    henry:'Cap. 33',henryD:'Cap.33 Trastornos eritrocíticos'},
+  'T35. Trastornos leucocitarios no neoplásicos: alteraciones en granulocitos, linfocitos, monocitos, eosinófilos':{
+    tietz:'Cap. 75',tietzD:'Cap.75 Leukocyte Morphology in Blood and Bone Marrow',
+    henry:'Cap. 34',henryD:'Cap.34 Trastornos leucocíticos'},
+  'T36. Trastornos leucocitarios neoplásicos: leucemias, linfomas, mieloma múltiple, SMD, síndromes mieloproliferativos':{
+    tietz:'Caps. 70, 75',tietzD:'Cap.70 Hematopathology · Cap.75 Leukocyte Morphology',
+    henry:'Caps. 34–35',henryD:'Cap.34 Trastornos leucocíticos · Cap.35 Citometría de flujo en neoplasias hematopoyéticas'},
+  'T37. Trastornos plaquetarios: trombocitopenias, trombocitosis y disfunción plaquetaria':{
+    tietz:'Cap. 80',tietzD:'Cap.80 Platelets and von Willebrand Factor',
+    henry:'Cap. 41',henryD:'Cap.41 Trastornos plaquetarios y enfermedad de von Willebrand'},
+  // ── Hemostasia y Transfusión ────────────────────────────────────────────
+  'T38. Hemostasia y trombosis: factores de coagulación, TP/TTPA/fibrinógeno, fibrinólisis, anticoagulantes (NACO)':{
+    tietz:'Caps. 79, 81',tietzD:'Cap.79 Physiology of Hemostasis · Cap.81 Coagulation, Anticoagulation, and Fibrinolysis',
+    henry:'Cap. 40',henryD:'Cap.40 Coagulación y fibrinólisis'},
+  'T38. Trombofilia: estudio de trombosis venosa y arterial. Control del tratamiento anticoagulante':{
+    tietz:'Cap. 81',tietzD:'Cap.81 Coagulation, Anticoagulation, and Fibrinolysis',
+    henry:'Caps. 42–43',henryD:'Cap.42 Enfoque de laboratorio del riesgo trombótico · Cap.43 Tratamiento antitrombótico'},
+  'T39. Inmunohematología: sistemas ABO y Rh, anticuerpos irregulares, prueba de Coombs, crossmatch':{
+    tietz:'Caps. 90–91',tietzD:'Cap.90 Blood Group Systems and Pretransfusion Testing · Cap.91 Blood Components',
+    henry:'Cap. 36',henryD:'Cap.36 Inmunohematología'},
+  'T39. Medicina transfusional: componentes sanguíneos, indicaciones, reacciones adversas, hemovigilancia':{
+    tietz:'Caps. 92–93',tietzD:'Cap.92 Indications for Transfusion · Cap.93 Transfusion Reactions and Adverse Events',
+    henry:'Cap. 37',henryD:'Cap.37 Medicina transfusional'},
+  // ── Microbiología ───────────────────────────────────────────────────────
+  'T40. Muestras microbiológicas: obtención, procesamiento, medios de cultivo, tinciones':{
+    tietz:'Caps. 82–83',tietzD:'Cap.82 Introduction to Infectious Diseases · Cap.83 Clinical Laboratory in Infection Prevention',
+    henry:'Cap. 66',henryD:'Cap.66 Recogida y manipulación de muestras para el diagnóstico de enfermedades infecciosas'},
+  'T41. Identificación microbiológica: antibiograma (EUCAST/CLSI), mecanismos de resistencia, MALDI-TOF':{
+    tietz:'Caps. 84–85',tietzD:'Cap.84 Bacteriology · Cap.85 Antimicrobial Susceptibility Testing',
+    henry:'Caps. 57–58',henryD:'Cap.57 Bacteriología médica · Cap.58 Pruebas in vitro de agentes antimicrobianos'},
+  'T42. Bacterias aerobias de interés clínico: Gram positivos y Gram negativos':{
+    tietz:'Cap. 84',tietzD:'Cap.84 Bacteriology',
+    henry:'Cap. 57',henryD:'Cap.57 Bacteriología médica'},
+  'T43. Bacterias anaerobias: Clostridium, Bacteroides, Actinomyces, diagnóstico y clínica':{
+    tietz:'Cap. 84',tietzD:'Cap.84 Bacteriology (sección anaerobes)',
+    henry:'Cap. 57',henryD:'Cap.57 Bacteriología médica (sección anaerobios)'},
+  'T44. Micobacterias: M. tuberculosis, NTM, Ziehl-Neelsen, MGIT 960, IGRA, PCR, tratamiento':{
+    tietz:'Cap. 86',tietzD:'Cap.86 Mycobacteriology',
+    henry:'Cap. 59',henryD:'Cap.59 Micobacterias'},
+  'T45. Otros microorganismos: micoplasmas, espiroquetas, clamidias, rickettsias, enfermedades emergentes':{
+    tietz:'Cap. 82',tietzD:'Cap.82 Introduction to Infectious Diseases',
+    henry:'Caps. 61–63',henryD:'Cap.61 Espiroquetas · Cap.62 Clamidias y micoplasmas · Cap.63 Rickettsias'},
+  'T46. Micología: levaduras (Candida, Cryptococcus), hongos filamentosos (Aspergillus), antifúngicos':{
+    tietz:'Cap. 87',tietzD:'Cap.87 Mycology',
+    henry:'Cap. 60',henryD:'Cap.60 Enfermedades micóticas'},
+  'T47. Parasitología: técnicas de diagnóstico, parásitos de interés clínico, tratamiento antiparasitario':{
+    tietz:'Cap. 88',tietzD:'Cap.88 Parasitology',
+    henry:'Cap. 65',henryD:'Cap.65 Parasitología médica'},
+  'T48. Virología: VIH, hepatitis A/B/C, virus respiratorios, PCR en tiempo real, priones':{
+    tietz:'Cap. 89',tietzD:'Cap.89 Virology',
+    henry:'Cap. 64',henryD:'Cap.64 Infecciones víricas'},
+  'T49. Diagnóstico serológico: detección de antígenos y anticuerpos, pruebas de cribado y confirmación':{
+    tietz:'Caps. 82, 89',tietzD:'Cap.82 Introduction to Infectious Diseases · Cap.89 Virology',
+    henry:'Caps. 45, 64',henryD:'Cap.45 Inmunoensayos e inmunoquímica · Cap.64 Infecciones víricas'},
+  'T50. Patologías infecciosas: sepsis, infecciones nosocomiales, meningitis, ITS, paciente inmunodeprimido':{
+    tietz:'Caps. 82–83',tietzD:'Cap.82 Introduction to Infectious Diseases · Cap.83 Clinical Laboratory in Infection Prevention',
+    henry:'Caps. 57–66',henryD:'Caps.57–66 Bacteriología, micobacterias, micología, parasitología, virología'},
+  // ── Biología Molecular y Genética ───────────────────────────────────────
+  'T51. Genética humana: mutaciones, patrones de herencia, árboles genealógicos':{
+    tietz:'Cap. 68',tietzD:'Cap.68 Genetics',
+    henry:'Cap. 72',henryD:'Cap.72 Diagnóstico molecular de las enfermedades genéticas'},
+  'T52. Citogenética: cariotipo, anomalías cromosómicas estructurales y numéricas, diagnóstico prenatal y preimplantacional':{
+    tietz:'Cap. 68',tietzD:'Cap.68 Genetics (citogenética)',
+    henry:'Cap. 71',henryD:'Cap.71 Aplicaciones de la citogenética en la patología moderna'},
+  'T53. Genética aplicada: farmacogenética, cribado poblacional, bases moleculares del cáncer, medicina de precisión':{
+    tietz:'Caps. 69, 73',tietzD:'Cap.69 Solid Tumors · Cap.73 Pharmacogenetics',
+    henry:'Caps. 75, 76–79',henryD:'Cap.75 Farmacogenómica · Cap.76-79 Patología clínica del cáncer'},
+  'T54. Biología molecular diagnóstica: PCR, NGS, hibridación, array-CGH, exomas, biopsia líquida':{
+    tietz:'Caps. 62–65',tietzD:'Cap.62 Principles of Molecular Biology · Cap.63 Nucleic Acid Isolation · Cap.64 Nucleic Acid Techniques · Cap.65 Genomes, Variants & Massively Parallel Methods',
+    henry:'Caps. 68–70',henryD:'Cap.68 Diagnóstico molecular: principios · Cap.69 PCR y amplificación · Cap.70 Tecnologías de hibridación'},
+  // ── Inmunología ─────────────────────────────────────────────────────────
+  'T55. Inmunología: sistema inmunitario, complemento, citometría de flujo, poblaciones leucocitarias':{
+    tietz:'Caps. 94, 98',tietzD:'Cap.94 Systemic Autoimmune Disease · Cap.98 Monoclonal Antibody Therapeutics',
+    henry:'Caps. 44, 46–48',henryD:'Cap.44 Introducción al sistema inmunitario · Cap.46 Inmunidad celular · Cap.47 Inmunoglobulinas · Cap.48 Complemento'},
+  'T56. Histocompatibilidad: HLA, técnicas de tipificación, trasplante de órganos y tejidos':{
+    tietz:'Caps. 95–97',tietzD:'Cap.95 Transplant Solid Organ · Cap.96 Hematopoietic Cell Transplantation · Cap.97 Transplant Compatibility Testing',
+    henry:'Caps. 50–51',henryD:'Cap.50 Antígeno leucocítico humano (HLA) · Cap.51 Complejo principal de histocompatibilidad y enfermedad'},
+  'T57. Enfermedades alérgicas: IgE total y específica, mecanismos de hipersensibilidad, anafilaxia, enfermedad celíaca':{
+    tietz:'Cap. 99',tietzD:'Cap.99 Allergy Testing',
+    henry:'Cap. 56',henryD:'Cap.56 Enfermedades alérgicas'},
+  'T58. Enfermedades autoinmunes órgano-específicas: autoanticuerpos (anti-TPO, anti-MBG, AMA, ANCA órgano-específicos)':{
+    tietz:'Cap. 94',tietzD:'Cap.94 Systemic Autoimmune Disease (sección órgano-específica)',
+    henry:'Cap. 55',henryD:'Cap.55 Enfermedades autoinmunitarias específicas de órganos'},
+  'T59. Enfermedades autoinmunes sistémicas: ANA, anti-dsDNA, anti-ENA, ANCA, FR, anti-CCP, algoritmos diagnósticos':{
+    tietz:'Cap. 94',tietzD:'Cap.94 Systemic Autoimmune Disease',
+    henry:'Caps. 53–54',henryD:'Cap.53 Evaluación de enfermedades reumáticas autoinmunitarias sistémicas · Cap.54 Vasculitis'},
+  'T60. Inmunodeficiencias congénitas y adquiridas: clasificación, diagnóstico de laboratorio':{
+    tietz:'Cap. 100',tietzD:'Cap.100 Primary Immunodeficiencies and Secondary Immunodeficiencies',
+    henry:'Cap. 52',henryD:'Cap.52 Inmunodeficiencias'},
+};
+
+// ── Prompt maestro para generar apuntes de estudio ───────────────────────────
+function buildStudyPrompt(topic, hasPdf=false){
+  const refs=TOPIC_REFS[topic];
+  const refsStr=refs&&refs.tietz!=='—'?`\nCapítulos de referencia: Tietz ${refs.tietz} · Henry ${refs.henry}.`:'';
+  const source=hasPdf
+    ?`Tienes delante un fragmento del Tietz y/o Henry. Extrae los datos EXCLUSIVAMENTE del documento adjunto — no añadas conocimiento externo no presente en el texto.`
+    :`Actúa como si tuvieras delante los capítulos correspondientes del Tietz Textbook of Laboratory Medicine, 7ª ed. (Rifai et al., 2022) y del Henry El Laboratorio en el Diagnóstico Clínico, 23ª ed. (McPherson & Pincus, 2022). Reproduce fielmente el nivel de detalle y rigor técnico de esos libros.${refsStr}`;
+
+  return `Eres el mejor preparador de oposiciones FEA Laboratorio Clínico de España, con 20 años de experiencia analizando exámenes reales de SESCAM, SAS, SERMAS, Osakidetza y otras CCAA. Tu misión es generar un resumen de estudio de máxima calidad sobre el siguiente tema del temario oficial SESCAM 2025 (Anexo II, DOCM 9/04/2025):
+
+TEMA: "${topic}"
+
+FUENTE: ${source}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ESTRUCTURA DEL RESUMEN (6 subapartados obligatorios)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. VALORES DE REFERENCIA
+   Tabla exhaustiva con TODOS los parámetros relevantes del tema.
+   • Incluye: valores de adulto sano (hombre/mujer si difieren), unidades SI y convencionales, punto de corte diagnóstico cuando exista.
+   • Ejemplo de fila correcta: ["Glucosa en ayunas", "70–99", "mg/dL", "≥126 mg/dL diagnóstico DM (2 determinaciones)"]
+   • Ejemplo de fila INCORRECTA (no hagas esto): ["Glucosa", "normal", "—", "—"]
+   • Si el tema no tiene valores numéricos propios, incluye los de las pruebas diagnósticas relacionadas.
+
+2. CONCEPTOS CLAVE
+   Lista de 10-14 conceptos que un FEA debe dominar. Cada item debe:
+   • Contener el dato concreto: número, porcentaje, nombre de proteína/gen/enzima, tiempo, o criterio.
+   • Ser una frase completa, no un título. 
+   • Ejemplo CORRECTO: "La HbA1c refleja la glucemia media de los últimos 60-90 días; un valor ≥6,5% es diagnóstico de DM según la ADA."
+   • Ejemplo INCORRECTO: "HbA1c es importante para el diagnóstico de diabetes."
+
+3. MECANISMOS FISIOPATOLÓGICOS
+   Los 4-6 mecanismos más relevantes del tema. Para cada uno:
+   • Nombra las proteínas/enzimas/receptores implicados con precisión.
+   • Indica la consecuencia analítica directa (qué parámetro sube/baja y por qué).
+   • Ejemplo: "En la hepatitis aguda, la necrosis hepatocelular libera ALT citoplasmática al torrente sanguíneo; ALT>AST (ratio <1) indica daño hepatocelular activo no alcohólico; la fosfatasa alcalina solo se eleva si hay afectación biliar concomitante."
+
+4. CLASIFICACIONES Y CRITERIOS DIAGNÓSTICOS
+   Todas las clasificaciones oficiales vigentes que apliquen al tema (OMS, ADA, EASL, EUCAST, CLSI, ISTH, etc.).
+   • Nombre completo de la clasificación y año/versión.
+   • Criterios con sus valores numéricos exactos.
+   • Si hay varias clasificaciones para el mismo proceso, incluye todas las relevantes para el examen FEA.
+
+5. TÉCNICAS ANALÍTICAS DE LABORATORIO
+   Para cada técnica principal del tema incluye:
+   • Nombre completo y principio analítico en una frase.
+   • Ventajas clínicas o analíticas clave.
+   • Interferencias o limitaciones más importantes (hemólisis, lipemia, ictericia, fármacos, etc.).
+   • Ejemplo: "Método de Jaffé (creatinina): reacción colorimétrica con picrato alcalino; sobrestima ~0,2 mg/dL por interferencia de cefalosporinas, glucosa y bilirrubina; el método enzimático es más específico."
+
+6. PERLAS PARA EL EXAMEN
+   8-10 datos concretos y difíciles de recordar que aparecen con frecuencia en exámenes FEA/OPE. Formato: frase corta y directa con el dato clave al principio.
+   • Ejemplo: "Troponina I cardíaca: detecta daño miocárdico desde 3h del inicio; pico a las 24h; normalización en 5-10 días. La troponina T se eleva también en IRC."
+   • Incluye: valores umbrales exactos, excepciones a reglas generales, datos que inducen a error, diferencias entre técnicas.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ESTÁNDARES DE CALIDAD INAMOVIBLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Cada item debe contener al menos UN dato concreto (número, nombre técnico, porcentaje, gen, enzima)
+✓ Nivel de dificultad 8-9/10: datos que distinguen al opositor que estudió en profundidad del que solo repasó
+✓ Español médico correcto; nombres de enzimas/proteínas en español con el acrónimo entre paréntesis
+✓ El subapartado "Valores de referencia" debe ser una tabla REAL con datos numéricos en cada fila
+✓ Los mecanismos deben nombrar proteínas/genes/enzimas, no solo procesos genéricos
+✗ PROHIBIDO: frases genéricas tipo "es importante", "se debe tener en cuenta", "varía según el laboratorio"
+✗ PROHIBIDO: repetir el mismo concepto en distintos subapartados
+✗ PROHIBIDO: incluir subapartados vacíos o con menos de 4 items
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMATO DE RESPUESTA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Responde ÚNICAMENTE con el siguiente JSON válido, sin texto previo, sin texto posterior, sin bloques de código markdown, sin backticks. El JSON debe ser parseable directamente con JSON.parse():
+
+{"resumen":"Párrafo introductorio de 3-4 frases que contextualice el tema en el laboratorio clínico, mencione los parámetros más relevantes y su importancia diagnóstica.","subapartados":[{"titulo":"Valores de referencia","tipo":"tabla","cabeceras":["Parámetro","Valor de referencia","Unidades","Nota clínica clave"],"filas":[["Nombre del parámetro","valor numérico exacto","unidad","nota diagnóstica o clínica concreta"]]},{"titulo":"Conceptos clave","tipo":"lista","items":["Concepto completo con dato concreto a memorizar"]},{"titulo":"Mecanismos fisiopatológicos","tipo":"lista","items":["Mecanismo con proteína/enzima y consecuencia analítica"]},{"titulo":"Clasificaciones y criterios diagnósticos","tipo":"clasificacion","items":[{"nombre":"Nombre de la clasificación (entidad, año)","criterios":["criterio con valor numérico exacto"]}]},{"titulo":"Técnicas analíticas de laboratorio","tipo":"lista","items":["Nombre técnica: principio analítico · ventaja principal · interferencia más relevante"]},{"titulo":"Perlas para el examen","tipo":"perlas","items":["Dato concreto y difícil — valor o excepción que aparece en exámenes FEA"]}]}`;
+}
+const getStatus=(topic,stats)=>{
+  const s=stats[topic];
+  if(!s||s.t<4) return 'sinEmpezar';
+  const p=s.c/s.t*100;
+  if(p<50) return 'necesitaTrabajo';
+  if(p<75) return 'enProgreso';
+  return 'dominado';
+};
+const STATUS_LABELS={sinEmpezar:'Sin empezar',necesitaTrabajo:'Necesita trabajo',enProgreso:'En progreso',dominado:'Dominado'};
+const STATUS_COLORS={sinEmpezar:T.dim,necesitaTrabajo:T.red,enProgreso:T.amber,dominado:T.green};
+const STATUS_BG={sinEmpezar:T.card,necesitaTrabajo:T.redS,enProgreso:T.amberS,dominado:T.greenS};
+const STATUS_ORDER={sinEmpezar:0,necesitaTrabajo:1,enProgreso:2,dominado:3};
+
+// ═══════════════════════════════════════════════════════════════════════════
+export default function App(){
+  const [tab,setTab]=useState('dashboard');
+  const [qs,setQs]=useState([]);
+  const [sr,setSr]=useState({});
+  const [stats,setStats]=useState({});
+  const [marked,setMarked]=useState(new Set());
+  const [errSet,setErrSet]=useState(new Set());
+  const [sessions,setSessions]=useState([]);
+  const [examDate,setExamDateState]=useState('');
+  const [notes,setNotesState]=useState({});
+  const [bankPreselect,setBankPreselect]=useState(null);
+  const [studyPreselect,setStudyPreselect]=useState(null);
+  const [pdfMeta,setPdfMetaState]=useState({});
+  const [apiKey,setApiKeyState]=useState('');
+  const [studyNotes,setStudyNotesState]=useState({});
+  const [loaded,setLoaded]=useState(false);
+
+  useEffect(()=>{
+    (async()=>{
+      // Load everything synchronously from localStorage
+      const s=load('olab_sr',{});
+      const st=load('olab_stats',{});
+      const mk=load('olab_mk',[]);
+      const er=load('olab_er',[]);
+      const sess=load('olab_sessions',[]);
+      const ed=load('olab_exam_date','');
+      const nt=load('olab_notes',{});
+      const pm=load('olab_pdf_meta',{});
+      const ak=load('olab_api_key','');
+      const sn=load('olab_study_notes',{});
+
+      // Load questions from IndexedDB (no size limit)
+      let q=await idbLoadAllQs();
+      // Migrate from localStorage if IndexedDB is empty but localStorage has questions
+      if(q.length===0){
+        const legacyQs=load('olab_qs',[]);
+        if(legacyQs.length>0){
+          await Promise.all(legacyQs.map(qItem=>idbSaveQ(qItem)));
+          localStorage.removeItem('olab_qs');
+          q=legacyQs;
+        }
+      }
+
+      setQs(q);setSr(s);setStats(st);setMarked(new Set(mk));setErrSet(new Set(er));
+      setSessions(sess);setExamDateState(ed);setNotesState(nt);setPdfMetaState(pm);
+      setApiKeyState(ak);setStudyNotesState(sn);setLoaded(true);
+    })();
+  },[]);
+
+  const saveApiKey=useCallback(k=>{setApiKeyState(k);save('olab_api_key',k);},[]);
+  const saveStudyNote=useCallback((topic,content)=>{
+    setStudyNotesState(prev=>{const n={...prev,[topic]:{content,date:new Date().toISOString()}};save('olab_study_notes',n);return n;});
+  },[]);
+
+  // saveQs — persiste en IndexedDB. Acepta el array completo nuevo.
+  const saveQs=useCallback(async newQs=>{
+    const prev=await idbLoadAllQs();
+    const prevIds=new Set(prev.map(q=>q.id));
+    const newIds=new Set(newQs.map(q=>q.id));
+    // Guardar preguntas nuevas
+    const toAdd=newQs.filter(q=>!prevIds.has(q.id));
+    // Borrar preguntas eliminadas
+    const toDelete=prev.filter(q=>!newIds.has(q.id));
+    await Promise.all([
+      ...toAdd.map(q=>idbSaveQ(q)),
+      ...toDelete.map(q=>idbDelQ(q.id)),
+    ]);
+    setQs(newQs);
+  },[]);
+  const setExamDate=useCallback(d=>{setExamDateState(d);save('olab_exam_date',d);},[]);
+  const setNote=useCallback((sid,text)=>{setNotesState(prev=>{const n={...prev,[sid]:text};save('olab_notes',n);return n;});},[]);
+
+  // Guardar PDF — divide automáticamente si >80 páginas
+  const savePdfForTopic=useCallback(async(topic,file)=>{
+    const tKey=topicPdfKey(topic);
+    const chunks=await splitPdfIfNeeded(file);
+    for(const chunk of chunks){
+      const fileId=uid();
+      await idbSave(topicFilePdfKey(topic,fileId),chunk.file);
+      setPdfMetaState(prev=>{
+        const existing=prev[tKey]||[];
+        const entry={id:fileId,name:chunk.name,size:chunk.file.size,date:new Date().toISOString(),pages:chunk.pages};
+        const n={...prev,[tKey]:[...existing,entry]};
+        save('olab_pdf_meta',n);return n;
+      });
+    }
+    return chunks.length; // devuelve nº de trozos creados
+  },[]);
+
+  // Eliminar un PDF específico por su fileId
+  const deletePdfForTopic=useCallback(async(topic,fileId)=>{
+    await idbDel(topicFilePdfKey(topic,fileId));
+    setPdfMetaState(prev=>{
+      const tKey=topicPdfKey(topic);
+      const filtered=(prev[tKey]||[]).filter(f=>f.id!==fileId);
+      const n={...prev};
+      if(filtered.length>0) n[tKey]=filtered; else delete n[tKey];
+      save('olab_pdf_meta',n);return n;
+    });
+  },[]);
+
+  const recordAnswer=useCallback(async(qid,topic,correct,quality)=>{
+    setStats(prev=>{const ns={...prev};if(!ns[topic])ns[topic]={c:0,t:0};ns[topic]={c:ns[topic].c+(correct?1:0),t:ns[topic].t+1};save('olab_stats',ns);return ns;});
+    setSr(prev=>{const nsr={...prev,[qid]:sm2Update(prev[qid],quality)};save('olab_sr',nsr);return nsr;});
+    setErrSet(prev=>{const ne=new Set(prev);correct?ne.delete(qid):ne.add(qid);save('olab_er',[...ne]);return ne;});
+  },[]);
+
+  const toggleMark=useCallback(async qid=>{
+    setMarked(prev=>{const nm=new Set(prev);nm.has(qid)?nm.delete(qid):nm.add(qid);save('olab_mk',[...nm]);return nm;});
+  },[]);
+
+  const addSession=useCallback(async data=>{
+    const prev=load('olab_sessions',[]);
+    const updated=[{...data,date:new Date().toISOString(),id:uid()},...prev].slice(0,50);
+    save('olab_sessions',updated);setSessions(updated);
+  },[]);
+
+  const goToBank=useCallback((section,topic)=>{setBankPreselect({section,topic});setTab('bank');},[]);
+
+  if(!loaded) return(
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:T.bg,fontFamily:FONT}}>
+      <div style={{textAlign:'center'}}>
+        <div style={{width:48,height:48,borderRadius:12,background:`linear-gradient(135deg,${T.blue},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,margin:'0 auto 12px'}}>🔬</div>
+        <div style={{color:T.muted,fontSize:14}}>Cargando OPE Lab...</div>
+      </div>
+    </div>
+  );
+
+  const testQs=qs.filter(q=>q.type==='test');
+  const fcQs=qs.filter(q=>q.type==='flashcard');
+  const dueQs=fcQs.filter(q=>isDue(sr[q.id]));
+  const shared={qs,testQs,fcQs,dueQs,sr,stats,marked,errSet,recordAnswer,toggleMark,saveQs,setTab,addSession};
+
+  const navItems=[
+    {id:'panel',label:'Panel'},
+    {id:'temario',label:'Temario'},
+    {id:'practica',label:'Práctica'},
+    {id:'banco',label:'Banco'},
+  ];
+
+  // Normalize legacy tab names
+  const normalizedTab=
+    tab==='dashboard'||tab==='stats'||tab==='planificador'?'panel':
+    tab==='estudio'?'temario':
+    tab==='test'||tab==='simulacro'||tab==='flashcard'?'practica':
+    tab==='ajustes'?'ajustes':tab;
+
+  // SetupScreen solo si no hay API key Y estamos en modo local (sin servidor)
+  // En Vercel la key está en el servidor — no hace falta pedirla al usuario
+
+  // Ajustes overlay
+  if(normalizedTab==='ajustes') return(
+    <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14}}>
+      <div style={{background:T.surface,borderBottom:`1px solid ${T.border}`,boxShadow:sh.sm}}>
+        <div style={{maxWidth:960,margin:'0 auto',padding:'14px 20px',display:'flex',alignItems:'center',gap:12}}>
+          <button onClick={()=>setTab('panel')} style={{background:'none',border:'none',cursor:'pointer',color:T.muted,fontSize:13,fontFamily:FONT,display:'flex',alignItems:'center',gap:4}}>← Volver</button>
+          <span style={{fontWeight:700,fontSize:15,color:T.text}}>⚙️ Ajustes</span>
+        </div>
+      </div>
+      <div style={{maxWidth:960,margin:'0 auto',padding:'28px 20px'}}>
+        <Ajustes apiKey={apiKey} onSave={saveApiKey}/>
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14}}>
+      <div style={{background:T.surface,borderBottom:`1px solid ${T.border}`,boxShadow:sh.sm,position:'sticky',top:0,zIndex:50}}>
+        <div style={{maxWidth:960,margin:'0 auto',padding:'0 20px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',paddingTop:12,paddingBottom:4}}>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <div style={{width:32,height:32,borderRadius:8,background:`linear-gradient(135deg,${T.blue},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>🔬</div>
+              <div><span style={{fontWeight:700,fontSize:15,color:T.text,letterSpacing:-0.3}}>OPE Lab</span><span style={{color:T.dim,fontSize:11,marginLeft:8}}>FEA Laboratorio Clínico · SESCAM 2025</span></div>
+            </div>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <Chip color={T.blue} bg={T.blueS}>{qs.length} preg.</Chip>
+              {dueQs.length>0&&<Chip color={T.amber} bg={T.amberS}>{dueQs.length} pendientes</Chip>}
+              {errSet.size>0&&<Chip color={T.red} bg={T.redS}>{errSet.size} errores</Chip>}
+              <button onClick={()=>setTab('ajustes')} title="Ajustes" style={{background:'none',border:`1px solid ${T.border}`,borderRadius:7,padding:'4px 8px',cursor:'pointer',color:T.muted,fontSize:14,lineHeight:1,marginLeft:4}}>⚙️</button>
+            </div>
+          </div>
+          <div style={{display:'flex',marginTop:4,gap:0}}>
+            {navItems.map(n=>(
+              <button key={n.id} onClick={()=>setTab(n.id)} style={{padding:'9px 16px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:normalizedTab===n.id?700:400,color:normalizedTab===n.id?T.blue:T.muted,borderBottom:`2px solid ${normalizedTab===n.id?T.blue:'transparent'}`,whiteSpace:'nowrap',fontFamily:FONT,transition:'color 0.15s'}}>
+                {n.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{maxWidth:960,margin:'0 auto',padding:'28px 20px'}}>
+        {normalizedTab==='panel'   &&<PanelTab shared={shared} examDate={examDate} sessions={sessions} stats={stats} setExamDate={setExamDate} goToBank={goToBank} setTab={setTab} errSet={errSet} dueQs={dueQs}/>}
+        {normalizedTab==='temario' &&<TemarioConEstudio setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} studyPreselect={studyPreselect} onStudyPreselect={()=>setStudyPreselect(null)} goToStudy={t=>{setStudyPreselect(t);setTab('temario');}}/>}
+        {normalizedTab==='practica'&&<PracticaTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs}/>}
+        {normalizedTab==='banco'   &&<BankManager {...shared} preselect={bankPreselect} onPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} apiKey={apiKey}/>}
+      </div>
+    </div>
+  );
+}
+
+// ── Primitives ───────────────────────────────────────────────────────────────
+// ── Setup screen (first launch) ──────────────────────────────────────────────
+function SetupScreen({onSave}){
+  const [key,setKey]=useState('');
+  const [err,setErr]=useState('');
+  const save=()=>{
+    if(!key.trim()){setErr('Introduce tu API key de Anthropic.');return;}
+    if(!key.trim().startsWith('sk-ant-')){setErr('La clave debe empezar por sk-ant-...');return;}
+    onSave(key.trim());
+  };
+  return(
+    <div style={{minHeight:'100vh',background:T.bg,display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FONT,padding:24}}>
+      <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:16,padding:'36px 32px',maxWidth:480,width:'100%',boxShadow:sh.md}}>
+        <div style={{width:56,height:56,borderRadius:14,background:`linear-gradient(135deg,${T.blue},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,marginBottom:20}}>🔬</div>
+        <h1 style={{fontSize:22,fontWeight:700,margin:'0 0 8px',color:T.text,letterSpacing:-0.5}}>Bienvenido a OPE Lab</h1>
+        <p style={{color:T.muted,fontSize:14,margin:'0 0 28px',lineHeight:1.6}}>Para generar preguntas con IA necesitas una API key de Anthropic. Es gratuito obtenerla y los costes son muy bajos (~0.003€ por generación).</p>
+        <div style={{fontSize:12,color:T.muted,fontWeight:700,marginBottom:6,letterSpacing:0.5,textTransform:'uppercase'}}>API Key de Anthropic</div>
+        <input value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&save()} type="password"
+          placeholder="sk-ant-api03-..."
+          style={{width:'100%',background:T.card,color:T.text,border:`1px solid ${err?T.red:T.border}`,borderRadius:8,padding:'10px 14px',fontSize:14,outline:'none',marginBottom:8,boxSizing:'border-box',fontFamily:'monospace'}}
+        />
+        {err&&<p style={{color:T.red,fontSize:12,margin:'0 0 12px'}}>{err}</p>}
+        <p style={{color:T.dim,fontSize:11,margin:'0 0 20px',lineHeight:1.6}}>
+          Obtén tu clave en <strong style={{color:T.blue}}>console.anthropic.com</strong> → API Keys → Create Key.<br/>
+          Se guarda localmente en tu navegador. Nunca sale de tu dispositivo.
+        </p>
+        <button onClick={save} disabled={!key.trim()} style={{width:'100%',background:!key.trim()?T.card:T.blue,color:!key.trim()?T.dim:'#fff',border:'none',borderRadius:8,padding:'12px',fontWeight:700,fontSize:15,cursor:!key.trim()?'not-allowed':'pointer',fontFamily:FONT,boxShadow:sh.sm}}>
+          Guardar y empezar →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Ajustes ───────────────────────────────────────────────────────────────────
+function Ajustes({apiKey,onSave}){
+  const [key,setKey]=useState(apiKey);
+  const [msg,setMsg]=useState('');
+  const save=()=>{if(!key.trim()){setMsg('❌ Clave vacía.');return;}onSave(key.trim());setMsg('✅ API key guardada correctamente.');};
+  const masked=apiKey?apiKey.slice(0,12)+'…'+apiKey.slice(-4):'—';
+  return(
+    <div style={{maxWidth:520}}>
+      <h2 style={{fontSize:18,fontWeight:700,margin:'0 0 24px',color:T.text,letterSpacing:-0.3}}>⚙️ Ajustes</h2>
+      <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:'20px 22px',marginBottom:16,boxShadow:sh.sm}}>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:4}}>API Key de Anthropic</div>
+        <div style={{fontSize:12,color:T.muted,marginBottom:14}}>Clave actual: <code style={{background:T.card,padding:'2px 6px',borderRadius:4,fontSize:11}}>{masked}</code></div>
+        <input value={key} onChange={e=>setKey(e.target.value)} type="password" placeholder="sk-ant-api03-..."
+          style={{width:'100%',background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',marginBottom:12,boxSizing:'border-box',fontFamily:'monospace'}}
+        />
+        <button onClick={save} style={{background:T.blue,color:'#fff',border:'none',borderRadius:7,padding:'9px 20px',fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:FONT,boxShadow:sh.sm}}>Guardar</button>
+        {msg&&<span style={{marginLeft:12,fontSize:13,color:msg.startsWith('✅')?T.green:T.red}}>{msg}</span>}
+      </div>
+      <div style={{background:T.blueS,border:'1px solid #93c5fd',borderRadius:10,padding:'14px 18px',fontSize:13,color:T.blueText,lineHeight:1.6}}>
+        <strong>Privacidad:</strong> la API key se guarda únicamente en <code style={{fontSize:11,background:'#bfdbfe',padding:'1px 4px',borderRadius:3}}>localStorage</code> de tu navegador. No se envía a ningún servidor excepto a la API de Anthropic cuando generas preguntas.
+      </div>
+    </div>
+  );
+}
+
+// ── PanelTab — Dashboard + Stats + Planificador ───────────────────────────────
+function PanelTab({shared,examDate,sessions,stats,setExamDate,goToBank,setTab,errSet,dueQs}){
+  const [subTab,setSubTab]=useState('dashboard');
+  const tabs=[{id:'dashboard',label:'Inicio'},{id:'stats',label:'Estadísticas'},{id:'planificador',label:'Planificador'}];
+  return(
+    <div>
+      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
+        {tabs.map(t=><button key={t.id} onClick={()=>setSubTab(t.id)} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab===t.id?600:400,color:subTab===t.id?T.blue:T.muted,borderBottom:`2px solid ${subTab===t.id?T.blue:'transparent'}`,fontFamily:FONT}}>{t.label}</button>)}
+      </div>
+      {subTab==='dashboard'   &&<Dashboard {...shared} examDate={examDate} sessions={sessions}/>}
+      {subTab==='stats'       &&<StatsView {...shared} sessions={sessions}/>}
+      {subTab==='planificador'&&<Planificador stats={stats} examDate={examDate} setExamDate={setExamDate} goToBank={goToBank}/>}
+    </div>
+  );
+}
+
+// ── TemarioConEstudio — Temario + visor de apuntes integrado ──────────────────
+function TemarioConEstudio({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,studyPreselect,onStudyPreselect,goToStudy}){
+  const [subTab,setSubTab]=useState(studyPreselect?'estudio':'temario');
+  useEffect(()=>{if(studyPreselect){setSubTab('estudio');}},[studyPreselect]);
+  const totalNotes=Object.keys(studyNotes).length;
+  return(
+    <div>
+      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
+        <button onClick={()=>setSubTab('temario')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='temario'?600:400,color:subTab==='temario'?T.blue:T.muted,borderBottom:`2px solid ${subTab==='temario'?T.blue:'transparent'}`,fontFamily:FONT}}>Temario</button>
+        <button onClick={()=>setSubTab('estudio')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='estudio'?600:400,color:subTab==='estudio'?T.teal:T.muted,borderBottom:`2px solid ${subTab==='estudio'?T.teal:'transparent'}`,fontFamily:FONT}}>
+          📖 Apuntes {totalNotes>0&&<span style={{fontSize:10,background:T.tealS,color:T.teal,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{totalNotes}</span>}
+        </button>
+      </div>
+      {subTab==='temario'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setSubTab('estudio');goToStudy(t);}}/>}
+      {subTab==='estudio'&&<EstudioTab studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} preselect={studyPreselect} onPreselect={onStudyPreselect} pdfMeta={pdfMeta}/>}
+    </div>
+  );
+}
+
+// ── PracticaTab — Test OPE + Simulacro + Flashcards ──────────────────────────
+function PracticaTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs}){
+  const [subTab,setSubTab]=useState('test');
+  return(
+    <div>
+      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
+        <button onClick={()=>setSubTab('test')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='test'?600:400,color:subTab==='test'?T.blue:T.muted,borderBottom:`2px solid ${subTab==='test'?T.blue:'transparent'}`,fontFamily:FONT}}>🧪 Test OPE</button>
+        <button onClick={()=>setSubTab('simulacro')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='simulacro'?600:400,color:subTab==='simulacro'?T.orange:T.muted,borderBottom:`2px solid ${subTab==='simulacro'?T.orange:'transparent'}`,fontFamily:FONT}}>⚡ Simulacro</button>
+        <button onClick={()=>setSubTab('flashcard')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='flashcard'?600:400,color:subTab==='flashcard'?T.teal:T.muted,borderBottom:`2px solid ${subTab==='flashcard'?T.teal:'transparent'}`,fontFamily:FONT}}>
+          🃏 Flashcards {dueQs.length>0&&<span style={{fontSize:10,background:T.amberS,color:T.amber,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{dueQs.length}</span>}
+        </button>
+      </div>
+      {subTab==='test'      &&<TestMode {...shared}/>}
+      {subTab==='simulacro' &&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey}/>}
+      {subTab==='flashcard' &&<FlashcardMode {...shared}/>}
+    </div>
+  );
+}
+
+// ── Primitives ────────────────────────────────────────────────────────────────
+function Chip({color,bg,children}){return <span style={{background:bg,color,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600}}>{children}</span>;}
+function Lbl({children}){return <div style={{fontSize:11,color:T.muted,fontWeight:700,marginBottom:6,letterSpacing:0.5,textTransform:'uppercase'}}>{children}</div>;}
+function Btn({onClick,disabled,children,variant='primary',style:st}){
+  const v={primary:{bg:T.blue,c:'#fff',b:T.blueDk},green:{bg:T.green,c:'#fff',b:T.greenDk},ghost:{bg:T.surface,c:T.text,b:T.border2},danger:{bg:T.redS,c:T.red,b:'#fca5a5'},teal:{bg:T.teal,c:'#fff',b:T.tealDk},purple:{bg:T.purple,c:'#fff',b:T.purpleDk},orange:{bg:T.orange,c:'#fff',b:'#c2410c'}}[variant];
+  return <button onClick={onClick} disabled={disabled} style={{background:disabled?T.card:v.bg,color:disabled?T.dim:v.c,border:`1px solid ${disabled?T.border:v.b}`,borderRadius:7,padding:'9px 20px',fontWeight:600,fontSize:13,cursor:disabled?'not-allowed':'pointer',fontFamily:FONT,boxShadow:disabled?'none':sh.sm,...st}}>{children}</button>;
+}
+function RadioGroup({options,value,onChange}){
+  return <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:16}}>
+    {options.map(o=><label key={String(o.value)} style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'8px 12px',borderRadius:7,background:value===o.value?T.blueS:'transparent',border:`1px solid ${value===o.value?T.blue:T.border}`,transition:'all 0.15s'}}>
+      <input type="radio" checked={value===o.value} onChange={()=>onChange(o.value)} style={{accentColor:T.blue}}/>
+      <span style={{fontSize:13,color:value===o.value?T.blue:T.text,fontWeight:value===o.value?600:400}}>{o.label}</span>
+    </label>)}
+  </div>;
+}
+function PBar({pct,color,height=6}){const c=color||(pct>=70?T.green:pct>=50?T.amber:T.red);return <div style={{background:T.border,borderRadius:4,height}}><div style={{background:c,width:`${Math.min(pct,100)}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>;}
+function Card({children,style:st}){return <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,boxShadow:sh.sm,...st}}>{children}</div>;}
+function Sel({value,onChange,children,style:st}){return <select value={value} onChange={e=>onChange(e.target.value)} style={{width:'100%',background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',marginBottom:14,fontFamily:FONT,boxShadow:sh.sm,...st}}>{children}</select>;}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════
+function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,sessions}){
+  const totalA=Object.values(stats).reduce((a,b)=>a+b.t,0);
+  const totalC=Object.values(stats).reduce((a,b)=>a+b.c,0);
+  const acc=totalA?Math.round(totalC/totalA*100):0;
+  const studied=ALL_TOPICS.filter(t=>stats[t]?.t>0).length;
+  const dominated=ALL_TOPICS.filter(t=>getStatus(t,stats)==='dominado').length;
+  const daysLeft=examDate?Math.max(0,Math.ceil((new Date(examDate).setHours(23,59,59)-Date.now())/86400000)):null;
+
+  const kpis=[
+    {label:'Test OPE',value:testQs.length,color:T.blue,bg:T.blueS,tab:'test',icon:'🧪'},
+    {label:'Flashcards',value:fcQs.length,color:T.teal,bg:T.tealS,tab:'flashcard',icon:'🃏'},
+    {label:'Para repasar',value:dueQs.length,color:T.amber,bg:T.amberS,tab:'flashcard',icon:'⏰'},
+    {label:'Con errores',value:errSet.size,color:T.red,bg:T.redS,tab:'test',icon:'❌'},
+    {label:'Temas vistos',value:`${studied}/${ALL_TOPICS.length}`,color:T.green,bg:T.greenS,tab:'temario',icon:'📋'},
+    {label:'Dominados',value:dominated,color:T.greenDk,bg:T.greenS,tab:'stats',icon:'🏆'},
+  ];
+
+  return(
+    <div>
+      <div style={{marginBottom:24,display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:12}}>
+        <div>
+          <h1 style={{fontSize:22,fontWeight:700,margin:'0 0 4px',color:T.text,letterSpacing:-0.5}}>Hola, Miguel 👋</h1>
+          <p style={{color:T.muted,margin:0,fontSize:14}}>{totalA>0?`${totalA} preg. respondidas · ${acc}% aciertos · OPE FEA Lab. Clínico SESCAM 2025`:'Empieza con el Temario o un Simulacro de examen.'}</p>
+        </div>
+        {daysLeft!==null&&(
+          <div style={{background:daysLeft<30?T.redS:daysLeft<90?T.amberS:T.blueS,border:`1px solid ${daysLeft<30?'#fca5a5':daysLeft<90?'#fde68a':'#93c5fd'}`,borderRadius:10,padding:'12px 20px',textAlign:'center',cursor:'pointer'}} onClick={()=>setTab('planificador')}>
+            <div style={{fontSize:30,fontWeight:800,color:daysLeft<30?T.red:daysLeft<90?T.amber:T.blue,lineHeight:1}}>{daysLeft}</div>
+            <div style={{fontSize:11,color:T.muted,marginTop:2}}>días para la OPE</div>
+          </div>
+        )}
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:12,marginBottom:24}}>
+        {kpis.map(k=><div key={k.label} onClick={()=>setTab(k.tab)} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:'16px',cursor:'pointer',boxShadow:sh.sm,transition:'all 0.15s'}} onMouseEnter={e=>{e.currentTarget.style.borderColor=k.color;e.currentTarget.style.boxShadow=sh.md;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.boxShadow=sh.sm;}}>
+          <div style={{width:32,height:32,borderRadius:8,background:k.bg,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,marginBottom:10}}>{k.icon}</div>
+          <div style={{fontSize:22,fontWeight:700,color:k.color,lineHeight:1}}>{k.value}</div>
+          <div style={{fontSize:12,color:T.muted,marginTop:4}}>{k.label}</div>
+        </div>)}
+      </div>
+
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:28}}>
+        <Btn onClick={()=>setTab('simulacro')} variant="orange">⚡ Simulacro examen</Btn>
+        <Btn onClick={()=>setTab('test')} disabled={testQs.length===0}>🧪 Test rápido</Btn>
+        <Btn onClick={()=>setTab('flashcard')} disabled={dueQs.length===0} variant="teal">🃏 Repasar {dueQs.length>0?`(${dueQs.length})`:''}</Btn>
+        <Btn onClick={()=>setTab('planificador')} variant="ghost">📅 Planificador</Btn>
+      </div>
+
+      {sessions.length>0&&(
+        <Card style={{padding:'18px 22px',marginBottom:20}}>
+          <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.blue,borderRadius:2,display:'block'}}/>Últimas sesiones</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {sessions.slice(0,5).map(s=>{
+              const modeLabel={test:'Test OPE',simulacro:'Simulacro',flashcard:'Flashcards'}[s.mode]||s.mode;
+              const modeColor={test:T.blue,simulacro:T.orange,flashcard:T.teal}[s.mode]||T.muted;
+              return <div key={s.id} style={{display:'flex',alignItems:'center',gap:10,padding:'6px 0',borderBottom:`1px solid ${T.border}`}}>
+                <span style={{background:modeColor+'20',color:modeColor,padding:'2px 8px',borderRadius:20,fontSize:11,fontWeight:600,flexShrink:0}}>{modeLabel}</span>
+                <span style={{fontSize:12,color:T.muted,flex:1}}>{s.topics?.slice(0,2).join(', ').substring(0,50)}{s.topics?.length>2?'…':''}</span>
+                <span style={{fontSize:12,fontWeight:600,color:s.pct>=70?T.green:s.pct>=50?T.amber:T.red,flexShrink:0}}>{s.pct}%</span>
+                <span style={{fontSize:11,color:T.dim,flexShrink:0}}>{fmtDate(s.date)}</span>
+              </div>;
+            })}
+          </div>
+        </Card>
+      )}
+
+      {Object.keys(stats).length>0&&(
+        <Card style={{padding:'18px 22px'}}>
+          <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:14,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.teal,borderRadius:2,display:'block'}}/>Rendimiento por tema</div>
+          {Object.entries(stats).sort((a,b)=>b[1].t-a[1].t).slice(0,5).map(([topic,s])=>{
+            const pct=Math.round(s.c/s.t*100);
+            return <div key={topic} style={{marginBottom:10}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:5}}>
+                <span style={{fontSize:12,color:T.text}}>{topic}</span>
+                <span style={{fontSize:12,fontWeight:600,color:pct>=70?T.green:pct>=50?T.amber:T.red}}>{pct}% ({s.c}/{s.t})</span>
+              </div>
+              <PBar pct={pct}/>
+            </div>;
+          })}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEMARIO — con notas por sección
+// ═══════════════════════════════════════════════════════════════════════════
+function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,goToStudy}){
+  const [open,setOpen]=useState(null);
+  const [splittingKey,setSplittingKey]=useState(null);
+  const [generatingStudy,setGeneratingStudy]=useState(null);
+  const [studyMsg,setStudyMsg]=useState({});
+  const studied=ALL_TOPICS.filter(t=>stats[t]?.t>0).length;
+
+  const generateStudy=async(topic)=>{
+    setGeneratingStudy(topic);setStudyMsg(prev=>({...prev,[topic]:'🤖 Generando apuntes...'}));
+    const prompt=buildStudyPrompt(topic,false);
+    try{
+      const res=await fetch('/api/anthropic',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8000,messages:[{role:'user',content:prompt}]})
+      });
+      if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
+      const data=await res.json();
+      const text=(data.content||[]).map(c=>c.text||'').join('').trim();
+      const parsed=JSON.parse(text.replace(/```json|```/g,'').trim());
+      saveStudyNote(topic,parsed);
+      setStudyMsg(prev=>({...prev,[topic]:''}));
+    }catch(e){setStudyMsg(prev=>({...prev,[topic]:`❌ ${e.message}`}));}
+    setGeneratingStudy(null);
+  };
+  const pctS=Math.round(studied/ALL_TOPICS.length*100);
+  const totalPdfs=Object.values(pdfMeta).reduce((a,arr)=>a+(Array.isArray(arr)?arr.length:0),0);
+  const getCount=s=>qs.filter(q=>s.topics.includes(q.topic)).length;
+  const getAcc=s=>{const rel=Object.entries(stats).filter(([t])=>s.topics.includes(t));if(!rel.length)return null;const tot=rel.reduce((a,[,v])=>a+v.t,0);const cor=rel.reduce((a,[,v])=>a+v.c,0);return tot?Math.round(cor/tot*100):null;};
+
+  return(
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+        <div><h2 style={{fontSize:18,fontWeight:700,margin:'0 0 4px',color:T.text,letterSpacing:-0.3}}>Temario Oficial SESCAM 2025</h2><p style={{color:T.muted,fontSize:13,margin:0}}>FEA Laboratorio Clínico · Anexo II, DOCM 9/04/2025 · 60 temas</p></div>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          {totalPdfs>0&&<div style={{background:T.greenS,border:'1px solid #86efac',borderRadius:8,padding:'6px 12px',textAlign:'center'}}><div style={{fontSize:16,fontWeight:700,color:T.green}}>{totalPdfs}</div><div style={{fontSize:10,color:T.muted}}>PDFs adjuntos</div></div>}
+          <div style={{background:T.blueS,padding:'10px 16px',borderRadius:10,textAlign:'center'}}><div style={{fontSize:22,fontWeight:700,color:T.blue}}>{pctS}%</div><div style={{fontSize:11,color:T.muted,marginTop:1}}>estudiados</div></div>
+        </div>
+      </div>
+      <div style={{background:T.border,borderRadius:4,height:5,margin:'14px 0 8px'}}><div style={{background:`linear-gradient(90deg,${T.blue},${T.teal})`,width:`${pctS}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>
+      <div style={{display:'flex',gap:8,marginBottom:22,flexWrap:'wrap'}}>
+        <div style={{background:T.blueS,border:'1px solid #93c5fd',borderRadius:7,padding:'5px 12px',fontSize:12,color:T.blueText}}>📘 <strong>Tietz</strong> Textbook of Laboratory Medicine (2022)</div>
+        <div style={{background:'#fef9c3',border:'1px solid #fde047',borderRadius:7,padding:'5px 12px',fontSize:12,color:T.amberText}}>📙 <strong>Henry</strong> El Laboratorio en el Diagnóstico Clínico (2022)</div>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(290px,1fr))',gap:12}}>
+        {SECTIONS.map(s=>{
+          const acc=getAcc(s);const count=getCount(s);const isOpen=open===s.id;
+          const tStr=s.temas.length===1?`T${s.temas[0]}`:`T${s.temas[0]}–T${s.temas[s.temas.length-1]}`;
+          return(
+            <div key={s.id}>
+              <div onClick={()=>setOpen(isOpen?null:s.id)} style={{background:T.surface,border:`1.5px solid ${isOpen?s.color:T.border}`,borderLeft:`3px solid ${s.color}`,borderRadius:isOpen?'10px 10px 0 0':10,padding:'14px 16px',cursor:'pointer',boxShadow:isOpen?sh.md:sh.sm,transition:'all 0.15s'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                  <div style={{display:'flex',alignItems:'center',gap:10}}>
+                    <div style={{width:36,height:36,borderRadius:8,background:s.colorS,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>{s.emoji}</div>
+                    <div><div style={{fontWeight:600,fontSize:14,color:T.text}}>{s.name}</div><div style={{fontSize:11,color:s.color,fontWeight:600,marginTop:2}}>{tStr} · {s.temas.length} temas</div></div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>{acc!==null&&<span style={{fontWeight:700,fontSize:14,color:acc>=70?T.green:acc>=50?T.amber:T.red}}>{acc}%</span>}<span style={{color:T.dim,fontSize:14,transition:'transform 0.2s',transform:isOpen?'rotate(90deg)':'none'}}>›</span></div>
+                </div>
+                <p style={{margin:'0 0 10px',fontSize:12,color:T.muted,lineHeight:1.5}}>{s.desc}</p>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
+                  {s.tietz!=='—'&&<span style={{fontSize:10,color:T.blueText,background:T.blueS,border:'1px solid #93c5fd',padding:'2px 8px',borderRadius:20,fontWeight:600}}>Tietz: {s.tietz}</span>}
+                  {s.henry!=='—'&&<span style={{fontSize:10,color:T.amberText,background:'#fef9c3',border:'1px solid #fde047',padding:'2px 8px',borderRadius:20,fontWeight:600}}>Henry: {s.henry}</span>}
+                </div>
+                <span style={{fontSize:11,color:T.dim}}>{count} preg. en banco</span>
+              </div>
+              {isOpen&&(
+                <div style={{background:s.colorS,border:`1.5px solid ${s.colorBorder}`,borderLeft:`3px solid ${s.color}`,borderTop:'none',borderRadius:'0 0 10px 10px',padding:'14px 16px'}}>
+                  <div style={{fontSize:11,color:s.color,fontWeight:700,marginBottom:10,letterSpacing:0.5,textTransform:'uppercase'}}>Temas incluidos</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:14}}>
+                    {s.topics.map(t=>{
+                      const ts=stats[t];const tpct=ts?Math.round(ts.c/ts.t*100):null;const st=getStatus(t,stats);
+                      const refs=TOPIC_REFS[t];const hasRefs=refs&&refs.tietz!=='—';
+                      const pKey=topicPdfKey(t);
+                      const files=pdfMeta[pKey]||[]; // array de PDFs adjuntos
+                      const hasPdfs=files.length>0;
+                      const hasStudy=!!studyNotes[t];
+                      const isGenerating=generatingStudy===t;
+                      return(
+                        <div key={t} style={{background:T.surface,borderRadius:8,border:`1px solid ${hasPdfs?T.green:hasStudy?T.teal:T.border}`,transition:'border-color 0.2s'}}>
+                          <div style={{padding:'9px 12px'}}>
+                          <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:hasRefs||hasPdfs?5:0}}>
+                            <span style={{width:7,height:7,borderRadius:'50%',background:STATUS_COLORS[st],flexShrink:0,marginTop:4}}/>
+                            <span style={{fontSize:13,color:T.text,flex:1,lineHeight:1.4,fontWeight:500}}>{t}</span>
+                            <div style={{display:'flex',gap:5,alignItems:'center',flexShrink:0}}>
+                              {tpct!==null?<span style={{fontSize:11,fontWeight:700,color:tpct>=70?T.green:tpct>=50?T.amber:T.red}}>{tpct}%</span>:<span style={{fontSize:10,color:STATUS_COLORS[st],background:STATUS_BG[st],padding:'1px 7px',borderRadius:10,fontWeight:600}}>{STATUS_LABELS[st]}</span>}
+                              <button
+                                onClick={()=>hasStudy?goToStudy(t):generateStudy(t)}
+                                disabled={isGenerating}
+                                title={hasStudy?'Ver apuntes en pestaña Estudio':'Generar apuntes con IA'}
+                                style={{background:isGenerating?T.amberS:hasStudy?T.tealS:T.purpleS,border:`1px solid ${isGenerating?T.amber:hasStudy?T.teal:T.purple}`,borderRadius:20,padding:'2px 9px',fontSize:10,cursor:isGenerating?'wait':'pointer',color:isGenerating?T.amberText:hasStudy?T.teal:T.purple,fontWeight:600,fontFamily:FONT,flexShrink:0,whiteSpace:'nowrap'}}>
+                                {isGenerating?'⏳ Generando…':hasStudy?'📖 Ver':'📖 Generar'}
+                              </button>
+                              <button onClick={async()=>{
+                                const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';inp.multiple=true;
+                                inp.onchange=async e=>{
+                                  const files=Array.from(e.target.files||[]);
+                                  for(const f of files){
+                                    if(f.size>200*1024*1024){alert(`"${f.name}" supera 200 MB.`);continue;}
+                                    setSplittingKey(pKey);
+                                    await savePdfForTopic(t,f);
+                                    setSplittingKey(null);
+                                  }
+                                };
+                                inp.click();
+                              }} disabled={splittingKey===pKey}
+                                title="Adjuntar PDF(s) del capítulo — se divide automáticamente si >80 páginas"
+                                style={{background:splittingKey===pKey?T.amberS:hasPdfs?T.greenS:T.blueS,border:`1px solid ${splittingKey===pKey?T.amber:hasPdfs?'#86efac':'#93c5fd'}`,borderRadius:20,padding:'2px 9px',fontSize:10,cursor:splittingKey===pKey?'wait':'pointer',color:splittingKey===pKey?T.amberText:hasPdfs?T.greenText:T.blueText,fontWeight:600,fontFamily:FONT,flexShrink:0,whiteSpace:'nowrap'}}>
+                                {splittingKey===pKey?'⏳ Procesando…':hasPdfs?`📄 +${files.length} · Añadir`:'+ PDF'}
+                              </button>
+                            </div>
+                          </div>
+                          {/* Lista de PDFs adjuntos */}
+                          {hasPdfs&&(
+                            <div style={{paddingLeft:15,display:'flex',flexDirection:'column',gap:3,marginBottom:hasRefs?5:0}}>
+                              {files.map(f=>(
+                                <div key={f.id} style={{display:'flex',alignItems:'center',gap:6,background:T.greenS,borderRadius:6,padding:'3px 8px'}}>
+                                  <span style={{fontSize:10,color:T.greenText,fontWeight:600,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={`${f.name} · ${(f.size/1024/1024).toFixed(1)} MB · ${fmtDate(f.date)}`}>
+                                    📄 {f.name}
+                                  </span>
+                                  {f.pages&&<span style={{fontSize:9,color:T.muted,flexShrink:0,background:T.card,padding:'1px 5px',borderRadius:8}}>pp. {f.pages}</span>}
+                                  <span style={{fontSize:10,color:T.dim,flexShrink:0}}>{(f.size/1024/1024).toFixed(1)} MB</span>
+                                  <button onClick={()=>deletePdfForTopic(t,f.id)} title="Eliminar este PDF" style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:13,padding:0,lineHeight:1,flexShrink:0}}>×</button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {/* Badges Tietz/Henry */}
+                          {hasRefs&&(
+                            <div style={{display:'flex',gap:6,paddingLeft:15,flexWrap:'wrap',marginTop:hasPdfs?4:0}}>
+                              <span title={refs.tietzD||refs.tietz} style={{fontSize:10,color:T.blueText,background:T.blueS,border:'1px solid #93c5fd',padding:'2px 8px',borderRadius:20,fontWeight:600,cursor:'help'}}>📘 Tietz {refs.tietz}</span>
+                              <span title={refs.henryD||refs.henry} style={{fontSize:10,color:T.amberText,background:'#fef9c3',border:'1px solid #fde047',padding:'2px 8px',borderRadius:20,fontWeight:600,cursor:'help'}}>📙 Henry {refs.henry}</span>
+                            </div>
+                          )}
+                          {studyMsg[t]&&<div style={{marginTop:6,fontSize:11,color:studyMsg[t].startsWith('❌')?T.red:T.muted,paddingLeft:15}}>{studyMsg[t]}</div>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* Notes */}
+                  <div style={{marginBottom:12}}>
+                    <div style={{fontSize:11,color:s.color,fontWeight:700,marginBottom:6,letterSpacing:0.5,textTransform:'uppercase'}}>Mis notas</div>
+                    <textarea defaultValue={notes[s.id]||''} onBlur={e=>setNote(s.id,e.target.value)} placeholder="Escribe tus notas, esquemas o conceptos clave para este bloque..."
+                      style={{width:'100%',minHeight:72,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'8px 10px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box'}}/>
+                  </div>
+                  <button onClick={()=>setTab('banco')} style={{background:s.color,color:'#fff',border:'none',borderRadius:7,padding:'7px 16px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT,boxShadow:sh.sm}}>✨ Generar preguntas →</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ESTUDIO TAB
+// ═══════════════════════════════════════════════════════════════════════════
+function EstudioTab({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMeta}){
+  const [selectedTopic,setSelectedTopic]=useState(preselect||null);
+  const [generating,setGenerating]=useState(false);
+  const [genMsg,setGenMsg]=useState('');
+  const [search,setSearch]=useState('');
+  const [selectedPdfIds,setSelectedPdfIds]=useState(new Set());
+  const [manualPdf,setManualPdf]=useState(null);
+  const fileRef=useRef(null);
+
+  useEffect(()=>{if(preselect){setSelectedTopic(preselect);onPreselect?.();}},[preselect]);
+
+  // Cuando cambia el tema, seleccionar todos sus PDFs por defecto
+  const attachedFiles=selectedTopic?(pdfMeta[topicPdfKey(selectedTopic)]||[]):[];
+  useEffect(()=>{
+    setSelectedPdfIds(new Set(attachedFiles.map(f=>f.id)));
+    setManualPdf(null);
+  },[selectedTopic]);
+
+  const togglePdfId=id=>setSelectedPdfIds(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n;});
+  const selectedFiles=attachedFiles.filter(f=>selectedPdfIds.has(f.id));
+  const hasPdfSource=manualPdf||(selectedFiles.length>0);
+
+  const generateStudy=async(topic)=>{
+    setGenerating(true);setGenMsg(hasPdfSource?'📄 Procesando PDF...':'🤖 Generando apuntes...');
+    const refs=TOPIC_REFS[topic];
+    const refsStr=refs&&refs.tietz!=='—'?`Referencias: Tietz ${refs.tietz} · Henry ${refs.henry}. `:'';
+
+    // Resolver PDF
+    let pdfBlob=null;
+    if(manualPdf){
+      const chunks=await splitPdfIfNeeded(manualPdf);
+      pdfBlob=chunks[0].file;
+    } else if(selectedFiles.length>0){
+      setGenMsg(`📂 Cargando y fusionando ${selectedFiles.length} PDF${selectedFiles.length>1?'s':''}...`);
+      const rawBlobs=[];
+      for(const f of selectedFiles){
+        const blob=await idbLoad(topicFilePdfKey(topic,f.id)).catch(()=>null);
+        if(blob)rawBlobs.push(blob instanceof File?blob:new File([blob],f.name,{type:'application/pdf'}));
+      }
+      if(rawBlobs.length>0){const{file}=await mergePdfsWithLimit(rawBlobs);pdfBlob=file;}
+    }
+
+    const hasPdf=!!pdfBlob;
+    const prompt=buildStudyPrompt(topic,hasPdf);
+
+    try{
+      setGenMsg(hasPdf?'📄 Analizando capítulo...':'🤖 Generando apuntes...');
+      const content=[];
+      if(pdfBlob){const b64=await blobToB64(pdfBlob);content.push({type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}});}
+      content.push({type:'text',text:prompt});
+      const res=await fetch('/api/anthropic',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8000,messages:[{role:'user',content}]})
+      });
+      if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
+      const data=await res.json();
+      const text=(data.content||[]).map(c=>c.text||'').join('').trim();
+      const parsed=JSON.parse(text.replace(/```json|```/g,'').trim());
+      saveStudyNote(topic,parsed);
+      setGenMsg('');
+    }catch(e){setGenMsg(`❌ ${e.message}`);}
+    setGenerating(false);
+  };
+
+  const totalNotes=Object.keys(studyNotes).length;
+  const filtered=search.trim()?ALL_TOPICS.filter(t=>t.toLowerCase().includes(search.toLowerCase())):null;
+
+  return(
+    <div style={{display:'flex',gap:0,height:'calc(100vh - 120px)',minHeight:600}}>
+      {/* Sidebar */}
+      <div style={{width:300,flexShrink:0,borderRight:`1px solid ${T.border}`,overflowY:'auto'}}>
+        <div style={{padding:'0 12px 12px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.text}}>Temas</div>
+            <span style={{fontSize:11,color:T.muted,background:T.card,padding:'2px 8px',borderRadius:20}}>{totalNotes}/60 generados</span>
+          </div>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar tema..." style={{width:'100%',background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'7px 10px',fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:FONT,marginBottom:8}}/>
+        </div>
+        {(filtered?[{id:'search',name:'Resultados',topics:filtered,color:T.blue,colorS:T.blueS,emoji:'🔍'}]:SECTIONS).map(s=>(
+          <div key={s.id}>
+            <div style={{padding:'5px 12px',fontSize:10,fontWeight:700,color:s.color,letterSpacing:0.5,textTransform:'uppercase',background:s.colorS,borderTop:`1px solid ${T.border}`,borderBottom:`1px solid ${T.border}`}}>{s.emoji} {s.name}</div>
+            {s.topics.map(t=>{
+              const hasNote=!!studyNotes[t];
+              const isSel=selectedTopic===t;
+              const nPdfs=(pdfMeta[topicPdfKey(t)]||[]).length;
+              return(
+                <div key={t} onClick={()=>setSelectedTopic(t)} style={{padding:'8px 12px',cursor:'pointer',background:isSel?T.blueS:'transparent',borderLeft:`3px solid ${isSel?T.blue:'transparent'}`,borderBottom:`1px solid ${T.border}20`,transition:'all 0.1s',display:'flex',alignItems:'center',gap:6}}>
+                  <span style={{width:6,height:6,borderRadius:'50%',background:hasNote?T.teal:T.border,flexShrink:0,display:'block'}}/>
+                  <span style={{fontSize:11,color:isSel?T.blue:T.text,lineHeight:1.3,flex:1}}>{t}</span>
+                  {nPdfs>0&&<span style={{fontSize:9,background:T.greenS,color:T.greenText,padding:'1px 5px',borderRadius:8,fontWeight:700,flexShrink:0}}>📄{nPdfs}</span>}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {/* Main content */}
+      <div style={{flex:1,overflowY:'auto',padding:'0 24px 24px'}}>
+        {!selectedTopic?(
+          <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',textAlign:'center',color:T.muted}}>
+            <div style={{fontSize:48,marginBottom:16}}>📖</div>
+            <div style={{fontSize:16,fontWeight:600,color:T.text,marginBottom:8}}>Selecciona un tema</div>
+            <div style={{fontSize:13,maxWidth:320,lineHeight:1.6}}>Elige un tema del panel izquierdo. Los temas con 📄 tienen PDFs adjuntos — los apuntes se generarán directamente desde el libro.</div>
+          </div>
+        ):(
+          <div>
+            <div style={{position:'sticky',top:0,background:T.bg,paddingTop:20,paddingBottom:14,zIndex:10,borderBottom:`1px solid ${T.border}`,marginBottom:16}}>
+              <div style={{fontSize:11,color:T.muted,marginBottom:4,fontWeight:600,letterSpacing:0.3,textTransform:'uppercase'}}>Apuntes de estudio</div>
+              <div style={{fontSize:15,fontWeight:700,color:T.text,lineHeight:1.4,marginBottom:12}}>{selectedTopic}</div>
+
+              {/* PDF source selector */}
+              {attachedFiles.length>0&&!manualPdf&&(
+                <div style={{background:T.greenS,border:'1px solid #86efac',borderLeft:`3px solid ${T.green}`,borderRadius:8,padding:'10px 14px',marginBottom:10}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                    <span style={{fontSize:12,color:T.greenText,fontWeight:600}}>📗 PDFs adjuntos — selecciona la fuente</span>
+                    <div style={{display:'flex',gap:5}}>
+                      <button onClick={()=>setSelectedPdfIds(new Set(attachedFiles.map(f=>f.id)))} style={{fontSize:10,background:'none',border:`1px solid ${T.border2}`,borderRadius:5,padding:'1px 6px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Todo</button>
+                      <button onClick={()=>setSelectedPdfIds(new Set())} style={{fontSize:10,background:'none',border:`1px solid ${T.border2}`,borderRadius:5,padding:'1px 6px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Ninguno</button>
+                    </div>
+                  </div>
+                  {attachedFiles.map(f=>{
+                    const sel=selectedPdfIds.has(f.id);
+                    return(
+                      <label key={f.id} style={{display:'flex',alignItems:'center',gap:7,background:sel?'#bbf7d0':T.card,borderRadius:5,padding:'4px 8px',marginBottom:3,cursor:'pointer',border:`1px solid ${sel?'#86efac':T.border}`}}>
+                        <input type="checkbox" checked={sel} onChange={()=>togglePdfId(f.id)} style={{accentColor:T.green,flexShrink:0}}/>
+                        <span style={{fontSize:11,flex:1,color:sel?T.greenText:T.muted,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:sel?600:400}}>📄 {f.name}</span>
+                        {f.pages&&<span style={{fontSize:9,color:T.dim,background:T.surface,padding:'1px 5px',borderRadius:8}}>pp.{f.pages}</span>}
+                        <span style={{fontSize:10,color:T.dim,flexShrink:0}}>{(f.size/1024/1024).toFixed(1)}MB</span>
+                      </label>
+                    );
+                  })}
+                  <button onClick={()=>fileRef.current?.click()} style={{marginTop:4,fontSize:10,background:'none',border:`1px solid ${T.border2}`,borderRadius:5,padding:'2px 8px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>+ Subir otro PDF</button>
+                </div>
+              )}
+              {manualPdf&&(
+                <div style={{background:T.blueS,border:'1px solid #93c5fd',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'9px 14px',marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8}}><span>📄</span><div><div style={{fontSize:12,color:T.blue,fontWeight:600}}>{manualPdf.name}</div><div style={{fontSize:10,color:T.muted}}>PDF manual</div></div></div>
+                  <button onClick={()=>setManualPdf(null)} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:18}}>×</button>
+                </div>
+              )}
+              {!attachedFiles.length&&!manualPdf&&(
+                <div onClick={()=>fileRef.current?.click()} style={{border:`2px dashed ${T.border2}`,borderRadius:8,padding:'10px',textAlign:'center',cursor:'pointer',marginBottom:10,background:T.card,fontSize:12,color:T.muted,transition:'all 0.15s'}} onMouseEnter={e=>{e.currentTarget.style.borderColor=T.blue;e.currentTarget.style.background=T.blueS;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border2;e.currentTarget.style.background=T.card;}}>
+                  📄 Subir PDF del capítulo (opcional) — o genera con conocimiento general
+                </div>
+              )}
+              <input ref={fileRef} type="file" accept=".pdf" onChange={e=>{const f=e.target.files?.[0];if(f)setManualPdf(f);}} style={{display:'none'}}/>
+
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+                {studyNotes[selectedTopic]
+                  ?<button onClick={()=>generateStudy(selectedTopic)} disabled={generating} style={{background:T.card,border:`1px solid ${T.border2}`,borderRadius:7,padding:'6px 14px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>{generating?'⏳ Regenerando…':'🔄 Regenerar apuntes'}</button>
+                  :<button onClick={()=>generateStudy(selectedTopic)} disabled={generating} style={{background:hasPdfSource?T.green:T.teal,color:'#fff',border:'none',borderRadius:7,padding:'8px 18px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:FONT,boxShadow:sh.sm}}>{generating?'⏳ Generando…':hasPdfSource?'📄 Generar desde PDF':'📖 Generar con IA'}</button>
+                }
+                {genMsg&&<span style={{fontSize:12,color:genMsg.startsWith('❌')?T.red:T.muted,alignSelf:'center'}}>{genMsg}</span>}
+              </div>
+            </div>
+            {studyNotes[selectedTopic]
+              ?<StudyPanel data={studyNotes[selectedTopic].content} topic={selectedTopic} date={studyNotes[selectedTopic].date} onRegenerate={()=>generateStudy(selectedTopic)} isGenerating={generating}/>
+              :<div style={{textAlign:'center',padding:'60px 20px',color:T.muted}}>
+                <div style={{fontSize:40,marginBottom:12}}>📝</div>
+                <div style={{fontSize:14,marginBottom:6,color:T.text,fontWeight:600}}>Este tema aún no tiene apuntes</div>
+                <div style={{fontSize:12}}>{hasPdfSource?'Pulsa "Generar desde PDF" para crear el resumen desde el libro':'Pulsa "Generar con IA" para crear el resumen de estudio'}</div>
+              </div>
+            }
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STUDY PANEL
+// ═══════════════════════════════════════════════════════════════════════════
+function StudyPanel({data,topic,date,onRegenerate,isGenerating}){
+  if(!data)return null;
+  const sectionColors={
+    'Valores de referencia':{bg:'#eff6ff',border:'#93c5fd',title:'#1d4ed8',icon:'🔢'},
+    'Conceptos clave':{bg:T.greenS,border:'#86efac',title:T.greenText,icon:'💡'},
+    'Mecanismos fisiopatológicos':{bg:'#faf5ff',border:'#d8b4fe',title:'#7c3aed',icon:'⚙️'},
+    'Clasificaciones y criterios diagnósticos':{bg:T.amberS,border:'#fde68a',title:T.amberText,icon:'📋'},
+    'Técnicas analíticas de laboratorio':{bg:'#f0fdf4',border:'#bbf7d0',title:'#166534',icon:'🔬'},
+    'Perlas para el examen':{bg:'#fff7ed',border:'#fed7aa',title:'#c2410c',icon:'💎'},
+  };
+  return(
+    <div style={{padding:'14px 14px 16px'}}>
+      {data.resumen&&<p style={{fontSize:13,color:T.muted,lineHeight:1.6,margin:'0 0 14px',padding:'10px 14px',background:T.card,borderRadius:8,borderLeft:`3px solid ${T.teal}`}}>{data.resumen}</p>}
+      <div style={{display:'flex',flexDirection:'column',gap:10}}>
+        {(data.subapartados||[]).map((sec,i)=>{
+          const col=sectionColors[sec.titulo]||{bg:T.card,border:T.border,title:T.text,icon:'📌'};
+          return(
+            <div key={i} style={{background:col.bg,border:`1px solid ${col.border}`,borderRadius:8,overflow:'hidden'}}>
+              <div style={{padding:'8px 12px',borderBottom:`1px solid ${col.border}`,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:14}}>{col.icon}</span>
+                <span style={{fontSize:12,fontWeight:700,color:col.title,letterSpacing:0.3,textTransform:'uppercase'}}>{sec.titulo}</span>
+              </div>
+              <div style={{padding:'10px 12px'}}>
+                {sec.tipo==='tabla'&&sec.filas&&(
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                      {sec.cabeceras&&<thead><tr>{sec.cabeceras.map((h,j)=><th key={j} style={{padding:'5px 8px',background:col.border+'80',color:col.title,fontWeight:700,textAlign:'left',borderBottom:`1px solid ${col.border}`,whiteSpace:'nowrap'}}>{h}</th>)}</tr></thead>}
+                      <tbody>{sec.filas.map((row,j)=><tr key={j} style={{background:j%2===0?'transparent':col.border+'20'}}>{(Array.isArray(row)?row:[row]).map((cell,k)=><td key={k} style={{padding:'5px 8px',color:T.text,borderBottom:`1px solid ${col.border}40`,verticalAlign:'top'}}>{cell}</td>)}</tr>)}</tbody>
+                    </table>
+                  </div>
+                )}
+                {sec.tipo==='lista'&&<ul style={{margin:0,paddingLeft:18,display:'flex',flexDirection:'column',gap:4}}>{(sec.items||[]).map((item,j)=><li key={j} style={{fontSize:12,color:T.text,lineHeight:1.5}}>{item}</li>)}</ul>}
+                {sec.tipo==='clasificacion'&&<div style={{display:'flex',flexDirection:'column',gap:8}}>{(sec.items||[]).map((cls,j)=><div key={j}><div style={{fontSize:12,fontWeight:700,color:col.title,marginBottom:3}}>{cls.nombre}</div><ul style={{margin:0,paddingLeft:18,display:'flex',flexDirection:'column',gap:2}}>{(cls.criterios||[]).map((c,k)=><li key={k} style={{fontSize:11,color:T.text,lineHeight:1.5}}>{c}</li>)}</ul></div>)}</div>}
+                {sec.tipo==='perlas'&&<div style={{display:'flex',flexDirection:'column',gap:5}}>{(sec.items||[]).map((item,j)=><div key={j} style={{display:'flex',gap:8,alignItems:'flex-start'}}><span style={{fontSize:14,flexShrink:0}}>💎</span><span style={{fontSize:12,color:T.text,lineHeight:1.5,fontWeight:500}}>{item}</span></div>)}</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:10}}>
+        <span style={{fontSize:10,color:T.dim}}>Generado el {fmtDate(date)}</span>
+        <button onClick={onRegenerate} disabled={isGenerating} style={{fontSize:11,background:'none',border:`1px solid ${T.border2}`,borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>
+          {isGenerating?'⏳ Regenerando…':'🔄 Regenerar'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST MODE
+// ═══════════════════════════════════════════════════════════════════════════
+function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
+  const [phase,setPhase]=useState('setup');
+  const [cfg,setCfg]=useState({section:'all',topic:'all',mode:'all',n:10,timer:0});
+  const [session,setSession]=useState([]);
+  const [idx,setIdx]=useState(0);
+  const [answers,setAnswers]=useState([]);
+  const [selected,setSelected]=useState(null);
+  const [revealed,setRevealed]=useState(false);
+  const [timeLeft,setTimeLeft]=useState(0);
+  const [startTs,setStartTs]=useState(0);
+  const timerRef=useRef(null);const revealRef=useRef(null);
+
+  const handleReveal=useCallback((sel,sess,i)=>{
+    clearInterval(timerRef.current);
+    const q=sess[i];if(!q)return;
+    recordAnswer(q.id,q.topic,sel===q.correct,sel===null?0:sel===q.correct?5:2);
+    setSelected(sel);setRevealed(true);
+  },[recordAnswer]);
+
+  useEffect(()=>{revealRef.current={handleReveal,session,idx};},[handleReveal,session,idx]);
+  useEffect(()=>{
+    if(phase!=='running'||cfg.timer===0||revealed)return;
+    setTimeLeft(cfg.timer);
+    timerRef.current=setInterval(()=>{setTimeLeft(t=>{if(t<=1){clearInterval(timerRef.current);const{handleReveal:hr,session:s,idx:i}=revealRef.current;hr(null,s,i);return 0;}return t-1;});},1000);
+    return()=>clearInterval(timerRef.current);
+  },[idx,phase,revealed]);
+
+  const start=()=>{
+    const sectionTopics=cfg.section==='all'?null:SECTIONS.find(s=>s.id===cfg.section)?.topics;
+    let pool=testQs;
+    if(sectionTopics)pool=pool.filter(q=>sectionTopics.includes(q.topic));
+    if(cfg.topic!=='all')pool=pool.filter(q=>q.topic===cfg.topic);
+    if(cfg.mode==='errors')pool=pool.filter(q=>errSet.has(q.id));
+    if(cfg.mode==='marked')pool=pool.filter(q=>marked.has(q.id));
+    if(!pool.length)return alert('No hay preguntas para esta selección.');
+    const s=shuffle(pool).slice(0,Math.min(cfg.n,pool.length));
+    setSession(s);setIdx(0);setAnswers([]);setSelected(null);setRevealed(false);setStartTs(Date.now());setPhase('running');
+  };
+
+  if(phase==='setup'){
+    const sTopics=cfg.section==='all'?null:SECTIONS.find(s=>s.id===cfg.section)?.topics;
+    const topicsForSec=cfg.section==='all'?[...new Set(testQs.map(q=>q.topic))].sort():(sTopics||[]).filter(t=>testQs.some(q=>q.topic===t));
+    return(
+      <div style={{maxWidth:500}}>
+        <h2 style={{fontSize:18,fontWeight:700,marginBottom:20,color:T.text,letterSpacing:-0.3}}>🧪 Configurar test</h2>
+        <Lbl>Bloque temático</Lbl>
+        <Sel value={cfg.section} onChange={v=>setCfg({...cfg,section:v,topic:'all'})}>
+          <option value="all">Todos los bloques ({testQs.length} preg.)</option>
+          {SECTIONS.map(s=>{const n=testQs.filter(q=>s.topics.includes(q.topic)).length;return n>0?<option key={s.id} value={s.id}>{s.emoji} {s.name} ({n})</option>:null;})}
+        </Sel>
+        {topicsForSec.length>0&&<><Lbl>Tema específico</Lbl><Sel value={cfg.topic} onChange={v=>setCfg({...cfg,topic:v})}><option value="all">Todos los temas</option>{topicsForSec.map(t=><option key={t} value={t}>{t} ({testQs.filter(q=>q.topic===t).length})</option>)}</Sel></>}
+        <Lbl>Selección</Lbl>
+        <RadioGroup value={cfg.mode} onChange={v=>setCfg({...cfg,mode:v})} options={[{value:'all',label:'Todas las preguntas'},{value:'errors',label:`Solo errores (${errSet.size})`},{value:'marked',label:`Solo marcadas (${marked.size})`}]}/>
+        <Lbl>Número de preguntas</Lbl>
+        <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+          {[10,20,30,50,100].map(n=><button key={n} onClick={()=>setCfg({...cfg,n})} style={{padding:'7px 16px',borderRadius:7,fontWeight:600,fontSize:13,cursor:'pointer',background:cfg.n===n?T.blue:T.surface,border:`1px solid ${cfg.n===n?T.blue:T.border}`,color:cfg.n===n?'#fff':T.muted,boxShadow:sh.sm,fontFamily:FONT}}>{n}</button>)}
+        </div>
+        <Lbl>Tiempo por pregunta</Lbl>
+        <RadioGroup value={cfg.timer} onChange={v=>setCfg({...cfg,timer:Number(v)})} options={[{value:0,label:'Sin límite'},{value:30,label:'30 segundos'},{value:60,label:'1 minuto'},{value:90,label:'90 segundos'}]}/>
+        <Btn onClick={start} disabled={testQs.length===0} style={{marginTop:4}}>Comenzar →</Btn>
+        {testQs.length===0&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Genera preguntas en el Banco primero.</p>}
+      </div>
+    );
+  }
+
+  if(phase==='results'){
+    const correct=answers.filter((a,i)=>a.selected===session[i]?.correct).length;
+    const pct=Math.round(correct/session.length*100);
+    const [detail,setDetail]=useState(false);
+    useEffect(()=>{addSession({mode:'test',topics:[...new Set(session.map(q=>q.topic))],n:session.length,correct,wrong:answers.filter((a,i)=>a.selected!==null&&a.selected!==session[i]?.correct).length,blank:answers.filter(a=>a.selected===null).length,pct,score:correct,maxScore:session.length,duration:Math.round((Date.now()-startTs)/1000)});},[]);
+    return(
+      <div>
+        <Card style={{textAlign:'center',padding:'32px 24px',marginBottom:24}}>
+          <div style={{fontSize:48,marginBottom:10}}>{pct>=70?'🎉':pct>=50?'📚':'💪'}</div>
+          <div style={{fontSize:52,fontWeight:800,color:pct>=70?T.green:pct>=50?T.amber:T.red,lineHeight:1,letterSpacing:-2}}>{pct}%</div>
+          <div style={{fontSize:16,color:T.muted,marginTop:8}}>{correct} / {session.length} correctas</div>
+          <div style={{fontSize:12,color:T.dim,marginTop:4}}>{pct>=70?'¡Por encima del umbral!':pct>=50?'Cerca del umbral, repasa errores.':'Refuerza este bloque.'}</div>
+        </Card>
+        <div style={{display:'flex',gap:10,justifyContent:'center',marginBottom:20}}>
+          <Btn onClick={()=>{setPhase('setup');setAnswers([]);}}>Nuevo test</Btn>
+          <Btn variant="ghost" onClick={()=>setDetail(!detail)}>{detail?'Ocultar':'Ver'} respuestas</Btn>
+        </div>
+        {detail&&session.map((q,i)=>{const a=answers[i];const ok=a?.selected===q.correct;return <Card key={q.id} style={{padding:'12px 16px',marginBottom:8,borderLeft:`3px solid ${ok?T.green:T.red}`}}><div style={{marginBottom:4}}><span style={{fontSize:10,background:T.blueS,color:T.blueText,padding:'2px 8px',borderRadius:20,fontWeight:600}}>{q.topic}</span></div><p style={{margin:'4px 0 6px',fontSize:13,color:T.text,lineHeight:1.5}}>{q.question}</p><p style={{margin:0,fontSize:13,color:ok?T.greenDk:T.redDk}}>{ok?'✅':'❌'} {q.options[q.correct]}{!ok&&a?.selected!=null&&<span style={{color:T.dim}}> · Tuya: {q.options[a.selected]??'—'}</span>}</p>{q.explanation&&<p style={{margin:'6px 0 0',fontSize:12,color:T.muted,fontStyle:'italic',lineHeight:1.5}}>{q.explanation}</p>}</Card>;})}
+      </div>
+    );
+  }
+
+  const q=session[idx];const OPT=['A','B','C','D'];
+  return(
+    <div style={{maxWidth:700}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <span style={{fontSize:13,color:T.muted,fontWeight:500}}>Pregunta {idx+1}/{session.length}</span>
+          {cfg.timer>0&&<span style={{background:timeLeft<=10?T.redS:T.blueS,color:timeLeft<=10?T.red:T.blue,border:`1px solid ${timeLeft<=10?'#fca5a5':'#93c5fd'}`,padding:'3px 10px',borderRadius:6,fontWeight:700,fontSize:13,transition:'all 0.3s'}}>⏱ {timeLeft}s</span>}
+        </div>
+        <button onClick={()=>toggleMark(q.id)} style={{background:'none',border:'none',cursor:'pointer',fontSize:18,color:marked.has(q.id)?T.amber:T.dim}}>{marked.has(q.id)?'🔖':'🏷️'}</button>
+      </div>
+      <div style={{background:T.border,borderRadius:4,height:5,marginBottom:20}}><div style={{background:`linear-gradient(90deg,${T.blue},${T.teal})`,width:`${(idx/session.length)*100}%`,height:'100%',borderRadius:4,transition:'width 0.3s'}}/></div>
+      <span style={{fontSize:11,background:T.blueS,color:T.blueText,padding:'3px 10px',borderRadius:20,fontWeight:600}}>{q.topic}</span>
+      <div style={{margin:'14px 0',fontSize:16,fontWeight:500,color:T.text,lineHeight:1.75}}>{q.question}</div>
+      <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
+        {q.options.map((opt,i)=>{
+          let bg=T.surface,border=T.border,color=T.text,bl='3px solid transparent';
+          if(revealed){if(i===q.correct){bg=T.greenS;border='#86efac';color=T.greenText;bl=`3px solid ${T.green}`;}else if(i===selected&&i!==q.correct){bg=T.redS;border='#fca5a5';color=T.redText;bl=`3px solid ${T.red}`;}}
+          else if(selected===i){bg=T.blueS;border='#93c5fd';color=T.blueText;bl=`3px solid ${T.blue}`;}
+          return <button key={i} onClick={()=>!revealed&&handleReveal(i,session,idx)} disabled={revealed} style={{display:'flex',alignItems:'flex-start',gap:12,padding:'12px 16px',background:bg,border:`1px solid ${border}`,borderLeft:bl,borderRadius:8,cursor:revealed?'default':'pointer',color,textAlign:'left',fontSize:13,lineHeight:1.5,fontFamily:FONT,transition:'all 0.15s',boxShadow:sh.sm}}>
+            <span style={{fontWeight:700,minWidth:20,color:revealed&&i===q.correct?T.green:T.dim}}>{OPT[i]}</span>
+            <span style={{flex:1}}>{opt}</span>
+            {revealed&&i===q.correct&&<span>✅</span>}
+            {revealed&&i===selected&&i!==q.correct&&<span>❌</span>}
+          </button>;
+        })}
+      </div>
+      {revealed&&q.explanation&&<div style={{background:T.blueS,border:'1px solid #93c5fd',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'12px 16px',marginBottom:16,fontSize:13,color:T.blueText,lineHeight:1.6}}><strong>💡 </strong>{q.explanation}</div>}
+      {revealed&&<Btn onClick={()=>{setAnswers(prev=>[...prev,{selected,correct:q.correct}]);if(idx+1>=session.length)setPhase('results');else{setIdx(i=>i+1);setSelected(null);setRevealed(false);}}}>{idx+1>=session.length?'Ver resultados →':'Siguiente →'}</Btn>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SIMULACRO  ⚡ — examen real con penalización
+// ═══════════════════════════════════════════════════════════════════════════
+function Simulacro({testQs,recordAnswer,addSession}){
+  const [phase,setPhase]=useState('setup');
+  const [cfg,setCfg]=useState({section:'all',n:100,totalTime:120,penalty:'tercio'});
+  const [session,setSession]=useState([]);
+  const [answers,setAnswers]=useState([]); // null=blank, 0-3=selected
+  const [current,setCurrent]=useState(0);
+  const [markedQ,setMarkedQ]=useState(new Set());
+  const [timeLeft,setTimeLeft]=useState(0);
+  const [startTs,setStartTs]=useState(0);
+  const [results,setResults]=useState(null);
+  const timerRef=useRef(null);
+  const submitRef=useRef(null);
+
+  const penFactors={tercio:1/3,cuarto:1/4,ninguna:0};
+
+  const calcScore=(ans,sess,pen)=>{
+    let correct=0,wrong=0,blank=0;
+    ans.forEach((a,i)=>{if(a===null)blank++;else if(a===sess[i]?.correct)correct++;else wrong++;});
+    const score=Math.max(0,correct-wrong*penFactors[pen]);
+    return{correct,wrong,blank,score:Math.round(score*100)/100,maxScore:sess.length,pct:Math.round(score/sess.length*100)};
+  };
+
+  const handleSubmit=useCallback((ans,sess,cfg)=>{
+    clearInterval(timerRef.current);
+    const r=calcScore(ans,sess,cfg.penalty);
+    // Record answers to stats
+    ans.forEach((a,i)=>{
+      const q=sess[i];if(!q)return;
+      const correct=a===q.correct;
+      recordAnswer(q.id,q.topic,correct,a===null?0:correct?5:2);
+    });
+    setResults(r);
+    addSession({mode:'simulacro',topics:[...new Set(sess.map(q=>q.topic))],n:sess.length,...r,duration:Math.round((Date.now()-startTs)/1000)});
+    setPhase('results');
+  },[recordAnswer,addSession,startTs]);
+
+  useEffect(()=>{submitRef.current={handleSubmit,answers,session,cfg};},[handleSubmit,answers,session,cfg]);
+
+  useEffect(()=>{
+    if(phase!=='running')return;
+    timerRef.current=setInterval(()=>{
+      setTimeLeft(t=>{
+        if(t<=1){clearInterval(timerRef.current);const{handleSubmit:hs,answers:a,session:s,cfg:c}=submitRef.current;hs(a,s,c);return 0;}
+        return t-1;
+      });
+    },1000);
+    return()=>clearInterval(timerRef.current);
+  },[phase]);
+
+  const start=()=>{
+    let pool=testQs;
+    if(cfg.section!=='all'){const topics=SECTIONS.find(s=>s.id===cfg.section)?.topics;if(topics)pool=pool.filter(q=>topics.includes(q.topic));}
+    if(!pool.length)return alert('No hay preguntas. Genera primero en el Banco.');
+    const s=shuffle(pool).slice(0,Math.min(cfg.n,pool.length));
+    setSession(s);setAnswers(new Array(s.length).fill(null));setCurrent(0);setMarkedQ(new Set());setTimeLeft(cfg.totalTime*60);setStartTs(Date.now());setPhase('running');
+  };
+
+  const selectAnswer=(i)=>{
+    setAnswers(prev=>{const a=[...prev];a[current]=a[current]===i?null:i;return a;});
+  };
+
+  const toggleMarkQ=(i)=>{setMarkedQ(prev=>{const m=new Set(prev);m.has(i)?m.delete(i):m.add(i);return m;})};
+
+  // ── Setup ──
+  if(phase==='setup') return(
+    <div style={{maxWidth:500}}>
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:24}}>
+        <div style={{width:40,height:40,borderRadius:10,background:T.orangeS,border:`2px solid ${T.orange}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>⚡</div>
+        <div><h2 style={{fontSize:18,fontWeight:700,margin:0,color:T.text,letterSpacing:-0.3}}>Simulacro de examen</h2><p style={{color:T.muted,fontSize:13,margin:0}}>Condiciones reales: tiempo total, sin feedback inmediato, penalización por error</p></div>
+      </div>
+      <Lbl>Bloque temático</Lbl>
+      <Sel value={cfg.section} onChange={v=>setCfg({...cfg,section:v})}>
+        <option value="all">Temario completo — todos los bloques ({testQs.length} preg. disponibles)</option>
+        {SECTIONS.map(s=>{const n=testQs.filter(q=>s.topics.includes(q.topic)).length;return n>0?<option key={s.id} value={s.id}>{s.emoji} {s.name} ({n})</option>:null;})}
+      </Sel>
+      <Lbl>Número de preguntas</Lbl>
+      <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+        {[25,50,75,100].map(n=><button key={n} onClick={()=>setCfg({...cfg,n})} style={{padding:'7px 18px',borderRadius:7,fontWeight:600,fontSize:13,cursor:'pointer',background:cfg.n===n?T.orange:T.surface,border:`1px solid ${cfg.n===n?T.orange:T.border}`,color:cfg.n===n?'#fff':T.muted,boxShadow:sh.sm,fontFamily:FONT}}>{n}</button>)}
+      </div>
+      <Lbl>Tiempo total del examen</Lbl>
+      <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+        {[60,90,120,150,180].map(t=><button key={t} onClick={()=>setCfg({...cfg,totalTime:t})} style={{padding:'7px 16px',borderRadius:7,fontWeight:600,fontSize:13,cursor:'pointer',background:cfg.totalTime===t?T.orange:T.surface,border:`1px solid ${cfg.totalTime===t?T.orange:T.border}`,color:cfg.totalTime===t?'#fff':T.muted,boxShadow:sh.sm,fontFamily:FONT}}>{t} min</button>)}
+      </div>
+      <Lbl>Sistema de puntuación</Lbl>
+      <RadioGroup value={cfg.penalty} onChange={v=>setCfg({...cfg,penalty:v})} options={[{value:'tercio',label:'✅ +1 acierto · ❌ −1/3 error · ⬜ 0 en blanco (OPE estándar SESCAM)'},{value:'cuarto',label:'✅ +1 acierto · ❌ −1/4 error · ⬜ 0 en blanco'},{value:'ninguna',label:'✅ +1 acierto · ❌ 0 error · sin penalización'}]}/>
+      <Btn onClick={start} disabled={testQs.length<10} variant="orange" style={{marginTop:4}}>⚡ Comenzar simulacro →</Btn>
+      {testQs.length<10&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Necesitas al menos 10 preguntas test en el Banco.</p>}
+    </div>
+  );
+
+  // ── Results ──
+  if(phase==='results'&&results) return(
+    <div>
+      <Card style={{padding:'28px 32px',marginBottom:20,textAlign:'center'}}>
+        <div style={{fontSize:11,fontWeight:700,color:T.orange,letterSpacing:1.5,textTransform:'uppercase',marginBottom:12}}>Resultado del simulacro</div>
+        <div style={{display:'flex',justifyContent:'center',gap:32,marginBottom:20,flexWrap:'wrap'}}>
+          <div><div style={{fontSize:42,fontWeight:800,color:results.pct>=70?T.green:results.pct>=50?T.amber:T.red,lineHeight:1,letterSpacing:-2}}>{results.pct}%</div><div style={{fontSize:12,color:T.muted,marginTop:4}}>Nota</div></div>
+          <div style={{borderLeft:`1px solid ${T.border}`,paddingLeft:32}}><div style={{fontSize:28,fontWeight:700,color:T.greenDk}}>{results.correct}</div><div style={{fontSize:12,color:T.muted}}>Correctas</div></div>
+          <div><div style={{fontSize:28,fontWeight:700,color:T.red}}>{results.wrong}</div><div style={{fontSize:12,color:T.muted}}>Erróneas</div></div>
+          <div><div style={{fontSize:28,fontWeight:700,color:T.dim}}>{results.blank}</div><div style={{fontSize:12,color:T.muted}}>En blanco</div></div>
+        </div>
+        <div style={{background:results.pct>=70?T.greenS:results.pct>=50?T.amberS:T.redS,border:`1px solid ${results.pct>=70?'#86efac':results.pct>=50?'#fde68a':'#fca5a5'}`,borderRadius:8,padding:'10px 16px',display:'inline-block',marginBottom:16}}>
+          <span style={{fontSize:14,fontWeight:600,color:results.pct>=70?T.greenText:results.pct>=50?T.amberText:T.redText}}>
+            Puntuación: <strong>{results.score.toFixed(2)}</strong> / {results.maxScore} puntos
+          </span>
+        </div>
+        <div style={{fontSize:12,color:T.dim,marginBottom:4}}>
+          Fórmula: {results.correct} − {results.wrong} × {cfg.penalty==='tercio'?'1/3':cfg.penalty==='cuarto'?'1/4':'0'} = {results.score.toFixed(2)} puntos
+        </div>
+        <div style={{fontSize:12,color:T.muted}}>
+          {results.pct>=70?'✅ Superarías el examen si el umbral es el 70%':'❌ Por debajo del umbral de aprobado (70%)'}
+        </div>
+      </Card>
+      <div style={{display:'flex',gap:10,justifyContent:'center',marginBottom:24}}>
+        <Btn onClick={()=>{setPhase('setup');setResults(null);}} variant="orange">Nuevo simulacro</Btn>
+        <Btn variant="ghost" onClick={()=>{
+          const[detail,setDetail]=useState(false);
+        }}>Revisar respuestas</Btn>
+      </div>
+      {/* Review */}
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {session.map((q,i)=>{
+          const a=answers[i];const ok=a===q.correct;const blank=a===null;
+          return <Card key={q.id} style={{padding:'10px 14px',borderLeft:`3px solid ${blank?T.dim:ok?T.green:T.red}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{marginBottom:4,display:'flex',gap:6}}><span style={{fontSize:10,background:T.blueS,color:T.blueText,padding:'2px 8px',borderRadius:20,fontWeight:600}}>{q.topic}</span></div>
+                <p style={{margin:'4px 0 5px',fontSize:13,color:T.text,lineHeight:1.5}}>{q.question}</p>
+                <p style={{margin:0,fontSize:12,color:blank?T.dim:ok?T.greenDk:T.redDk}}>{blank?'⬜ En blanco':ok?'✅':' ❌'} {blank?'':q.options[q.correct]}{!blank&&!ok&&a!=null?<span style={{color:T.muted}}> · Tuya: {q.options[a]}</span>:''}</p>
+                {q.explanation&&<p style={{margin:'4px 0 0',fontSize:11,color:T.muted,fontStyle:'italic'}}>{q.explanation}</p>}
+              </div>
+              <span style={{fontSize:11,fontWeight:700,color:blank?T.dim:ok?T.greenDk:T.redDk,flexShrink:0}}>{blank?'0':ok?'+1':`-${cfg.penalty==='tercio'?'0.33':cfg.penalty==='cuarto'?'0.25':'0'}`}</span>
+            </div>
+          </Card>;
+        })}
+      </div>
+    </div>
+  );
+
+  // ── Running ──
+  const q=session[current];if(!q)return null;
+  const OPT=['A','B','C','D'];
+  const answered=answers.filter(a=>a!==null).length;
+  const timeColor=timeLeft<300?T.red:timeLeft<600?T.amber:T.teal;
+
+  return(
+    <div>
+      {/* Top bar */}
+      <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:'12px 18px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',boxShadow:sh.sm,flexWrap:'wrap',gap:8}}>
+        <div style={{display:'flex',alignItems:'center',gap:16}}>
+          <div style={{textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:timeColor,fontVariantNumeric:'tabular-nums',letterSpacing:1}}>{fmtTime(timeLeft)}</div>
+            <div style={{fontSize:10,color:T.dim,marginTop:-2}}>tiempo restante</div>
+          </div>
+          <div style={{width:1,height:36,background:T.border}}/>
+          <div style={{textAlign:'center'}}>
+            <div style={{fontSize:16,fontWeight:700,color:T.text}}>{answered}/{session.length}</div>
+            <div style={{fontSize:10,color:T.dim}}>respondidas</div>
+          </div>
+          <div style={{textAlign:'center'}}>
+            <div style={{fontSize:16,fontWeight:700,color:T.amber}}>{markedQ.size}</div>
+            <div style={{fontSize:10,color:T.dim}}>marcadas</div>
+          </div>
+        </div>
+        <Btn onClick={()=>{if(confirm(`¿Entregar el examen? Quedan ${session.length-answered} preguntas sin responder (contarán como blanco).`))handleSubmit(answers,session,cfg);}} variant="orange" style={{padding:'8px 20px'}}>Entregar examen</Btn>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 260px',gap:16,alignItems:'start'}}>
+        {/* Question */}
+        <div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+            <span style={{fontSize:11,background:T.blueS,color:T.blueText,padding:'3px 10px',borderRadius:20,fontWeight:600}}>{q.topic}</span>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{fontSize:13,color:T.muted}}>Pregunta {current+1}/{session.length}</span>
+              <button onClick={()=>toggleMarkQ(current)} style={{background:markedQ.has(current)?T.amberS:'none',border:`1px solid ${markedQ.has(current)?T.amber:T.border}`,borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer',color:markedQ.has(current)?T.amber:T.dim,fontFamily:FONT}}>
+                {markedQ.has(current)?'🔖 Marcada':'🏷️ Marcar'}
+              </button>
+            </div>
+          </div>
+          <div style={{margin:'14px 0',fontSize:16,fontWeight:500,color:T.text,lineHeight:1.75}}>{q.question}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
+            {q.options.map((opt,i)=>{
+              const sel=answers[current]===i;
+              return <button key={i} onClick={()=>selectAnswer(i)} style={{display:'flex',alignItems:'flex-start',gap:12,padding:'12px 16px',background:sel?T.blueS:T.surface,border:`1px solid ${sel?T.blue:T.border}`,borderLeft:`3px solid ${sel?T.blue:'transparent'}`,borderRadius:8,cursor:'pointer',color:sel?T.blueText:T.text,textAlign:'left',fontSize:13,lineHeight:1.5,fontFamily:FONT,transition:'all 0.15s',boxShadow:sh.sm}}>
+                <span style={{fontWeight:700,minWidth:20,color:sel?T.blue:T.dim}}>{OPT[i]}</span>
+                <span style={{flex:1}}>{opt}</span>
+                {sel&&<span style={{color:T.blue}}>●</span>}
+              </button>;
+            })}
+          </div>
+          <div style={{display:'flex',gap:10}}>
+            <Btn variant="ghost" disabled={current===0} onClick={()=>setCurrent(c=>c-1)} style={{padding:'8px 16px'}}>← Anterior</Btn>
+            <Btn variant="ghost" disabled={current===session.length-1} onClick={()=>setCurrent(c=>c+1)} style={{padding:'8px 16px'}}>Siguiente →</Btn>
+          </div>
+        </div>
+
+        {/* Question grid */}
+        <Card style={{padding:'14px'}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.muted,marginBottom:10,letterSpacing:0.5,textTransform:'uppercase'}}>Navegación</div>
+          <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+            {session.map((_,i)=>{
+              const isAnswered=answers[i]!==null;
+              const isMark=markedQ.has(i);
+              const isCur=i===current;
+              return <button key={i} onClick={()=>setCurrent(i)} style={{width:28,height:28,borderRadius:5,fontSize:11,fontWeight:isCur?700:400,cursor:'pointer',fontFamily:FONT,transition:'all 0.1s',
+                background:isCur?T.orange:isMark?T.amberS:isAnswered?T.blueS:T.card,
+                border:`1.5px solid ${isCur?T.orange:isMark?T.amber:isAnswered?T.blue:T.border}`,
+                color:isCur?'#fff':isMark?T.amber:isAnswered?T.blue:T.dim}}>{i+1}</button>;
+            })}
+          </div>
+          <div style={{marginTop:12,display:'flex',flexDirection:'column',gap:5}}>
+            {[{c:T.blue,bg:T.blueS,label:'Respondida'},{c:T.amber,bg:T.amberS,label:'Marcada'},{c:T.dim,bg:T.card,label:'Sin responder'},{c:'#fff',bg:T.orange,label:'Actual'}].map(l=><div key={l.label} style={{display:'flex',alignItems:'center',gap:6}}><div style={{width:12,height:12,borderRadius:3,background:l.bg,border:`1.5px solid ${l.c}`}}/><span style={{fontSize:11,color:T.muted}}>{l.label}</span></div>)}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FLASHCARD MODE
+// ═══════════════════════════════════════════════════════════════════════════
+function FlashcardMode({fcQs,dueQs,sr,marked,toggleMark,recordAnswer,addSession}){
+  const [phase,setPhase]=useState('setup');
+  const [mode,setMode]=useState('due');
+  const [section,setSection]=useState('all');
+  const [session,setSession]=useState([]);
+  const [idx,setIdx]=useState(0);
+  const [flipped,setFlipped]=useState(false);
+  const [correct,setCorrect]=useState(0);
+  const [startTs,setStartTs]=useState(0);
+
+  const start=()=>{
+    let pool=mode==='due'?dueQs:mode==='all'?fcQs:fcQs.filter(q=>(SECTIONS.find(s=>s.id===section)?.topics||[]).includes(q.topic));
+    if(!pool.length)return alert('No hay flashcards para esta selección.');
+    setSession(shuffle(pool));setIdx(0);setFlipped(false);setCorrect(0);setStartTs(Date.now());setPhase('running');
+  };
+
+  const rate=async quality=>{
+    const q=session[idx];
+    await recordAnswer(q.id,q.topic,quality>=3,quality);
+    if(quality>=3)setCorrect(c=>c+1);
+    if(idx+1>=session.length){
+      const c2=quality>=3?correct+1:correct;
+      addSession({mode:'flashcard',topics:[...new Set(session.map(q=>q.topic))],n:session.length,correct:c2,wrong:session.length-c2,blank:0,pct:Math.round(c2/session.length*100),score:c2,maxScore:session.length,duration:Math.round((Date.now()-startTs)/1000)});
+      setPhase('done');return;
+    }
+    setIdx(i=>i+1);setFlipped(false);
+  };
+
+  if(phase==='setup')return(
+    <div style={{maxWidth:460}}>
+      <h2 style={{fontSize:18,fontWeight:700,marginBottom:20,color:T.text,letterSpacing:-0.3}}>🃏 Flashcards · Repaso espaciado SM-2</h2>
+      <Lbl>Sesión</Lbl>
+      <RadioGroup value={mode} onChange={setMode} options={[{value:'due',label:`📅 Pendientes de hoy (${dueQs.length})`},{value:'all',label:`🔄 Todas (${fcQs.length})`},{value:'section',label:'📂 Por bloque temático'}]}/>
+      {mode==='section'&&<><Lbl>Bloque</Lbl><Sel value={section} onChange={setSection}>{SECTIONS.map(s=>{const n=fcQs.filter(q=>s.topics.includes(q.topic)).length;return<option key={s.id} value={s.id}>{s.emoji} {s.name} ({n})</option>;})}</Sel></>}
+      <Btn onClick={start} disabled={fcQs.length===0} variant="teal">Empezar →</Btn>
+      {fcQs.length===0&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Genera flashcards en el Banco primero.</p>}
+    </div>
+  );
+
+  if(phase==='done')return(
+    <Card style={{textAlign:'center',padding:'48px 24px',maxWidth:400,margin:'0 auto'}}>
+      <div style={{fontSize:48,marginBottom:12}}>🎓</div>
+      <div style={{fontSize:20,fontWeight:700,color:T.text}}>¡Sesión completada!</div>
+      <div style={{color:T.muted,marginTop:8,marginBottom:8,fontSize:14}}>Has repasado {session.length} flashcards</div>
+      <div style={{fontSize:14,fontWeight:600,color:T.green,marginBottom:20}}>{correct}/{session.length} correctas ({Math.round(correct/session.length*100)}%)</div>
+      <Btn variant="teal" onClick={()=>setPhase('setup')}>Nueva sesión</Btn>
+    </Card>
+  );
+
+  if(idx>=session.length)return null;
+  const q=session[idx];const srInfo=sr[q.id]||{};
+  return(
+    <div style={{maxWidth:600}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+        <span style={{color:T.muted,fontSize:13,fontWeight:500}}>Tarjeta {idx+1}/{session.length}</span>
+        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+          {srInfo.reps>0&&<span style={{fontSize:11,color:T.dim,background:T.card,padding:'2px 8px',borderRadius:20}}>Rep. {srInfo.reps} · {srInfo.interval}d</span>}
+          <button onClick={()=>toggleMark(q.id)} style={{background:'none',border:'none',cursor:'pointer',fontSize:18,color:marked.has(q.id)?T.amber:T.dim}}>{marked.has(q.id)?'🔖':'🏷️'}</button>
+        </div>
+      </div>
+      <div style={{background:T.border,borderRadius:4,height:5,marginBottom:20}}><div style={{background:`linear-gradient(90deg,${T.teal},${T.green})`,width:`${(idx/session.length)*100}%`,height:'100%',borderRadius:4,transition:'width 0.3s'}}/></div>
+      <div onClick={()=>setFlipped(!flipped)} style={{background:flipped?T.blueS:T.surface,border:`1.5px solid ${flipped?T.blue:T.border}`,borderTop:`4px solid ${flipped?T.blue:T.teal}`,borderRadius:12,padding:'36px 28px',minHeight:200,cursor:'pointer',textAlign:'center',transition:'all 0.25s',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',userSelect:'none',boxShadow:sh.md}}>
+        {!flipped?<><div style={{fontSize:10,color:T.teal,fontWeight:700,letterSpacing:1.5,marginBottom:14,textTransform:'uppercase'}}>Pregunta · {q.topic}</div><div style={{fontSize:17,fontWeight:500,color:T.text,lineHeight:1.75}}>{q.front||q.question}</div><div style={{marginTop:20,fontSize:11,color:T.dim}}>Toca para ver la respuesta</div></>:<><div style={{fontSize:10,color:T.blue,fontWeight:700,letterSpacing:1.5,marginBottom:14,textTransform:'uppercase'}}>Respuesta</div><div style={{fontSize:15,color:T.blueText,lineHeight:1.8}}>{q.back||q.explanation||'—'}</div></>}
+      </div>
+      {flipped&&(
+        <div style={{marginTop:20}}>
+          <div style={{fontSize:12,color:T.muted,textAlign:'center',marginBottom:14}}>¿Cómo ha ido? El sistema ajusta el próximo repaso automáticamente.</div>
+          <div style={{display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap'}}>
+            {[{q:0,l:'De nuevo',c:T.red,sub:'<1d',bg:T.redS,b:'#fca5a5'},{q:2,l:'Difícil',c:T.amber,sub:'~1d',bg:T.amberS,b:'#fde68a'},{q:4,l:'Bien',c:T.blue,sub:`~${srInfo.interval||1}d`,bg:T.blueS,b:'#93c5fd'},{q:5,l:'Fácil',c:T.green,sub:'más días',bg:T.greenS,b:'#86efac'}].map(r=>(
+              <button key={r.q} onClick={()=>rate(r.q)} style={{background:r.bg,color:r.c,border:`1px solid ${r.b}`,borderRadius:8,padding:'10px 20px',cursor:'pointer',fontWeight:600,fontSize:13,display:'flex',flexDirection:'column',alignItems:'center',gap:3,fontFamily:FONT,boxShadow:sh.sm}}>
+                {r.l}<span style={{fontSize:10,opacity:0.7}}>{r.sub}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BANK MANAGER — con exportar
+// ═══════════════════════════════════════════════════════════════════════════
+function BankManager({qs,saveQs,preselect,onPreselect,pdfMeta,apiKey}){
+  const [subTab,setSubTab]=useState('ai');
+  const [fSection,setFSection]=useState('all');
+  const [fType,setFType]=useState('all');
+  const [selSection,setSelSection]=useState(preselect?.section||null);
+  const [aiTopic,setAiTopic]=useState(preselect?.topic||'');
+  const [aiType,setAiType]=useState('test');
+  const [aiN,setAiN]=useState(5);
+  const [aiLoading,setAiLoading]=useState(false);
+  const [aiMsg,setAiMsg]=useState('');
+  const [batchProgress,setBatchProgress]=useState(null); // {done,total,current}
+  const [pdfFile,setPdfFile]=useState(null);
+  const [pdfName,setPdfName]=useState('');
+  const [selectedPdfIds,setSelectedPdfIds]=useState(new Set()); // IDs seleccionados para esta generación
+  const [upText,setUpText]=useState('');
+  const [upMsg,setUpMsg]=useState('');
+  const fileRef=useRef(null);
+
+  useEffect(()=>{if(preselect){setSelSection(preselect.section);setAiTopic(preselect.topic||'');setSubTab('ai');onPreselect?.();}},[preselect]);
+
+  // Cuando cambia el tema, seleccionar todos los PDFs adjuntos por defecto
+  const attachedPdfFiles=aiTopic?(pdfMeta[topicPdfKey(aiTopic)]||[]):[];
+  useEffect(()=>{
+    setSelectedPdfIds(new Set(attachedPdfFiles.map(f=>f.id)));
+  },[aiTopic,JSON.stringify(attachedPdfFiles.map(f=>f.id))]);
+  const hasAttached=attachedPdfFiles.length>0;
+  const selectedFiles=attachedPdfFiles.filter(f=>selectedPdfIds.has(f.id));
+  const usingAttachedPdf=!pdfFile&&hasAttached;
+  const nSelected=pdfFile?1:selectedFiles.length;
+  const effectivePdfLabel=pdfFile?pdfFile.name:nSelected>0?`${nSelected} PDF${nSelected>1?'s':''} seleccionado${nSelected>1?'s':''}`:null;
+
+  const togglePdfId=id=>setSelectedPdfIds(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n;});
+
+  const filtered=qs.filter(q=>{const sec=fSection==='all'||(SECTIONS.find(s=>s.id===fSection)?.topics.includes(q.topic));return sec&&(fType==='all'||q.type===fType);});
+
+  const handlePdfSelect=e=>{const f=e.target.files?.[0];if(!f)return;if(f.size>80*1024*1024){alert('PDF > 80 MB');return;}setPdfFile(f);setPdfName(f.name);setAiMsg('');};
+  const removePdf=()=>{setPdfFile(null);setPdfName('');if(fileRef.current)fileRef.current.value='';};
+
+  const exportJSON=()=>{
+    const blob=new Blob([JSON.stringify(qs,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=`banco_opelab_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);
+  };
+
+  const generateAI=async()=>{
+    if(!aiTopic.trim())return alert('Elige o escribe un tema.');
+    setAiLoading(true);setAiMsg('');
+    const isTest=aiType==='test';
+    const jsonFmt=isTest?`[{"id":"x","topic":"${aiTopic}","type":"test","question":"...","options":["A","B","C","D"],"correct":0,"explanation":"explicación técnica con datos concretos"}]`:`[{"id":"x","topic":"${aiTopic}","type":"flashcard","front":"concepto breve","back":"respuesta completa con valores y mecanismos"}]`;
+
+    // Resolver fuentes de conocimiento PDF
+    let pdfBlobs=[];
+    if(pdfFile){
+      setAiMsg('📄 Procesando PDF...');
+      const chunks=await splitPdfIfNeeded(pdfFile);
+      pdfBlobs=[chunks[0].file];
+    } else if(hasAttached&&selectedFiles.length>0){
+      setAiMsg(`📂 Cargando y fusionando ${selectedFiles.length} PDF${selectedFiles.length>1?'s':''}...`);
+      const rawBlobs=[];
+      for(const f of selectedFiles){
+        const blob=await idbLoad(topicFilePdfKey(aiTopic,f.id)).catch(()=>null);
+        if(blob)rawBlobs.push(blob instanceof File?blob:new File([blob],f.name,{type:'application/pdf'}));
+      }
+      if(rawBlobs.length>0){
+        const {file,pages}=await mergePdfsWithLimit(rawBlobs);
+        pdfBlobs=[file];
+        setAiMsg(`📄 ${pages} páginas fusionadas — generando...`);
+        await new Promise(r=>setTimeout(r,600));
+      }
+    }
+
+    const hasPdfs=pdfBlobs.length>0;
+    const nDocs=pdfBlobs.length;
+
+    const promptPdf=`Eres el mejor preparador de oposiciones FEA Laboratorio Clínico de España, con 20 años de experiencia analizando exámenes reales del sistema MIR y OPE. Tienes delante un fragmento del Tietz o Henry sobre el tema "${aiTopic}" (temario SESCAM 2025).
+
+Tu misión: generar exactamente ${aiN} ${isTest?'preguntas tipo test':'flashcards'} de MÁXIMA CALIDAD extrayendo los datos más importantes del documento adjunto.
+
+${isTest?`REQUISITOS PARA CADA PREGUNTA TEST:
+1. ENUNCIADO: Planteado como caso clínico real o situación de laboratorio concreta. Nunca preguntas del tipo "¿Cuál es la definición de X?". Usa frases como: "Un paciente con..., ¿cuál sería el resultado esperado?", "En el laboratorio se recibe una muestra con..., ¿qué indica?", "¿Cuál de los siguientes valores es diagnóstico de...?".
+2. OPCIONES: 4 opciones (A-D). Todas deben ser plausibles técnicamente. Los distractores deben ser errores reales que comete un estudiante que no ha estudiado bien el tema, no respuestas absurdas.
+3. RESPUESTA CORRECTA: Basada en datos concretos del documento (valores numéricos, clasificaciones, mecanismos).
+4. EXPLICACIÓN: Mínimo 3 frases. Debe incluir: (a) por qué es correcta la respuesta con el dato concreto del libro, (b) por qué son incorrectas las otras opciones, (c) un dato adicional relevante del tema.
+
+TIPOS DE PREGUNTAS A INCLUIR (varía entre estos):
+- Interpretación de resultados numéricos (valores de referencia, puntos de corte diagnósticos)
+- Mecanismos fisiopatológicos (¿qué enzima/proteína/vía está alterada?)
+- Diagnóstico diferencial (¿qué prueba confirmaría/descartaría?)
+- Interferencias analíticas y preanalítica
+- Principios metodológicos e instrumentación
+- Correlación clinicoanálítica (síntoma + resultado → diagnóstico)`:
+`REQUISITOS PARA CADA FLASHCARD:
+- ANVERSO (front): Concepto técnico concreto formulado como pregunta directa. Incluye contexto clínico cuando sea posible.
+- REVERSO (back): Respuesta completa con: valor numérico exacto O mecanismo específico O clasificación con criterios. Mínimo 2-3 frases. Añade un dato nemotécnico o perla clínica si existe.`}
+
+ESTÁNDARES DE CALIDAD INAMOVIBLES:
+✓ Cada pregunta debe contener al menos UN dato que solo conoce quien ha estudiado el libro (valor numérico exacto, nombre de enzima/proteína específica, porcentaje, tiempo, clasificación con criterios)
+✓ Nivel de dificultad: apto para examen FEA real (escala 7-9/10 de dificultad)
+✓ Terminología en español médico correcto
+✗ PROHIBIDO: preguntas de cultura general, definiciones simples, datos obvios para cualquier graduado en Ciencias de la Salud`;
+
+    const promptNoPdf=`Eres el mejor preparador de oposiciones FEA Laboratorio Clínico de España, con 20 años de experiencia analizando exámenes reales del sistema MIR y OPE. Conoces en profundidad el Tietz Textbook of Laboratory Medicine (Rifai et al., 2022) y el Henry El Laboratorio en el Diagnóstico Clínico (McPherson & Pincus, 2022).
+
+Tu misión: generar exactamente ${aiN} ${isTest?'preguntas tipo test':'flashcards'} de MÁXIMA CALIDAD sobre el tema "${aiTopic}" del temario oficial SESCAM 2025 (Anexo II, DOCM 9/04/2025), como si las extrajeras directamente de esos libros.
+
+${isTest?`REQUISITOS PARA CADA PREGUNTA TEST:
+1. ENUNCIADO: Planteado como caso clínico real o situación de laboratorio concreta. Nunca preguntas del tipo "¿Cuál es la definición de X?". Usa frases como: "Un paciente con..., ¿cuál sería el resultado esperado?", "En el laboratorio se recibe una muestra con..., ¿qué indica?", "¿Cuál de los siguientes valores es diagnóstico de...?".
+2. OPCIONES: 4 opciones (A-D). Todas deben ser plausibles técnicamente. Los distractores deben ser errores reales que comete un estudiante que no ha estudiado bien el tema, no respuestas absurdas.
+3. RESPUESTA CORRECTA: Basada en datos concretos del Tietz o Henry (valores numéricos, clasificaciones, mecanismos).
+4. EXPLICACIÓN: Mínimo 3 frases. Debe incluir: (a) por qué es correcta la respuesta con el dato concreto del libro, (b) por qué son incorrectas las otras opciones, (c) un dato adicional relevante del tema.
+
+TIPOS DE PREGUNTAS A INCLUIR (varía entre estos):
+- Interpretación de resultados numéricos (valores de referencia, puntos de corte diagnósticos)
+- Mecanismos fisiopatológicos (¿qué enzima/proteína/vía está alterada?)
+- Diagnóstico diferencial (¿qué prueba confirmaría/descartaría?)
+- Interferencias analíticas y fase preanalítica
+- Principios metodológicos e instrumentación del laboratorio
+- Correlación clínico-analítica (síntoma + resultado → diagnóstico)`:
+`REQUISITOS PARA CADA FLASHCARD:
+- ANVERSO (front): Concepto técnico concreto formulado como pregunta directa. Incluye contexto clínico cuando sea posible.
+- REVERSO (back): Respuesta completa con: valor numérico exacto O mecanismo específico O clasificación con criterios. Mínimo 2-3 frases. Añade un dato nemotécnico o perla clínica si existe.`}
+
+ESTÁNDARES DE CALIDAD INAMOVIBLES:
+✓ Cada pregunta debe contener al menos UN dato que solo conoce quien ha estudiado Tietz/Henry (valor numérico exacto, nombre de enzima/proteína específica, porcentaje, tiempo, clasificación con criterios)
+✓ Nivel de dificultad: apto para examen FEA real (escala 7-9/10 de dificultad)
+✓ Terminología en español médico correcto
+✓ Distribuye las preguntas entre distintos subapartados del tema, no repitas el mismo concepto
+✗ PROHIBIDO: preguntas de cultura general, definiciones simples, datos obvios para cualquier graduado en Ciencias de la Salud`;
+
+    const basePrompt=hasPdfs?promptPdf:promptNoPdf;
+
+    // ── Batching automático ─────────────────────────────────────────────────
+    const BATCH_SIZE=10;
+    const BATCH_DELAY_MS=15000;
+    const totalBatches=Math.ceil(aiN/BATCH_SIZE);
+    const allGenerated=[];
+
+    // Preparar PDF base64 una sola vez
+    let pdfContent=null;
+    if(pdfBlobs.length>0){
+      const b64=await blobToB64(pdfBlobs[0]);
+      pdfContent={type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}};
+    }
+
+    setBatchProgress({done:0,total:totalBatches,current:0});
+
+    for(let batch=0;batch<totalBatches;batch++){
+      const nThisBatch=Math.min(BATCH_SIZE,aiN-batch*BATCH_SIZE);
+      setBatchProgress({done:batch,total:totalBatches,current:nThisBatch});
+
+      if(batch>0){
+        for(let t=BATCH_DELAY_MS/1000;t>0;t--){
+          setAiMsg(`⏳ Lote ${batch}/${totalBatches} completado · Esperando ${t}s...`);
+          await new Promise(r=>setTimeout(r,1000));
+        }
+      }
+
+      setAiMsg(`🤖 Generando lote ${batch+1}/${totalBatches} (${nThisBatch} preguntas)...`);
+
+      const jsonFmtBatch=isTest
+        ?`[{"id":"x","topic":"${aiTopic}","type":"test","question":"...","options":["A","B","C","D"],"correct":0,"explanation":"explicación técnica con datos concretos"}]`
+        :`[{"id":"x","topic":"${aiTopic}","type":"flashcard","front":"concepto breve","back":"respuesta completa con valores y mecanismos"}]`;
+
+      const antiRepeat=allGenerated.length>0?` Ya se generaron ${allGenerated.length} preguntas en lotes anteriores — genera preguntas DIFERENTES sobre distintos subapartados, sin repetir conceptos ya cubiertos.`:'';
+      const fullPrompt=`${basePrompt}\n\nResponde ÚNICAMENTE con array JSON válido, sin texto previo ni posterior, sin backticks:\n${jsonFmtBatch}\n\nGenera exactamente ${nThisBatch} objetos.${antiRepeat}`;
+
+      try{
+        const content=[];
+        if(pdfContent) content.push(pdfContent);
+        content.push({type:'text',text:fullPrompt});
+        const res=await fetch('/api/anthropic',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8000,messages:[{role:'user',content}]})
+        });
+        if(!res.ok){
+          const errData=await res.json().catch(()=>({}));
+          const errMsg=errData?.error?.message||`HTTP ${res.status}`;
+          if(allGenerated.length>0){
+            const withIds=allGenerated.map(q=>({...q,id:uid()}));
+            await saveQs([...qs,...withIds]);
+            setAiMsg(`⚠️ Error en lote ${batch+1}: ${errMsg}. Se guardaron ${allGenerated.length} preguntas previas.`);
+          }else{setAiMsg(`❌ Error de API: ${errMsg}`);}
+          setAiLoading(false);setBatchProgress(null);return;
+        }
+        const data=await res.json();
+        const text=(data.content||[]).map(c=>c.text||'').join('').trim();
+        const generated=JSON.parse(text.replace(/```json|```/g,'').trim());
+        allGenerated.push(...generated);
+        setAiMsg(`✅ Lote ${batch+1}/${totalBatches} — ${allGenerated.length}/${aiN} preguntas generadas`);
+      }catch(e){
+        console.error(e);
+        if(allGenerated.length>0){
+          const withIds=allGenerated.map(q=>({...q,id:uid()}));
+          await saveQs([...qs,...withIds]);
+          setAiMsg(`⚠️ ${e.message} — se guardaron ${allGenerated.length} preguntas.`);
+        }else{setAiMsg(`❌ ${e.message}`);}
+        setAiLoading(false);setBatchProgress(null);return;
+      }
+    }
+
+    const withIds=allGenerated.map(q=>({...q,id:uid()}));
+    await saveQs([...qs,...withIds]);
+    const src=hasPdfs?' desde PDF':' (Tietz/Henry)';
+    setAiMsg(`✅ ${withIds.length} preguntas añadidas${src} en ${totalBatches} lote${totalBatches>1?'s':''}.`);
+    removePdf();
+    setBatchProgress(null);
+    setAiLoading(false);
+  };
+
+  const importJSON=async()=>{try{const p=JSON.parse(upText);if(!Array.isArray(p))throw new Error('Debe ser array []');await saveQs([...qs,...p.map(q=>({...q,id:q.id||uid()}))]);setUpMsg(`✅ ${p.length} importadas.`);setUpText('');}catch(e){setUpMsg('❌ JSON inválido: '+e.message);}};
+
+  const inputSt={width:'100%',background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',marginBottom:14,boxSizing:'border-box',fontFamily:FONT,boxShadow:sh.sm};
+
+  // Contar cuántos temas del selector tienen PDF adjunto
+  const currentSectionTopics=selSection?SECTIONS.find(s=>s.id===selSection)?.topics||[]:[];
+  const topicsWithPdf=new Set(Object.entries(pdfMeta).filter(([,v])=>Array.isArray(v)&&v.length>0).map(([k])=>ALL_TOPICS.find(t=>topicPdfKey(t)===k)||'').filter(Boolean));
+
+  return(
+    <div>
+      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
+        {[{id:'ai',label:'🤖 Generar con IA'},{id:'list',label:`📋 Preguntas (${qs.length})`},{id:'upload',label:'📤 Importar JSON'}].map(t=><button key={t.id} onClick={()=>setSubTab(t.id)} style={{padding:'10px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab===t.id?600:400,color:subTab===t.id?T.blue:T.muted,borderBottom:`2px solid ${subTab===t.id?T.blue:'transparent'}`,fontFamily:FONT}}>{t.label}</button>)}
+      </div>
+
+      {subTab==='ai'&&(
+        <div style={{maxWidth:580}}>
+          <p style={{color:T.muted,fontSize:13,marginTop:0,marginBottom:20,lineHeight:1.6}}>Selecciona bloque y tema. Si el tema tiene un PDF adjunto (desde el Temario), se cargará automáticamente como fuente de conocimiento.</p>
+          <Lbl>1. Bloque temático (SESCAM 2025)</Lbl>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(175px,1fr))',gap:6,marginBottom:18}}>
+            {SECTIONS.map(s=>{
+              const nPdfs=s.topics.reduce((sum,t)=>{const arr=pdfMeta[topicPdfKey(t)];return sum+(Array.isArray(arr)?arr.length:0);},0);
+              return <button key={s.id} onClick={()=>{setSelSection(s.id);setAiTopic(s.topics[0]);}} style={{background:selSection===s.id?s.colorS:T.surface,border:`1.5px solid ${selSection===s.id?s.color:T.border}`,borderLeft:`3px solid ${s.color}`,color:selSection===s.id?s.color:T.muted,borderRadius:8,padding:'8px 10px',fontSize:12,cursor:'pointer',textAlign:'left',fontFamily:FONT,boxShadow:sh.sm,position:'relative'}}>
+                {s.emoji} {s.name}
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:3}}>
+                  <span style={{fontSize:10,opacity:0.6}}>T{s.temas[0]}{s.temas.length>1?`–T${s.temas[s.temas.length-1]}`:''}</span>
+                  {nPdfs>0&&<span style={{fontSize:9,background:T.greenS,color:T.greenText,padding:'1px 5px',borderRadius:10,fontWeight:700}}>📄 {nPdfs}</span>}
+                </div>
+              </button>;
+            })}
+          </div>
+
+          {selSection&&<><Lbl>2. Tema específico</Lbl>
+            <div style={{display:'flex',flexDirection:'column',gap:5,marginBottom:16,maxHeight:220,overflowY:'auto',paddingRight:4}}>
+              {currentSectionTopics.map(t=>{
+                const hasPdfAttached=topicsWithPdf.has(t);
+                return <label key={t} style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer',padding:'7px 10px',borderRadius:7,background:aiTopic===t?T.blueS:'transparent',border:`1px solid ${aiTopic===t?T.blue:hasPdfAttached?'#86efac':T.border}`}}>
+                  <input type="radio" checked={aiTopic===t} onChange={()=>setAiTopic(t)} style={{marginTop:3,flexShrink:0,accentColor:T.blue}}/>
+                  <span style={{fontSize:13,color:aiTopic===t?T.blue:T.text,lineHeight:1.4,fontWeight:aiTopic===t?500:400,flex:1}}>{t}</span>
+                  {hasPdfAttached&&<span title={`${pdfMeta[topicPdfKey(t)]?.length||0} PDF(s) adjuntos`} style={{fontSize:10,background:T.greenS,color:T.greenText,padding:'1px 6px',borderRadius:10,fontWeight:700,flexShrink:0}}>📄 {pdfMeta[topicPdfKey(t)]?.length||0}</span>}
+                </label>;
+              })}
+            </div></>}
+
+          <Lbl>{selSection?'3.':'2.'} O escribe un tema libre</Lbl>
+          <input value={aiTopic} onChange={e=>setAiTopic(e.target.value)} onKeyDown={e=>e.key==='Enter'&&generateAI()} placeholder="Ej: T15. Interpretación gasometría arterial..." style={inputSt}/>
+
+          {/* PDF source: adjunto automático o manual */}
+          <Lbl>{selSection?'4.':'3.'} Fuente de conocimiento (PDF del capítulo)</Lbl>
+          {usingAttachedPdf&&(
+            <div style={{background:T.greenS,border:'1px solid #86efac',borderLeft:`3px solid ${T.green}`,borderRadius:8,padding:'10px 14px',marginBottom:10}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <span style={{fontSize:16}}>📗</span>
+                  <span style={{fontSize:13,color:T.greenText,fontWeight:600}}>PDFs adjuntos — selecciona cuáles usar</span>
+                </div>
+                <div style={{display:'flex',gap:6}}>
+                  <button onClick={()=>setSelectedPdfIds(new Set(attachedPdfFiles.map(f=>f.id)))} style={{fontSize:10,background:'none',border:`1px solid ${T.border2}`,borderRadius:5,padding:'2px 7px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Todo</button>
+                  <button onClick={()=>setSelectedPdfIds(new Set())} style={{fontSize:10,background:'none',border:`1px solid ${T.border2}`,borderRadius:5,padding:'2px 7px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Ninguno</button>
+                </div>
+              </div>
+              {attachedPdfFiles.map(f=>{
+                const sel=selectedPdfIds.has(f.id);
+                const mb=(f.size/1024/1024).toFixed(1);
+                return(
+                  <label key={f.id} style={{display:'flex',alignItems:'center',gap:8,background:sel?'#bbf7d0':T.card,borderRadius:6,padding:'5px 8px',marginBottom:3,cursor:'pointer',border:`1px solid ${sel?'#86efac':T.border}`,transition:'all 0.15s'}}>
+                    <input type="checkbox" checked={sel} onChange={()=>togglePdfId(f.id)} style={{accentColor:T.green,flexShrink:0}}/>
+                    <span style={{fontSize:11,color:sel?T.greenText:T.muted,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:sel?600:400}}>📄 {f.name}</span>
+                    <span style={{fontSize:10,color:T.dim,flexShrink:0}}>{mb} MB</span>
+                  </label>
+                );
+              })}
+              {selectedFiles.length===0&&<div style={{fontSize:11,color:T.amber,marginTop:4,padding:'4px 8px',background:'#fef9c3',borderRadius:5}}>⚠️ Ningún PDF seleccionado — se generará sin fuente del libro</div>}
+              {selectedFiles.length>0&&<div style={{fontSize:11,color:T.greenText,marginTop:6,fontWeight:600}}>{selectedFiles.length} PDF{selectedFiles.length>1?'s':''} · {selectedFiles.reduce((a,f)=>a+f.size,0)>200000000?<span style={{color:T.red}}>⚠️ Puede superar el límite</span>:`${(selectedFiles.reduce((a,f)=>a+f.size,0)/1024/1024).toFixed(1)} MB total`}</div>}
+              <button onClick={()=>fileRef.current?.click()} style={{marginTop:6,fontSize:10,background:'none',border:`1px solid ${T.border2}`,borderRadius:5,padding:'3px 9px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>+ Añadir otro PDF</button>
+            </div>
+          )}
+          {pdfFile&&(
+            <div style={{background:T.blueS,border:'1px solid #93c5fd',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'10px 14px',marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>📄</span><div><div style={{fontSize:13,color:T.blue,fontWeight:600}}>{pdfName}</div><div style={{fontSize:11,color:T.muted}}>PDF subido manualmente (anula el adjunto del tema)</div></div></div>
+              <button onClick={removePdf} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
+            </div>
+          )}
+          {!usingAttachedPdf&&!pdfFile&&(
+            <div onClick={()=>fileRef.current?.click()} style={{border:`2px dashed ${T.border2}`,borderRadius:8,padding:'14px',textAlign:'center',cursor:'pointer',marginBottom:14,background:T.card,transition:'all 0.15s'}} onMouseEnter={e=>{e.currentTarget.style.borderColor=T.blue;e.currentTarget.style.background=T.blueS;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border2;e.currentTarget.style.background=T.card;}}>
+              <div style={{fontSize:22,marginBottom:4}}>📄</div>
+              <div style={{color:T.muted,fontSize:13,fontWeight:500}}>Subir capítulo PDF manualmente</div>
+              <div style={{color:T.dim,fontSize:11,marginTop:2}}>O adjunta PDFs permanentes a cada tema desde el Temario · Máx. 80 MB</div>
+            </div>
+          )}
+          <input ref={fileRef} type="file" accept=".pdf" onChange={handlePdfSelect} style={{display:'none'}}/>
+
+          <Lbl>Tipo de pregunta</Lbl>
+          <RadioGroup value={aiType} onChange={setAiType} options={[{value:'test',label:'🧪 Test OPE (4 opciones + explicación)'},{value:'flashcard',label:'🃏 Flashcard (concepto / respuesta)'}]}/>
+          <Lbl>Cantidad</Lbl>
+          <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap',alignItems:'center'}}>
+            {[10,20,50,100].map(n=><button key={n} onClick={()=>setAiN(n)} style={{padding:'7px 14px',borderRadius:7,fontWeight:600,fontSize:13,cursor:'pointer',background:aiN===n?T.teal:T.surface,border:`1px solid ${aiN===n?T.teal:T.border}`,color:aiN===n?'#fff':T.muted,boxShadow:sh.sm,fontFamily:FONT}}>{n}</button>)}
+            <div style={{display:'flex',alignItems:'center',gap:6,marginLeft:4}}>
+              <input
+                type="number" min="1" max="1000" value={aiN}
+                onChange={e=>{const v=Math.min(1000,Math.max(1,parseInt(e.target.value)||1));setAiN(v);}}
+                style={{width:70,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'7px 10px',fontSize:13,outline:'none',fontFamily:FONT,textAlign:'center'}}
+              />
+              <span style={{fontSize:11,color:T.dim}}>máx. 1000</span>
+            </div>
+          </div>
+          {aiN>10&&(()=>{
+            const batches=Math.ceil(aiN/10);
+            const minsTier1=Math.round(batches*15/60);
+            const minsTier2=Math.round(batches*5/60);
+            return(
+              <div style={{fontSize:11,color:T.muted,marginBottom:14,padding:'8px 12px',background:T.card,borderRadius:6,border:`1px solid ${T.border}`,lineHeight:1.6}}>
+                ⏱ <strong>{batches} lotes</strong> de 10 preguntas
+                <span style={{color:T.dim}}> · Tier 1: ~{minsTier1} min · Tier 2: ~{minsTier2} min</span>
+                {aiN>=100&&<div style={{color:T.amber,marginTop:3}}>💡 Puedes dejar la app en segundo plano — guarda automáticamente cada lote completado.</div>}
+              </div>
+            );
+          })()}
+          {batchProgress&&(
+            <div style={{marginBottom:14,background:T.card,borderRadius:8,padding:'12px 14px',border:`1px solid ${T.border}`}}>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:T.muted,marginBottom:6}}>
+                <span>Lote <strong style={{color:T.text}}>{batchProgress.done+1}</strong> de {batchProgress.total}</span>
+                <span style={{fontWeight:600,color:T.teal}}>{Math.round(batchProgress.done/batchProgress.total*100)}% · {batchProgress.done*10} preguntas guardadas</span>
+              </div>
+              <div style={{background:T.border,borderRadius:4,height:8,overflow:'hidden'}}>
+                <div style={{background:`linear-gradient(90deg,${T.teal},${T.green})`,width:`${Math.round(batchProgress.done/batchProgress.total*100)}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/>
+              </div>
+              {batchProgress.total>5&&<div style={{fontSize:10,color:T.dim,marginTop:5}}>No cierres esta pestaña · Las preguntas se guardan lote a lote</div>}
+            </div>
+          )}
+          <Btn onClick={generateAI} disabled={aiLoading} variant="teal">
+            {aiLoading?'⏳ Generando...':effectivePdfLabel?`📄 Generar desde ${effectivePdfLabel}`:'✨ Generar con IA (Tietz/Henry)'}
+          </Btn>
+          {aiMsg&&<div style={{marginTop:12,padding:'10px 14px',borderRadius:8,fontSize:13,lineHeight:1.5,background:aiMsg.startsWith('✅')?T.greenS:aiMsg.startsWith('❌')?T.redS:T.card,color:aiMsg.startsWith('✅')?T.greenText:aiMsg.startsWith('❌')?T.redText:T.muted,border:`1px solid ${aiMsg.startsWith('✅')?'#86efac':aiMsg.startsWith('❌')?'#fca5a5':T.border}`,borderLeft:`3px solid ${aiMsg.startsWith('✅')?T.green:aiMsg.startsWith('❌')?T.red:T.border2}`}}>{aiMsg}</div>}
+        </div>
+      )}
+
+      {subTab==='list'&&(
+        <div>
+          <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap',alignItems:'center'}}>
+            <select value={fSection} onChange={e=>setFSection(e.target.value)} style={{background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'7px 12px',fontSize:12,fontFamily:FONT,boxShadow:sh.sm}}>
+              <option value="all">Todos los bloques</option>{SECTIONS.map(s=><option key={s.id} value={s.id}>{s.emoji} {s.name}</option>)}
+            </select>
+            <select value={fType} onChange={e=>setFType(e.target.value)} style={{background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'7px 12px',fontSize:12,fontFamily:FONT,boxShadow:sh.sm}}>
+              <option value="all">Test + Flashcards</option><option value="test">Solo test</option><option value="flashcard">Solo flashcards</option>
+            </select>
+            <span style={{color:T.dim,fontSize:12,marginLeft:'auto'}}>{filtered.length} mostradas</span>
+            {qs.length>0&&<><button onClick={exportJSON} style={{background:T.blueS,color:T.blue,border:'1px solid #93c5fd',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>⬇️ Exportar JSON</button><button onClick={async()=>{if(confirm(`¿Borrar TODAS las ${qs.length} preguntas?`)){await idbClearQs();setQs([]);}}} style={{background:T.redS,color:T.red,border:'1px solid #fca5a5',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontFamily:FONT}}>🗑 Borrar todo</button></>}
+          </div>
+          {filtered.length===0?<Card style={{padding:'50px',textAlign:'center'}}><div style={{fontSize:36,marginBottom:8}}>📭</div><div style={{color:T.dim}}>{qs.length===0?'Banco vacío. Genera preguntas con IA.':'Sin preguntas para este filtro.'}</div></Card>:<div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {filtered.map(q=><Card key={q.id} style={{padding:'10px 14px',display:'flex',gap:12,borderLeft:`3px solid ${q.type==='test'?T.blue:T.teal}`}}>
+              <div style={{flex:1}}>
+                <div style={{display:'flex',gap:6,marginBottom:6,flexWrap:'wrap'}}>
+                  <span style={{fontSize:10,background:q.type==='test'?T.blueS:T.tealS,color:q.type==='test'?T.blueText:T.tealText,padding:'2px 8px',borderRadius:20,fontWeight:600}}>{q.type==='test'?'Test OPE':'Flashcard'}</span>
+                  <span style={{fontSize:10,background:T.card,color:T.muted,padding:'2px 8px',borderRadius:20,border:`1px solid ${T.border}`}}>{q.topic}</span>
+                </div>
+                <p style={{margin:0,fontSize:13,color:T.text,lineHeight:1.5}}>{q.type==='test'?q.question:(q.front||q.question)}</p>
+              </div>
+              <button onClick={async()=>{if(confirm('¿Eliminar?'))await saveQs(qs.filter(x=>x.id!==q.id));}} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:18,lineHeight:1,padding:0,flexShrink:0}}>×</button>
+            </Card>)}
+          </div>}
+        </div>
+      )}
+
+      {subTab==='upload'&&(
+        <div style={{maxWidth:600}}>
+          <h3 style={{color:T.text,fontSize:16,fontWeight:600,marginBottom:4}}>📤 Importar banco JSON</h3>
+          <p style={{color:T.muted,fontSize:13,marginTop:0,marginBottom:12}}>Usa los campos "topic" del temario SESCAM para estadísticas correctas. Acepta mezcla de test y flashcard.</p>
+          <textarea value={upText} onChange={e=>setUpText(e.target.value)} placeholder={'[\n  {"topic":"T15. Equilibrio ácido-base...","type":"test","question":"...","options":["A","B","C","D"],"correct":0,"explanation":"..."}\n]'} style={{width:'100%',minHeight:140,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:12,fontSize:12,fontFamily:'monospace',boxSizing:'border-box',resize:'vertical',outline:'none',boxShadow:sh.sm}}/>
+          <div style={{marginTop:10,display:'flex',gap:10,alignItems:'center'}}>
+            <Btn onClick={importJSON} disabled={!upText.trim()}>Importar</Btn>
+            {upMsg&&<span style={{fontSize:13,color:upMsg.startsWith('✅')?T.green:T.red}}>{upMsg}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLANIFICADOR
+// ═══════════════════════════════════════════════════════════════════════════
+function Planificador({stats,examDate,setExamDate,goToBank}){
+  const daysLeft=useMemo(()=>examDate?Math.max(0,Math.ceil((new Date(examDate).setHours(23,59,59)-Date.now())/86400000)):null,[examDate]);
+
+  const topicStatus=useMemo(()=>{
+    const m={};ALL_TOPICS.forEach(t=>{m[t]=getStatus(t,stats);});return m;
+  },[stats]);
+
+  const counts=useMemo(()=>{
+    const c={sinEmpezar:0,necesitaTrabajo:0,enProgreso:0,dominado:0};
+    Object.values(topicStatus).forEach(s=>c[s]++);return c;
+  },[topicStatus]);
+
+  const prioritized=useMemo(()=>[...ALL_TOPICS].sort((a,b)=>STATUS_ORDER[topicStatus[a]]-STATUS_ORDER[topicStatus[b]]),[topicStatus]);
+  const todaySuggestions=useMemo(()=>prioritized.filter(t=>topicStatus[t]!=='dominado').slice(0,5),[prioritized,topicStatus]);
+
+  const statusItems=[
+    {key:'sinEmpezar',  label:'Sin empezar',    icon:'⬜'},
+    {key:'necesitaTrabajo',label:'Necesita trabajo',icon:'🔴'},
+    {key:'enProgreso',  label:'En progreso',    icon:'🟡'},
+    {key:'dominado',    label:'Dominado (≥75%)',icon:'✅'},
+  ];
+
+  return(
+    <div>
+      <h2 style={{fontSize:18,fontWeight:700,margin:'0 0 4px',color:T.text,letterSpacing:-0.3}}>📅 Planificador de estudio</h2>
+      <p style={{color:T.muted,fontSize:13,margin:'0 0 24px'}}>Organiza el estudio de los 60 temas de la OPE SESCAM según tu disponibilidad.</p>
+
+      {/* Exam date */}
+      <Card style={{padding:'18px 22px',marginBottom:20}}>
+        <div style={{display:'flex',alignItems:'center',gap:20,flexWrap:'wrap'}}>
+          <div style={{flex:1}}>
+            <Lbl>Fecha del examen</Lbl>
+            <input type="date" value={examDate} onChange={e=>setExamDate(e.target.value)}
+              style={{background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',fontFamily:FONT,boxShadow:sh.sm,width:'100%',maxWidth:220,boxSizing:'border-box'}}
+            />
+            {!examDate&&<p style={{color:T.muted,fontSize:12,marginTop:6,marginBottom:0}}>Introduce la fecha del examen para ver cuánto tiempo queda y planificar mejor.</p>}
+          </div>
+          {daysLeft!==null&&(
+            <div style={{textAlign:'center',background:daysLeft<30?T.redS:daysLeft<90?T.amberS:T.blueS,border:`1px solid ${daysLeft<30?'#fca5a5':daysLeft<90?'#fde68a':'#93c5fd'}`,borderRadius:12,padding:'16px 24px'}}>
+              <div style={{fontSize:48,fontWeight:800,color:daysLeft<30?T.red:daysLeft<90?T.amber:T.blue,lineHeight:1,letterSpacing:-2}}>{daysLeft}</div>
+              <div style={{fontSize:12,color:T.muted,marginTop:4}}>días para la OPE</div>
+              {daysLeft>0&&<div style={{fontSize:11,color:T.dim,marginTop:2}}>~{Math.round(daysLeft/7)} semanas</div>}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Status overview */}
+      <Card style={{padding:'18px 22px',marginBottom:20}}>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:14,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.blue,borderRadius:2,display:'block'}}/>Estado del temario ({ALL_TOPICS.length} temas)</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:10,marginBottom:14}}>
+          {statusItems.map(s=><div key={s.key} style={{background:STATUS_BG[s.key],border:`1px solid ${STATUS_COLORS[s.key]}30`,borderRadius:8,padding:'12px',textAlign:'center'}}>
+            <div style={{fontSize:20,marginBottom:4}}>{s.icon}</div>
+            <div style={{fontSize:22,fontWeight:700,color:STATUS_COLORS[s.key]}}>{counts[s.key]}</div>
+            <div style={{fontSize:11,color:T.muted}}>{s.label}</div>
+          </div>)}
+        </div>
+        <div style={{background:T.border,borderRadius:4,height:8,overflow:'hidden',display:'flex'}}>
+          {statusItems.map(s=><div key={s.key} style={{flex:counts[s.key],background:STATUS_COLORS[s.key],transition:'flex 0.5s',minWidth:counts[s.key]>0?2:0}}/>)}
+        </div>
+        <div style={{fontSize:11,color:T.muted,marginTop:6,textAlign:'right'}}>
+          {Math.round(counts.dominado/ALL_TOPICS.length*100)}% dominado · {Math.round((counts.dominado+counts.enProgreso)/ALL_TOPICS.length*100)}% con algún avance
+        </div>
+      </Card>
+
+      {/* Today suggestions */}
+      {todaySuggestions.length>0&&(
+        <Card style={{padding:'18px 22px',marginBottom:20}}>
+          <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:4,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.orange,borderRadius:2,display:'block'}}/>Estudia hoy</div>
+          <p style={{color:T.muted,fontSize:12,marginTop:0,marginBottom:14}}>Temas prioritarios ordenados por necesidad. Los primeros son los que más impactan tu nota.</p>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {todaySuggestions.map((t,i)=>{
+              const st=topicStatus[t];const sec=SECTIONS.find(s=>s.topics.includes(t));const ts=stats[t];
+              return <div key={t} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 14px',background:T.card,border:`1px solid ${T.border}`,borderRadius:8}}>
+                <div style={{width:24,height:24,borderRadius:'50%',background:STATUS_BG[st],border:`1.5px solid ${STATUS_COLORS[st]}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,color:STATUS_COLORS[st],flexShrink:0}}>{i+1}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,color:T.text,fontWeight:500,lineHeight:1.4}}>{t}</div>
+                  <div style={{display:'flex',gap:8,marginTop:3,alignItems:'center'}}>
+                    <span style={{fontSize:10,background:STATUS_BG[st],color:STATUS_COLORS[st],padding:'1px 7px',borderRadius:20,fontWeight:600}}>{STATUS_LABELS[st]}</span>
+                    {ts&&<span style={{fontSize:10,color:T.dim}}>{ts.c}/{ts.t} correctas ({Math.round(ts.c/ts.t*100)}%)</span>}
+                    {sec&&<span style={{fontSize:10,color:sec.color}}>{sec.emoji} {sec.name}</span>}
+                  </div>
+                </div>
+                <button onClick={()=>goToBank(sec?.id||'all',t)} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:'6px 12px',fontSize:11,fontWeight:600,cursor:'pointer',color:T.blue,fontFamily:FONT,flexShrink:0,boxShadow:sh.sm}}>✨ Generar preguntas</button>
+              </div>;
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Full topic list */}
+      <Card style={{padding:'18px 22px'}}>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:14,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.green,borderRadius:2,display:'block'}}/>Todos los temas ordenados por prioridad</div>
+        <div style={{display:'flex',flexDirection:'column',gap:5}}>
+          {prioritized.map(t=>{
+            const st=topicStatus[t];const ts=stats[t];const sec=SECTIONS.find(s=>s.topics.includes(t));
+            return <div key={t} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',borderRadius:7,background:T.card,border:`1px solid ${T.border}`}}>
+              <span style={{width:8,height:8,borderRadius:'50%',background:STATUS_COLORS[st],flexShrink:0}}/>
+              <span style={{fontSize:12,color:T.text,flex:1,lineHeight:1.3}}>{t}</span>
+              {ts?<span style={{fontSize:11,fontWeight:600,color:ts.c/ts.t>=0.75?T.green:ts.c/ts.t>=0.5?T.amber:T.red,flexShrink:0}}>{Math.round(ts.c/ts.t*100)}%</span>:<span style={{fontSize:10,color:T.dim,flexShrink:0,background:STATUS_BG[st],padding:'1px 6px',borderRadius:10}}>{STATUS_LABELS[st]}</span>}
+              <button onClick={()=>goToBank(sec?.id||'all',t)} style={{background:'none',border:`1px solid ${T.border}`,borderRadius:5,padding:'3px 8px',fontSize:10,cursor:'pointer',color:T.blue,fontFamily:FONT,flexShrink:0}}>✨</button>
+            </div>;
+          })}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STATS VIEW — con historial de sesiones
+// ═══════════════════════════════════════════════════════════════════════════
+function StatsView({stats,qs,errSet,marked,sr,sessions}){
+  const totalA=Object.values(stats).reduce((a,b)=>a+b.t,0);
+  const totalC=Object.values(stats).reduce((a,b)=>a+b.c,0);
+  const acc=totalA?Math.round(totalC/totalA*100):0;
+  const fcQs=qs.filter(q=>q.type==='flashcard');
+  const learned=fcQs.filter(q=>(sr[q.id]?.reps||0)>=3).length;
+  const studied=ALL_TOPICS.filter(t=>stats[t]?.t>0).length;
+  const dominated=ALL_TOPICS.filter(t=>getStatus(t,stats)==='dominado').length;
+
+  return(
+    <div>
+      <h2 style={{fontSize:18,fontWeight:700,marginBottom:20,color:T.text,letterSpacing:-0.3}}>📈 Estadísticas de progreso</h2>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:12,marginBottom:28}}>
+        {[{l:'Respondidas',v:totalA,c:T.blue,i:'📝'},{l:'Acierto global',v:`${acc}%`,c:acc>=70?T.green:acc>=50?T.amber:T.red,i:'🎯'},{l:'Temas estudiados',v:`${studied}/${ALL_TOPICS.length}`,c:T.teal,i:'📋'},{l:'Temas dominados',v:dominated,c:T.green,i:'🏆'},{l:'FC aprendidas',v:`${learned}/${fcQs.length}`,c:T.purple,i:'🧠'},{l:'En error',v:errSet.size,c:T.red,i:'❌'}].map(s=>(
+          <Card key={s.l} style={{padding:'16px'}}>
+            <div style={{width:32,height:32,borderRadius:8,background:s.c+'18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,marginBottom:10}}>{s.i}</div>
+            <div style={{fontSize:22,fontWeight:700,color:s.c,lineHeight:1}}>{s.v}</div>
+            <div style={{fontSize:12,color:T.muted,marginTop:4}}>{s.l}</div>
+          </Card>
+        ))}
+      </div>
+
+      {/* Session history */}
+      {sessions.length>0&&(
+        <Card style={{padding:'18px 22px',marginBottom:20}}>
+          <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:14,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.orange,borderRadius:2,display:'block'}}/>Historial de sesiones ({sessions.length})</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {sessions.slice(0,15).map(s=>{
+              const modeColor={test:T.blue,simulacro:T.orange,flashcard:T.teal}[s.mode]||T.muted;
+              const modeLabel={test:'Test OPE',simulacro:'Simulacro ⚡',flashcard:'Flashcards'}[s.mode]||s.mode;
+              const dur=s.duration?Math.round(s.duration/60)+'min':null;
+              return <div key={s.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:T.card,borderRadius:8,border:`1px solid ${T.border}`}}>
+                <span style={{background:modeColor+'18',color:modeColor,padding:'2px 8px',borderRadius:20,fontSize:11,fontWeight:600,flexShrink:0,minWidth:80,textAlign:'center'}}>{modeLabel}</span>
+                <span style={{fontSize:12,color:T.muted,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.topics?.slice(0,2).join(', ')||'—'}{s.topics?.length>2?` +${s.topics.length-2}`:''}</span>
+                <span style={{fontSize:12,color:T.dim,flexShrink:0}}>{s.n} preg.</span>
+                {dur&&<span style={{fontSize:11,color:T.dim,flexShrink:0}}>{dur}</span>}
+                <span style={{fontSize:13,fontWeight:700,color:s.pct>=70?T.green:s.pct>=50?T.amber:T.red,flexShrink:0,minWidth:38,textAlign:'right'}}>{s.pct}%</span>
+                <span style={{fontSize:11,color:T.dim,flexShrink:0}}>{fmtDate(s.date)}</span>
+              </div>;
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Per section */}
+      {Object.keys(stats).length===0?<Card style={{padding:'50px',textAlign:'center'}}><div style={{fontSize:36,marginBottom:8}}>📊</div><div style={{color:T.dim}}>Responde preguntas para ver tu progreso.</div></Card>:SECTIONS.map(s=>{
+        const ss=Object.entries(stats).filter(([t])=>s.topics.includes(t));if(!ss.length)return null;
+        const tot=ss.reduce((a,[,v])=>a+v.t,0);const cor=ss.reduce((a,[,v])=>a+v.c,0);const pct=Math.round(cor/tot*100);
+        return <Card key={s.id} style={{padding:'16px 20px',marginBottom:12}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{width:28,height:28,borderRadius:6,background:s.colorS,display:'flex',alignItems:'center',justifyContent:'center',fontSize:14}}>{s.emoji}</div>
+              <span style={{fontSize:14,fontWeight:600,color:T.text}}>{s.name}</span>
+            </div>
+            <span style={{fontWeight:700,color:pct>=70?T.green:pct>=50?T.amber:T.red,fontSize:14}}>{pct}%</span>
+          </div>
+          <PBar pct={pct} color={s.color}/>
+          <div style={{display:'flex',flexDirection:'column',gap:5,marginTop:10}}>
+            {ss.map(([topic,sv])=>{const tp=Math.round(sv.c/sv.t*100);return <div key={topic} style={{display:'flex',alignItems:'center',gap:8,paddingLeft:10}}>
+              <span style={{width:4,height:4,borderRadius:'50%',background:STATUS_COLORS[getStatus(topic,stats)],flexShrink:0}}/>
+              <span style={{fontSize:12,color:T.muted,flex:1}}>{topic}</span>
+              <span style={{fontSize:11,color:T.dim}}>{sv.c}/{sv.t}</span>
+              <span style={{fontSize:12,fontWeight:600,color:tp>=70?T.green:tp>=50?T.amber:T.red,minWidth:30,textAlign:'right'}}>{tp}%</span>
+            </div>;})}
+          </div>
+        </Card>;
+      })}
+    </div>
+  );
+}
