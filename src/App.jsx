@@ -574,7 +574,7 @@ export default function App(){
           <span style={{fontWeight:700,fontSize:15,color:T.text}}>⚙️ Ajustes</span>
         </div>
       </div>
-      <div style={{maxWidth:1100,margin:'0 auto',padding:'32px 24px'}}>
+      <div style={{padding:'32px 40px'}}>
         <Ajustes apiKey={apiKey} onSave={saveApiKey}/>
       </div>
     </div>
@@ -583,7 +583,7 @@ export default function App(){
   return(
     <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14}}>
       <div style={{background:'rgba(255,255,255,0.85)',backdropFilter:'blur(10px)',borderBottom:`1px solid ${T.border}`,boxShadow:sh.sm,position:'sticky',top:0,zIndex:50}}>
-        <div style={{maxWidth:1100,margin:'0 auto',padding:'0 24px'}}>
+        <div style={{padding:'0 40px'}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',paddingTop:14,paddingBottom:6}}>
             <div style={{display:'flex',alignItems:'center',gap:12}}>
               <div style={{width:36,height:36,borderRadius:12,background:`linear-gradient(135deg,${T.green},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,boxShadow:sh.sm}}>🔬</div>
@@ -606,7 +606,7 @@ export default function App(){
         </div>
       </div>
 
-      <div style={{maxWidth:1100,margin:'0 auto',padding:'32px 24px'}}>
+      <div style={{padding:'32px 40px'}}>
         {normalizedTab==='panel'   &&<PanelTab shared={shared} examDate={examDate} sessions={sessions} stats={stats} setExamDate={setExamDate} goToBank={goToBank} setTab={setTab} errSet={errSet} dueQs={dueQs}/>}
         {normalizedTab==='temario' &&<TemarioConEstudio setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} studyPreselect={studyPreselect} onStudyPreselect={()=>setStudyPreselect(null)} goToStudy={t=>{setStudyPreselect(t);setTab('temario');}}/>}
         {normalizedTab==='practica'&&<PracticaTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs}/>}
@@ -910,7 +910,6 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                   <div style={{fontSize:11,color:T.muted,marginTop:2}}>{tStr} · {s.temas.length} temas · {count} preg. en banco</div>
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
-                  {s.tietz!=='—'&&<span style={{fontSize:10,color:T.blueText,background:T.blueS,padding:'2px 8px',borderRadius:20,fontWeight:600,border:`1px solid ${T.border2}`}}>Tietz</span>}
                   {acc!==null&&<span style={{fontWeight:700,fontSize:15,color:acc>=70?T.green:acc>=50?T.amber:T.red,minWidth:36,textAlign:'right'}}>{acc}%</span>}
                   <span style={{color:T.dim,fontSize:18,transition:'transform 0.2s',transform:isOpen?'rotate(90deg)':'none',lineHeight:1}}>›</span>
                 </div>
