@@ -94,27 +94,27 @@ async function splitPdfIfNeeded(file){
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 const T={
-  bg:'#f0f4f8',surface:'#ffffff',card:'#f8fafc',
-  border:'#e2e8f0',border2:'#cbd5e1',
-  text:'#0f172a',muted:'#475569',dim:'#94a3b8',
-  blue:'#2563eb',blueDk:'#1d4ed8',blueS:'#dbeafe',blueText:'#1e3a8a',
-  green:'#16a34a',greenDk:'#15803d',greenS:'#dcfce7',greenText:'#14532d',
-  teal:'#0d9488',tealDk:'#0f766e',tealS:'#ccfbf1',tealText:'#134e4a',
-  amber:'#d97706',amberS:'#fef3c7',amberText:'#78350f',
-  red:'#dc2626',redDk:'#b91c1c',redS:'#fee2e2',redText:'#7f1d1d',
-  purple:'#7c3aed',purpleDk:'#6d28d9',purpleS:'#ede9fe',purpleText:'#3b0764',
-  orange:'#ea580c',orangeS:'#fff7ed',orangeText:'#7c2d12',
+  bg:'#edf6f2',surface:'#ffffff',card:'#f4faf7',
+  border:'#cce4da',border2:'#aed0c4',
+  text:'#0c2820',muted:'#3d7060',dim:'#8ab5a8',
+  blue:'#2057b8',blueDk:'#174494',blueS:'#eaf1fc',blueText:'#174494',
+  green:'#177a5a',greenDk:'#105e44',greenS:'#e6f7f1',greenText:'#0b4232',
+  teal:'#0882a8',tealDk:'#066888',tealS:'#e0f4fa',tealText:'#054f68',
+  amber:'#c47d0a',amberS:'#fef6e4',amberText:'#7a4d06',
+  red:'#c82020',redDk:'#a01818',redS:'#fdf0f0',redText:'#7a1212',
+  purple:'#6b34d4',purpleDk:'#5828aa',purpleS:'#f2eeff',purpleText:'#3d1d82',
+  orange:'#d45010',orangeS:'#fdf3ec',orangeText:'#7a2e08',
 };
-const FONT="'Inter',system-ui,sans-serif";
-const sh={sm:'0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04)',md:'0 4px 6px rgba(0,0,0,.05),0 2px 4px rgba(0,0,0,.04)'};
+const FONT="'Syne',system-ui,sans-serif";
+const sh={sm:'0 1px 4px rgba(0,40,20,.07),0 1px 2px rgba(0,40,20,.04)',md:'0 4px 12px rgba(0,40,20,.08),0 2px 4px rgba(0,40,20,.04)'};
 
 // ── Sections ─────────────────────────────────────────────────────────────────
 const SECTIONS=[
-  {id:'comun',name:'Temario Común y Legislación',emoji:'⚖️',color:'#475569',colorS:'#f1f5f9',colorBorder:'#cbd5e1',desc:'Constitución, autonomía CLM, leyes sanitarias, SESCAM, legislación laboral y ética',tietz:'—',henry:'—',temas:[1,2,3,4,5,6],
+  {id:'comun',name:'Temario Común y Legislación',emoji:'⚖️',color:'#5a8a7a',colorS:'#edf6f2',colorBorder:'#aed0c4',desc:'Constitución, autonomía CLM, leyes sanitarias, SESCAM, legislación laboral y ética',tietz:'—',henry:'—',temas:[1,2,3,4,5,6],
    topics:['T1. Constitución Española: derechos fundamentales y protección de la salud','T1. Estatuto de Autonomía CLM: instituciones y competencias de la Junta. Igualdad y violencia de género','T2. Ley General de Sanidad: organización del SNS, áreas de salud, CCAA','T2. SESCAM: funciones, organización y estructura. Ley de Ordenación Sanitaria CLM','T3. Ley de cohesión y calidad del SNS: prestaciones, garantías, Consejo Interterritorial','T4. Estatuto Marco del personal estatutario. Ley de Prevención de Riesgos Laborales','T5. Ley de derechos y deberes en salud CLM. Documentación sanitaria (Decreto 24/2011)','T6. Plan Dignifica SESCAM: humanización de la asistencia. Estratificación de crónicos']},
   {id:'fundamentos',name:'Fundamentos del Laboratorio',emoji:'🏛️',color:T.blue,colorS:T.blueS,colorBorder:'#93c5fd',desc:'Preanalítica, control de calidad, postanalítica, estadística, gestión, ISO 15189, SIL, instrumentación',tietz:'Secc. I–II caps. 1–9, 16–30',henry:'Parte 1 caps. 1–14',temas:[7,8,9,10,11,12,13,14],
    topics:['T7. Fase preanalítica: obtención, transporte, conservación y criterios de rechazo de muestras','T8. Control de calidad analítico: CCI, PECS/EQA, reglas de Westgard, Seis Sigma, variabilidad biológica','T9. Fase postanalítica: informe del laboratorio, valores de referencia, valores críticos, valor del cambio','T10. Bioestadística: descriptiva, inferencial, correlación, evaluación de pruebas diagnósticas (Se/Sp/VPP/VPN)','T11. Gestión del laboratorio clínico: gestión por procesos, RRHH, indicadores, cuadros de mando','T12. Modelos de gestión de calidad: ISO 15189, Joint Commission, EFQM. Bioética, protección de datos','T13. SIL, inteligencia artificial, Big Data y ciberseguridad en el laboratorio clínico','T14. Principios metodológicos: espectrofotometría, electroforesis, cromatografía, masas, POCT, automatización']},
-  {id:'bioquimica',name:'Bioquímica Clínica',emoji:'🧬',color:'#7c3aed',colorS:'#ede9fe',colorBorder:'#c4b5fd',desc:'Gases, riñón, mineral, glucosa, lípidos, proteínas, hígado, corazón, inflamación, endocrinología, fármacos',tietz:'Secc. III–IV caps. 31–51',henry:'Parte 2 caps. 15–28',temas:[15,16,17,18,19,20,21,22,23,24,25,26,27],
+  {id:'bioquimica',name:'Bioquímica Clínica',emoji:'🧬',color:'#6b34d4',colorS:'#f2eeff',colorBorder:'#c4aff0',desc:'Gases, riñón, mineral, glucosa, lípidos, proteínas, hígado, corazón, inflamación, endocrinología, fármacos',tietz:'Secc. III–IV caps. 31–51',henry:'Parte 2 caps. 15–28',temas:[15,16,17,18,19,20,21,22,23,24,25,26,27],
    topics:['T15. Equilibrio ácido-base y gases sanguíneos: fisiología, gasometría arterial, cooximetría','T16. Función renal y equilibrio hidroelectrolítico: FGe, proteinuria, osmolalidad, patología tubular','T17. Metabolismo mineral: hierro, calcio, magnesio, fósforo, metabolismo óseo y vitamina D','T18. Hidratos de carbono: metabolismo glucídico, diabetes mellitus, HbA1c, insulina, péptido C','T19. Lípidos y lipoproteínas: dislipemias, síndrome metabólico, riesgo cardiovascular','T20. Proteínas plasmáticas: electroforesis, paraproteínas, cadenas ligeras libres, enzimología, porfirias','T21. Función hepatobiliar: marcadores, hepatopatía aguda y crónica, índices de fibrosis, autoinmunidad hepática','T22. Función cardiaca y muscular: troponinas, BNP, síndrome coronario agudo, insuficiencia cardíaca','T23. Marcadores de inflamación y sepsis: PCR, PCT, IL-6, ferritina, dímero D','T24. Función gastrointestinal: páncreas, malabsorción, EII, estudio de heces, sangre oculta','T25. Marcadores tumorales: PSA, AFP, CEA, CA 125, CA 19-9; biopsia líquida, ADN circulante','T26. Función endocrina: hipotálamo-hipófisis, tiroides, paratiroides, suprarrenal, hormonas sexuales','T27. Monitorización de fármacos: farmacocinética, fármacos biológicos, drogas de abuso, intoxicaciones']},
   {id:'liquidos',name:'Orina, Líquidos y Reproducción',emoji:'💧',color:'#0284c7',colorS:'#e0f2fe',colorBorder:'#7dd3fc',desc:'Análisis de orina, líquidos biológicos, seminograma, reproducción asistida y cribado prenatal',tietz:'Cap. 45, 58–59',henry:'Parte 3 caps. 29–30',temas:[28,29,30,31],
    topics:['T28. Estudio de la orina: análisis bioquímico, sedimento urinario, litiasis renal','T29. Líquidos biológicos: ascítico, cefalorraquídeo, pleural, amniótico, pericárdico, sinovial','T30. Líquido seminal: seminograma (criterios OMS), FIV, ICSI, inseminación artificial, donación de gametos','T31. Embarazo: cribado bioquímico de cromosomopatías, DPNI, trastornos hipertensivos del embarazo']},
@@ -124,7 +124,7 @@ const SECTIONS=[
    topics:['T38. Hemostasia y trombosis: factores de coagulación, TP/TTPA/fibrinógeno, fibrinólisis, anticoagulantes (NACO)','T38. Trombofilia: estudio de trombosis venosa y arterial. Control del tratamiento anticoagulante','T39. Inmunohematología: sistemas ABO y Rh, anticuerpos irregulares, prueba de Coombs, crossmatch','T39. Medicina transfusional: componentes sanguíneos, indicaciones, reacciones adversas, hemovigilancia']},
   {id:'microbiologia',name:'Microbiología',emoji:'🦠',color:T.green,colorS:T.greenS,colorBorder:'#86efac',desc:'Bacteriología, micobacterias, hongos, parásitos, virus, serología y patologías infecciosas',tietz:'Secc. VIII caps. 82–89',henry:'Parte 7 caps. 57–66',temas:[40,41,42,43,44,45,46,47,48,49,50],
    topics:['T40. Muestras microbiológicas: obtención, procesamiento, medios de cultivo, tinciones','T41. Identificación microbiológica: antibiograma (EUCAST/CLSI), mecanismos de resistencia, MALDI-TOF','T42. Bacterias aerobias de interés clínico: Gram positivos y Gram negativos','T43. Bacterias anaerobias: Clostridium, Bacteroides, Actinomyces, diagnóstico y clínica','T44. Micobacterias: M. tuberculosis, NTM, Ziehl-Neelsen, MGIT 960, IGRA, PCR, tratamiento','T45. Otros microorganismos: micoplasmas, espiroquetas, clamidias, rickettsias, enfermedades emergentes','T46. Micología: levaduras (Candida, Cryptococcus), hongos filamentosos (Aspergillus), antifúngicos','T47. Parasitología: técnicas de diagnóstico, parásitos de interés clínico, tratamiento antiparasitario','T48. Virología: VIH, hepatitis A/B/C, virus respiratorios, PCR en tiempo real, priones','T49. Diagnóstico serológico: detección de antígenos y anticuerpos, pruebas de cribado y confirmación','T50. Patologías infecciosas: sepsis, infecciones nosocomiales, meningitis, ITS, paciente inmunodeprimido']},
-  {id:'molecular',name:'Biología Molecular y Genética',emoji:'🧪',color:T.teal,colorS:T.tealS,colorBorder:'#5eead4',desc:'Genética humana, citogenética, farmacogenómica y biología molecular diagnóstica',tietz:'Secc. VI caps. 62–73',henry:'Parte 8 caps. 67–75',temas:[51,52,53,54],
+  {id:'molecular',name:'Biología Molecular y Genética',emoji:'🧪',color:T.teal,colorS:T.tealS,colorBorder:'#70c0d8',desc:'Genética humana, citogenética, farmacogenómica y biología molecular diagnóstica',tietz:'Secc. VI caps. 62–73',henry:'Parte 8 caps. 67–75',temas:[51,52,53,54],
    topics:['T51. Genética humana: mutaciones, patrones de herencia, árboles genealógicos','T52. Citogenética: cariotipo, anomalías cromosómicas estructurales y numéricas, diagnóstico prenatal y preimplantacional','T53. Genética aplicada: farmacogenética, cribado poblacional, bases moleculares del cáncer, medicina de precisión','T54. Biología molecular diagnóstica: PCR, NGS, hibridación, array-CGH, exomas, biopsia líquida']},
   {id:'inmunologia',name:'Inmunología',emoji:'🛡️',color:'#0d9488',colorS:'#ccfbf1',colorBorder:'#5eead4',desc:'Sistema inmune, HLA y trasplante, alergias, autoinmunidad sistémica y de órgano, inmunodeficiencias',tietz:'Secc. X caps. 94–100',henry:'Parte 6 caps. 44–56',temas:[55,56,57,58,59,60],
    topics:['T55. Inmunología: sistema inmunitario, complemento, citometría de flujo, poblaciones leucocitarias','T56. Histocompatibilidad: HLA, técnicas de tipificación, trasplante de órganos y tejidos','T57. Enfermedades alérgicas: IgE total y específica, mecanismos de hipersensibilidad, anafilaxia, enfermedad celíaca','T58. Enfermedades autoinmunes órgano-específicas: autoanticuerpos (anti-TPO, anti-MBG, AMA, ANCA órgano-específicos)','T59. Enfermedades autoinmunes sistémicas: ANA, anti-dsDNA, anti-ENA, ANCA, FR, anti-CCP, algoritmos diagnósticos','T60. Inmunodeficiencias congénitas y adquiridas: clasificación, diagnóstico de laboratorio']},
@@ -533,7 +533,7 @@ export default function App(){
   if(!loaded) return(
     <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:T.bg,fontFamily:FONT}}>
       <div style={{textAlign:'center'}}>
-        <div style={{width:48,height:48,borderRadius:12,background:`linear-gradient(135deg,${T.blue},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,margin:'0 auto 12px'}}>🔬</div>
+        <div style={{width:48,height:48,borderRadius:12,background:`linear-gradient(135deg,${T.green},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,margin:'0 auto 12px'}}>🔬</div>
         <div style={{color:T.muted,fontSize:14}}>Cargando OPE Lab...</div>
       </div>
     </div>
@@ -582,7 +582,7 @@ export default function App(){
         <div style={{maxWidth:960,margin:'0 auto',padding:'0 20px'}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',paddingTop:12,paddingBottom:4}}>
             <div style={{display:'flex',alignItems:'center',gap:10}}>
-              <div style={{width:32,height:32,borderRadius:8,background:`linear-gradient(135deg,${T.blue},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>🔬</div>
+              <div style={{width:32,height:32,borderRadius:8,background:`linear-gradient(135deg,${T.green},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>🔬</div>
               <div><span style={{fontWeight:700,fontSize:15,color:T.text,letterSpacing:-0.3}}>OPE Lab</span><span style={{color:T.dim,fontSize:11,marginLeft:8}}>FEA Laboratorio Clínico · SESCAM 2025</span></div>
             </div>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -594,7 +594,7 @@ export default function App(){
           </div>
           <div style={{display:'flex',marginTop:4,gap:0}}>
             {navItems.map(n=>(
-              <button key={n.id} onClick={()=>setTab(n.id)} style={{padding:'9px 16px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:normalizedTab===n.id?700:400,color:normalizedTab===n.id?T.blue:T.muted,borderBottom:`2px solid ${normalizedTab===n.id?T.blue:'transparent'}`,whiteSpace:'nowrap',fontFamily:FONT,transition:'color 0.15s'}}>
+              <button key={n.id} onClick={()=>setTab(n.id)} style={{padding:'9px 16px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:normalizedTab===n.id?700:500,color:normalizedTab===n.id?T.green:T.dim,borderBottom:`2px solid ${normalizedTab===n.id?T.green:'transparent'}`,whiteSpace:'nowrap',fontFamily:FONT,transition:'color 0.15s',letterSpacing:'0.3px'}}>
                 {n.label}
               </button>
             ))}
