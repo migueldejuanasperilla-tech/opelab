@@ -19,6 +19,45 @@ const fmtTime=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).pad
 function load(k,fb){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch{return fb;}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
 
+// ── JSON repair — handles truncated responses from the API ────────────────────
+function repairJSON(str){
+  // Try parsing as-is first
+  try{JSON.parse(str);return str;}catch{}
+  let s=str.trim();
+  // Count open brackets/braces to determine what needs closing
+  let braces=0,brackets=0,inString=false,escape=false;
+  for(let i=0;i<s.length;i++){
+    const c=s[i];
+    if(escape){escape=false;continue;}
+    if(c==='\\'){escape=true;continue;}
+    if(c==='"'){inString=!inString;continue;}
+    if(inString)continue;
+    if(c==='{')braces++;
+    else if(c==='}')braces--;
+    else if(c==='[')brackets++;
+    else if(c===']')brackets--;
+  }
+  // If we're in the middle of a string, close it
+  if(inString)s+='"';
+  // Close any incomplete objects/arrays — order matters (most recently opened first)
+  // Trim trailing incomplete key-value (comma + partial)
+  s=s.replace(/,\s*$/, '');
+  s=s.replace(/,\s*"[^"]*$/, ''); // trailing incomplete key
+  // Close structures
+  while(brackets>0){s+=']';brackets--;}
+  while(braces>0){s+='}';braces--;}
+  try{JSON.parse(s);return s;}catch{
+    // Last resort: remove last incomplete element and close
+    const lastComma=s.lastIndexOf(',');
+    if(lastComma>-1){
+      s=s.slice(0,lastComma);
+      while(brackets>0){s+=']';brackets--;}
+      while(braces>0){s+='}';braces--;}
+    }
+    return s;
+  }
+}
+
 // ── IndexedDB — PDFs y preguntas (sin límite de tamaño) ───────────────────────
 const IDB_NAME='opelab_pdfs', IDB_STORE='pdfs', IDB_QS_STORE='questions';
 function idbOpen(){
@@ -329,77 +368,56 @@ const TOPIC_REFS={
 // ── Prompt maestro para generar apuntes de estudio ───────────────────────────
 function buildStudyPrompt(topic, hasPdf=false){
   const refs=TOPIC_REFS[topic];
-  const refsStr=refs&&refs.tietz!=='—'?`\nCapítulos de referencia: Tietz ${refs.tietz} · Henry ${refs.henry}.`:'';
-  const source=hasPdf
-    ?`Tienes delante un fragmento del Tietz y/o Henry. Extrae los datos EXCLUSIVAMENTE del documento adjunto — no añadas conocimiento externo no presente en el texto.`
-    :`Actúa como si tuvieras delante los capítulos correspondientes del Tietz Textbook of Laboratory Medicine, 7ª ed. (Rifai et al., 2022) y del Henry El Laboratorio en el Diagnóstico Clínico, 23ª ed. (McPherson & Pincus, 2022). Reproduce fielmente el nivel de detalle y rigor técnico de esos libros.${refsStr}`;
+  const refsStr=refs&&refs.tietz!=='—'?`Capítulos de referencia: Tietz ${refs.tietz} · Henry ${refs.henry}.`:'';
 
-  return `Eres el mejor preparador de oposiciones FEA Laboratorio Clínico de España, con 20 años de experiencia analizando exámenes reales de SESCAM, SAS, SERMAS, Osakidetza y otras CCAA. Tu misión es generar un resumen de estudio de máxima calidad sobre el siguiente tema del temario oficial SESCAM 2025 (Anexo II, DOCM 9/04/2025):
+  const source=hasPdf
+    ?`Tienes delante el capítulo correspondiente del Tietz y/o Henry. Trabaja EXCLUSIVAMENTE con el contenido del documento adjunto — extrae los subapartados, párrafos y conceptos tal y como aparecen en el texto original. No añadas conocimiento externo.`
+    :`Actúa como si tuvieras delante los capítulos correspondientes del Tietz Textbook of Laboratory Medicine, 7ª ed. (Rifai et al., 2022) y del Henry El Laboratorio en el Diagnóstico Clínico, 23ª ed. (McPherson & Pincus, 2022). ${refsStr} Reproduce fielmente el nivel de detalle y rigor técnico de esos libros.`;
+
+  return `Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). Tu misión es analizar en profundidad el siguiente tema y generar un resumen de estudio altamente estructurado y conceptual:
 
 TEMA: "${topic}"
 
 FUENTE: ${source}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ESTRUCTURA DEL RESUMEN (6 subapartados obligatorios)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROCESO DE ANÁLISIS — sigue estos pasos en orden
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. VALORES DE REFERENCIA
-   Tabla exhaustiva con TODOS los parámetros relevantes del tema.
-   • Incluye: valores de adulto sano (hombre/mujer si difieren), unidades SI y convencionales, punto de corte diagnóstico cuando exista.
-   • Ejemplo de fila correcta: ["Glucosa en ayunas", "70–99", "mg/dL", "≥126 mg/dL diagnóstico DM (2 determinaciones)"]
-   • Ejemplo de fila INCORRECTA (no hagas esto): ["Glucosa", "normal", "—", "—"]
-   • Si el tema no tiene valores numéricos propios, incluye los de las pruebas diagnósticas relacionadas.
+PASO 1 — IDENTIFICAR SUBAPARTADOS
+Identifica los subapartados o secciones naturales del capítulo (como aparecen en el libro o como los estructuraría un experto). Por ejemplo: Fisiología/Bioquímica, Métodos analíticos, Valores de referencia, Interpretación clínica, Patologías asociadas, Interferencias, Diagnóstico diferencial, etc. El número de subapartados debe reflejar la complejidad real del tema (mínimo 4, máximo 10).
 
-2. CONCEPTOS CLAVE
-   Lista de 10-14 conceptos que un FEA debe dominar. Cada item debe:
-   • Contener el dato concreto: número, porcentaje, nombre de proteína/gen/enzima, tiempo, o criterio.
-   • Ser una frase completa, no un título. 
-   • Ejemplo CORRECTO: "La HbA1c refleja la glucemia media de los últimos 60-90 días; un valor ≥6,5% es diagnóstico de DM según la ADA."
-   • Ejemplo INCORRECTO: "HbA1c es importante para el diagnóstico de diabetes."
+PASO 2 — EXTRAER CONCEPTOS DE CADA SUBAPARTADO
+Para cada subapartado, identifica TODOS los conceptos individuales relevantes que contiene. Un concepto es una unidad de información concreta: un mecanismo, un valor numérico, una clasificación, una técnica, una relación causa-efecto, una excepción, un dato clínico. No agrupes conceptos distintos en uno solo.
 
-3. MECANISMOS FISIOPATOLÓGICOS
-   Los 4-6 mecanismos más relevantes del tema. Para cada uno:
-   • Nombra las proteínas/enzimas/receptores implicados con precisión.
-   • Indica la consecuencia analítica directa (qué parámetro sube/baja y por qué).
-   • Ejemplo: "En la hepatitis aguda, la necrosis hepatocelular libera ALT citoplasmática al torrente sanguíneo; ALT>AST (ratio <1) indica daño hepatocelular activo no alcohólico; la fosfatasa alcalina solo se eleva si hay afectación biliar concomitante."
+PASO 3 — GENERAR EXPLICACIÓN DE CADA CONCEPTO
+Para cada concepto, genera una explicación propia que:
+• Empiece por el dato o idea central (el "qué")
+• Explique el mecanismo o razonamiento subyacente (el "por qué")
+• Indique la consecuencia clínica o analítica (el "para qué sirve saber esto")
+• Incluya el valor numérico exacto, nombre de proteína/enzima/gen, o criterio diagnóstico cuando exista
+• Tenga entre 2 y 4 frases — concisa pero completa
+• Use lenguaje técnico de especialista FEA, no divulgativo
 
-4. CLASIFICACIONES Y CRITERIOS DIAGNÓSTICOS
-   Todas las clasificaciones oficiales vigentes que apliquen al tema (OMS, ADA, EASL, EUCAST, CLSI, ISTH, etc.).
-   • Nombre completo de la clasificación y año/versión.
-   • Criterios con sus valores numéricos exactos.
-   • Si hay varias clasificaciones para el mismo proceso, incluye todas las relevantes para el examen FEA.
-
-5. TÉCNICAS ANALÍTICAS DE LABORATORIO
-   Para cada técnica principal del tema incluye:
-   • Nombre completo y principio analítico en una frase.
-   • Ventajas clínicas o analíticas clave.
-   • Interferencias o limitaciones más importantes (hemólisis, lipemia, ictericia, fármacos, etc.).
-   • Ejemplo: "Método de Jaffé (creatinina): reacción colorimétrica con picrato alcalino; sobrestima ~0,2 mg/dL por interferencia de cefalosporinas, glucosa y bilirrubina; el método enzimático es más específico."
-
-6. PERLAS PARA EL EXAMEN
-   8-10 datos concretos y difíciles de recordar que aparecen con frecuencia en exámenes FEA/OPE. Formato: frase corta y directa con el dato clave al principio.
-   • Ejemplo: "Troponina I cardíaca: detecta daño miocárdico desde 3h del inicio; pico a las 24h; normalización en 5-10 días. La troponina T se eleva también en IRC."
-   • Incluye: valores umbrales exactos, excepciones a reglas generales, datos que inducen a error, diferencias entre técnicas.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ESTÁNDARES DE CALIDAD INAMOVIBLES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ Cada item debe contener al menos UN dato concreto (número, nombre técnico, porcentaje, gen, enzima)
-✓ Nivel de dificultad 8-9/10: datos que distinguen al opositor que estudió en profundidad del que solo repasó
-✓ Español médico correcto; nombres de enzimas/proteínas en español con el acrónimo entre paréntesis
-✓ El subapartado "Valores de referencia" debe ser una tabla REAL con datos numéricos en cada fila
-✓ Los mecanismos deben nombrar proteínas/genes/enzimas, no solo procesos genéricos
-✗ PROHIBIDO: frases genéricas tipo "es importante", "se debe tener en cuenta", "varía según el laboratorio"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Cada explicación debe contener al menos un dato concreto (número, nombre técnico, gen, enzima, porcentaje, tiempo)
+✓ Nivel 8-9/10: datos que distinguen al opositor que estudió en profundidad del que solo repasó
+✓ Español médico correcto; nombres de enzimas y proteínas en español con acrónimo entre paréntesis
+✓ Mínimo 5 conceptos por subapartado
+✓ Las explicaciones deben ser originales — no copiar frases del libro, sino sintetizar y explicar
+✗ PROHIBIDO: frases genéricas ("es importante", "se debe considerar", "varía según el laboratorio")
+✗ PROHIBIDO: agrupar dos conceptos distintos en una sola explicación
+✗ PROHIBIDO: subapartados vacíos o con menos de 5 conceptos
 ✗ PROHIBIDO: repetir el mismo concepto en distintos subapartados
-✗ PROHIBIDO: incluir subapartados vacíos o con menos de 4 items
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORMATO DE RESPUESTA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Responde ÚNICAMENTE con el siguiente JSON válido, sin texto previo, sin texto posterior, sin bloques de código markdown, sin backticks. El JSON debe ser parseable directamente con JSON.parse():
 
-{"resumen":"Párrafo introductorio de 3-4 frases que contextualice el tema en el laboratorio clínico, mencione los parámetros más relevantes y su importancia diagnóstica.","subapartados":[{"titulo":"Valores de referencia","tipo":"tabla","cabeceras":["Parámetro","Valor de referencia","Unidades","Nota clínica clave"],"filas":[["Nombre del parámetro","valor numérico exacto","unidad","nota diagnóstica o clínica concreta"]]},{"titulo":"Conceptos clave","tipo":"lista","items":["Concepto completo con dato concreto a memorizar"]},{"titulo":"Mecanismos fisiopatológicos","tipo":"lista","items":["Mecanismo con proteína/enzima y consecuencia analítica"]},{"titulo":"Clasificaciones y criterios diagnósticos","tipo":"clasificacion","items":[{"nombre":"Nombre de la clasificación (entidad, año)","criterios":["criterio con valor numérico exacto"]}]},{"titulo":"Técnicas analíticas de laboratorio","tipo":"lista","items":["Nombre técnica: principio analítico · ventaja principal · interferencia más relevante"]},{"titulo":"Perlas para el examen","tipo":"perlas","items":["Dato concreto y difícil — valor o excepción que aparece en exámenes FEA"]}]}`;
+{"resumen":"Párrafo introductorio de 3-5 frases que contextualice el tema: qué estudia, qué parámetros analíticos incluye, cuál es su relevancia diagnóstica y qué patologías principales abarca.","subapartados":[{"titulo":"Nombre del subapartado tal como aparece en el libro o lo estructuraría un experto","conceptos":[{"nombre":"Nombre corto del concepto (5-8 palabras máx.)","explicacion":"Explicación completa del concepto: dato central + mecanismo + consecuencia clínica/analítica. Mínimo 2 frases, máximo 5. Incluye el valor numérico exacto o nombre técnico específico."}]}]}`;
 }
 const getStatus=(topic,stats)=>{
   const s=stats[topic];
@@ -1007,12 +1025,13 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
       const res=await fetch('/api/anthropic',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8000,messages:[{role:'user',content:prompt}]})
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:prompt}]})
       });
       if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
       const data=await res.json();
       const text=(data.content||[]).map(c=>c.text||'').join('').trim();
-      const parsed=JSON.parse(text.replace(/```json|```/g,'').trim());
+      const cleaned=text.replace(/```json|```/g,'').trim();
+      const parsed=JSON.parse(repairJSON(cleaned));
       saveStudyNote(topic,parsed);
       setStudyMsg(prev=>({...prev,[topic]:''}));
     }catch(e){setStudyMsg(prev=>({...prev,[topic]:`❌ ${e.message}`}));}
@@ -1215,12 +1234,13 @@ function EstudioTab({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMe
       const res=await fetch('/api/anthropic',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8000,messages:[{role:'user',content}]})
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content}]})
       });
       if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
       const data=await res.json();
       const text=(data.content||[]).map(c=>c.text||'').join('').trim();
-      const parsed=JSON.parse(text.replace(/```json|```/g,'').trim());
+      const cleaned=text.replace(/```json|```/g,'').trim();
+      const parsed=JSON.parse(repairJSON(cleaned));
       saveStudyNote(topic,parsed);
       setGenMsg('');
     }catch(e){setGenMsg(`❌ ${e.message}`);}
@@ -1349,34 +1369,55 @@ function StudyPanel({data,topic,date,onRegenerate,isGenerating}){
   };
   return(
     <div style={{padding:'14px 14px 16px'}}>
-      {data.resumen&&<p style={{fontSize:13,color:T.muted,lineHeight:1.6,margin:'0 0 14px',padding:'10px 14px',background:T.card,borderRadius:8,borderLeft:`3px solid ${T.teal}`}}>{data.resumen}</p>}
-      <div style={{display:'flex',flexDirection:'column',gap:10}}>
+      {data.resumen&&<p style={{fontSize:13,color:T.muted,lineHeight:1.7,margin:'0 0 16px',padding:'12px 16px',background:T.card,borderRadius:10,borderLeft:`3px solid ${T.teal}`}}>{data.resumen}</p>}
+      <div style={{display:'flex',flexDirection:'column',gap:12}}>
         {(data.subapartados||[]).map((sec,i)=>{
           const col=sectionColors[sec.titulo]||{bg:T.card,border:T.border,title:T.text,icon:'📌'};
+          const hasConceptos=Array.isArray(sec.conceptos)&&sec.conceptos.length>0;
           return(
-            <div key={i} style={{background:col.bg,border:`1px solid ${col.border}`,borderRadius:8,overflow:'hidden'}}>
-              <div style={{padding:'8px 12px',borderBottom:`1px solid ${col.border}`,display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:14}}>{col.icon}</span>
-                <span style={{fontSize:12,fontWeight:700,color:col.title,letterSpacing:0.3,textTransform:'uppercase'}}>{sec.titulo}</span>
+            <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,overflow:'hidden',boxShadow:sh.sm}}>
+              {/* Section header */}
+              <div style={{padding:'10px 14px',background:col.bg,borderBottom:`1px solid ${col.border}`,display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:15}}>{col.icon}</span>
+                <span style={{fontSize:13,fontWeight:700,color:col.title,letterSpacing:0.2}}>{sec.titulo}</span>
+                {hasConceptos&&<span style={{marginLeft:'auto',fontSize:10,color:col.title,background:col.border+'50',padding:'1px 8px',borderRadius:20,fontWeight:600}}>{sec.conceptos.length} conceptos</span>}
               </div>
-              <div style={{padding:'10px 12px'}}>
-                {sec.tipo==='tabla'&&sec.filas&&(
+              <div style={{padding:'12px 14px'}}>
+                {/* NEW FORMAT: conceptos con nombre + explicacion */}
+                {hasConceptos&&(
+                  <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                    {sec.conceptos.map((c,j)=>(
+                      <div key={j} style={{borderLeft:`3px solid ${col.border}`,paddingLeft:12,paddingTop:2,paddingBottom:2}}>
+                        <div style={{fontSize:12,fontWeight:700,color:col.title,marginBottom:4,display:'flex',alignItems:'center',gap:6}}>
+                          <span style={{width:18,height:18,borderRadius:'50%',background:col.bg,border:`1px solid ${col.border}`,display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800,color:col.title,flexShrink:0}}>{j+1}</span>
+                          {c.nombre||c.titulo||'Concepto'}
+                        </div>
+                        <div style={{fontSize:12,color:T.text,lineHeight:1.75}}>{c.explicacion||c.descripcion||''}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* LEGACY FORMAT: tabla */}
+                {!hasConceptos&&sec.tipo==='tabla'&&sec.filas&&(
                   <div style={{overflowX:'auto'}}>
                     <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-                      {sec.cabeceras&&<thead><tr>{sec.cabeceras.map((h,j)=><th key={j} style={{padding:'5px 8px',background:col.border+'80',color:col.title,fontWeight:700,textAlign:'left',borderBottom:`1px solid ${col.border}`,whiteSpace:'nowrap'}}>{h}</th>)}</tr></thead>}
-                      <tbody>{sec.filas.map((row,j)=><tr key={j} style={{background:j%2===0?'transparent':col.border+'20'}}>{(Array.isArray(row)?row:[row]).map((cell,k)=><td key={k} style={{padding:'5px 8px',color:T.text,borderBottom:`1px solid ${col.border}40`,verticalAlign:'top'}}>{cell}</td>)}</tr>)}</tbody>
+                      {sec.cabeceras&&<thead><tr>{sec.cabeceras.map((h,j)=><th key={j} style={{padding:'6px 10px',background:col.border+'80',color:col.title,fontWeight:700,textAlign:'left',borderBottom:`1px solid ${col.border}`,whiteSpace:'nowrap'}}>{h}</th>)}</tr></thead>}
+                      <tbody>{sec.filas.map((row,j)=><tr key={j} style={{background:j%2===0?'transparent':col.border+'20'}}>{(Array.isArray(row)?row:[row]).map((cell,k)=><td key={k} style={{padding:'6px 10px',color:T.text,borderBottom:`1px solid ${col.border}40`,verticalAlign:'top',lineHeight:1.5}}>{cell}</td>)}</tr>)}</tbody>
                     </table>
                   </div>
                 )}
-                {sec.tipo==='lista'&&<ul style={{margin:0,paddingLeft:18,display:'flex',flexDirection:'column',gap:4}}>{(sec.items||[]).map((item,j)=><li key={j} style={{fontSize:12,color:T.text,lineHeight:1.5}}>{item}</li>)}</ul>}
-                {sec.tipo==='clasificacion'&&<div style={{display:'flex',flexDirection:'column',gap:8}}>{(sec.items||[]).map((cls,j)=><div key={j}><div style={{fontSize:12,fontWeight:700,color:col.title,marginBottom:3}}>{cls.nombre}</div><ul style={{margin:0,paddingLeft:18,display:'flex',flexDirection:'column',gap:2}}>{(cls.criterios||[]).map((c,k)=><li key={k} style={{fontSize:11,color:T.text,lineHeight:1.5}}>{c}</li>)}</ul></div>)}</div>}
-                {sec.tipo==='perlas'&&<div style={{display:'flex',flexDirection:'column',gap:5}}>{(sec.items||[]).map((item,j)=><div key={j} style={{display:'flex',gap:8,alignItems:'flex-start'}}><span style={{fontSize:14,flexShrink:0}}>💎</span><span style={{fontSize:12,color:T.text,lineHeight:1.5,fontWeight:500}}>{item}</span></div>)}</div>}
+                {/* LEGACY FORMAT: lista */}
+                {!hasConceptos&&sec.tipo==='lista'&&<ul style={{margin:0,paddingLeft:20,display:'flex',flexDirection:'column',gap:5}}>{(sec.items||[]).map((item,j)=><li key={j} style={{fontSize:12,color:T.text,lineHeight:1.65}}>{item}</li>)}</ul>}
+                {/* LEGACY FORMAT: clasificacion */}
+                {!hasConceptos&&sec.tipo==='clasificacion'&&<div style={{display:'flex',flexDirection:'column',gap:10}}>{(sec.items||[]).map((cls,j)=><div key={j}><div style={{fontSize:12,fontWeight:700,color:col.title,marginBottom:4}}>{cls.nombre}</div><ul style={{margin:0,paddingLeft:18,display:'flex',flexDirection:'column',gap:2}}>{(cls.criterios||[]).map((c,k)=><li key={k} style={{fontSize:12,color:T.text,lineHeight:1.6}}>{c}</li>)}</ul></div>)}</div>}
+                {/* LEGACY FORMAT: perlas */}
+                {!hasConceptos&&sec.tipo==='perlas'&&<div style={{display:'flex',flexDirection:'column',gap:7}}>{(sec.items||[]).map((item,j)=><div key={j} style={{display:'flex',gap:10,alignItems:'flex-start',background:T.amberS,borderRadius:7,padding:'7px 10px'}}><span style={{fontSize:14,flexShrink:0}}>💎</span><span style={{fontSize:12,color:T.amberText,lineHeight:1.6,fontWeight:500}}>{item}</span></div>)}</div>}
               </div>
             </div>
           );
         })}
       </div>
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:10}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:12}}>
         <span style={{fontSize:10,color:T.dim}}>Generado el {fmtDate(date)}</span>
         <button onClick={onRegenerate} disabled={isGenerating} style={{fontSize:11,background:'none',border:`1px solid ${T.border2}`,borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>
           {isGenerating?'⏳ Regenerando…':'🔄 Regenerar'}
