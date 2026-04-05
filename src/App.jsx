@@ -870,120 +870,122 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
 
   return(
     <div>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
-        <div><h2 style={{fontSize:18,fontWeight:700,margin:'0 0 4px',color:T.text,letterSpacing:-0.3}}>Temario Oficial SESCAM 2025</h2><p style={{color:T.muted,fontSize:13,margin:0}}>FEA Laboratorio Clínico · Anexo II, DOCM 9/04/2025 · 60 temas</p></div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:12}}>
+        <div>
+          <h2 style={{fontSize:18,fontWeight:700,margin:'0 0 4px',color:T.text,letterSpacing:-0.3}}>Temario Oficial SESCAM 2025</h2>
+          <p style={{color:T.muted,fontSize:13,margin:0}}>FEA Laboratorio Clínico · 60 temas · Anexo II DOCM 9/04/2025</p>
+        </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          {totalPdfs>0&&<div style={{background:T.greenS,border:'1px solid #86efac',borderRadius:8,padding:'6px 12px',textAlign:'center'}}><div style={{fontSize:16,fontWeight:700,color:T.green}}>{totalPdfs}</div><div style={{fontSize:10,color:T.muted}}>PDFs adjuntos</div></div>}
-          <div style={{background:T.blueS,padding:'10px 16px',borderRadius:10,textAlign:'center'}}><div style={{fontSize:22,fontWeight:700,color:T.blue}}>{pctS}%</div><div style={{fontSize:11,color:T.muted,marginTop:1}}>estudiados</div></div>
+          {totalPdfs>0&&<div style={{background:T.greenS,border:`1px solid ${T.border}`,borderRadius:10,padding:'6px 14px',textAlign:'center'}}><div style={{fontSize:16,fontWeight:700,color:T.green}}>{totalPdfs}</div><div style={{fontSize:10,color:T.muted}}>PDFs</div></div>}
+          <div style={{background:T.blueS,padding:'8px 16px',borderRadius:10,textAlign:'center'}}><div style={{fontSize:20,fontWeight:700,color:T.blue}}>{pctS}%</div><div style={{fontSize:10,color:T.muted}}>estudiados</div></div>
         </div>
       </div>
-      <div style={{background:T.border,borderRadius:4,height:5,margin:'14px 0 8px'}}><div style={{background:`linear-gradient(90deg,${T.blue},${T.teal})`,width:`${pctS}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>
-      <div style={{display:'flex',gap:8,marginBottom:22,flexWrap:'wrap'}}>
-        <div style={{background:T.blueS,border:'1px solid #93c5fd',borderRadius:7,padding:'5px 12px',fontSize:12,color:T.blueText}}>📘 <strong>Tietz</strong> Textbook of Laboratory Medicine (2022)</div>
+      <div style={{background:T.border,borderRadius:4,height:4,margin:'0 0 16px'}}><div style={{background:`linear-gradient(90deg,${T.green},${T.teal})`,width:`${pctS}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>
+      <div style={{display:'flex',gap:8,marginBottom:20,flexWrap:'wrap'}}>
+        <div style={{background:T.blueS,border:`1px solid ${T.border2}`,borderRadius:7,padding:'5px 12px',fontSize:12,color:T.blueText}}>📘 <strong>Tietz</strong> Textbook of Laboratory Medicine (2022)</div>
         <div style={{background:'#fef9c3',border:'1px solid #fde047',borderRadius:7,padding:'5px 12px',fontSize:12,color:T.amberText}}>📙 <strong>Henry</strong> El Laboratorio en el Diagnóstico Clínico (2022)</div>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(290px,1fr))',gap:12}}>
-        {SECTIONS.map(s=>{
+
+      <div style={{display:'flex',flexDirection:'column',borderRadius:14,overflow:'hidden',border:`1px solid ${T.border}`,boxShadow:sh.sm}}>
+        {SECTIONS.map((s,si)=>{
           const acc=getAcc(s);const count=getCount(s);const isOpen=open===s.id;
           const tStr=s.temas.length===1?`T${s.temas[0]}`:`T${s.temas[0]}–T${s.temas[s.temas.length-1]}`;
+          const topicsWithData=s.topics.map(t=>{
+            const ts=stats[t];const tpct=ts?Math.round(ts.c/ts.t*100):null;
+            const st=getStatus(t,stats);const refs=TOPIC_REFS[t];
+            const pKey=topicPdfKey(t);const files=pdfMeta[pKey]||[];
+            const hasPdfs=files.length>0;const hasStudy=!!studyNotes[t];
+            return{t,ts,tpct,st,refs,pKey,files,hasPdfs,hasStudy};
+          });
+
           return(
-            <div key={s.id}>
-              <div onClick={()=>setOpen(isOpen?null:s.id)} style={{background:T.surface,border:`1.5px solid ${isOpen?s.color:T.border}`,borderLeft:`3px solid ${s.color}`,borderRadius:isOpen?'10px 10px 0 0':10,padding:'14px 16px',cursor:'pointer',boxShadow:isOpen?sh.md:sh.sm,transition:'all 0.15s'}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
-                  <div style={{display:'flex',alignItems:'center',gap:10}}>
-                    <div style={{width:36,height:36,borderRadius:8,background:s.colorS,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>{s.emoji}</div>
-                    <div><div style={{fontWeight:600,fontSize:14,color:T.text}}>{s.name}</div><div style={{fontSize:11,color:s.color,fontWeight:600,marginTop:2}}>{tStr} · {s.temas.length} temas</div></div>
-                  </div>
-                  <div style={{display:'flex',alignItems:'center',gap:8}}>{acc!==null&&<span style={{fontWeight:700,fontSize:14,color:acc>=70?T.green:acc>=50?T.amber:T.red}}>{acc}%</span>}<span style={{color:T.dim,fontSize:14,transition:'transform 0.2s',transform:isOpen?'rotate(90deg)':'none'}}>›</span></div>
+            <div key={s.id} style={{borderTop:si>0?`1px solid ${T.border}`:'none'}}>
+              {/* Section header row */}
+              <div onClick={()=>setOpen(isOpen?null:s.id)}
+                style={{display:'flex',alignItems:'center',gap:14,padding:'14px 20px',cursor:'pointer',background:isOpen?s.colorS:T.surface,transition:'background 0.15s'}}>
+                <div style={{width:4,height:44,borderRadius:4,background:s.color,flexShrink:0}}/>
+                <div style={{width:38,height:38,borderRadius:10,background:isOpen?T.surface:s.colorS,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>{s.emoji}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:14,color:T.text}}>{s.name}</div>
+                  <div style={{fontSize:11,color:T.muted,marginTop:2}}>{tStr} · {s.temas.length} temas · {count} preg. en banco</div>
                 </div>
-                <p style={{margin:'0 0 10px',fontSize:12,color:T.muted,lineHeight:1.5}}>{s.desc}</p>
-                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
-                  {s.tietz!=='—'&&<span style={{fontSize:10,color:T.blueText,background:T.blueS,border:'1px solid #93c5fd',padding:'2px 8px',borderRadius:20,fontWeight:600}}>Tietz: {s.tietz}</span>}
-                  {s.henry!=='—'&&<span style={{fontSize:10,color:T.amberText,background:'#fef9c3',border:'1px solid #fde047',padding:'2px 8px',borderRadius:20,fontWeight:600}}>Henry: {s.henry}</span>}
+                <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+                  {s.tietz!=='—'&&<span style={{fontSize:10,color:T.blueText,background:T.blueS,padding:'2px 8px',borderRadius:20,fontWeight:600,border:`1px solid ${T.border2}`}}>Tietz</span>}
+                  {acc!==null&&<span style={{fontWeight:700,fontSize:15,color:acc>=70?T.green:acc>=50?T.amber:T.red,minWidth:36,textAlign:'right'}}>{acc}%</span>}
+                  <span style={{color:T.dim,fontSize:18,transition:'transform 0.2s',transform:isOpen?'rotate(90deg)':'none',lineHeight:1}}>›</span>
                 </div>
-                <span style={{fontSize:11,color:T.dim}}>{count} preg. en banco</span>
               </div>
+
+              {/* Expanded topics */}
               {isOpen&&(
-                <div style={{background:s.colorS,border:`1.5px solid ${s.colorBorder}`,borderLeft:`3px solid ${s.color}`,borderTop:'none',borderRadius:'0 0 10px 10px',padding:'14px 16px'}}>
-                  <div style={{fontSize:11,color:s.color,fontWeight:700,marginBottom:10,letterSpacing:0.5,textTransform:'uppercase'}}>Temas incluidos</div>
-                  <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:14}}>
-                    {s.topics.map(t=>{
-                      const ts=stats[t];const tpct=ts?Math.round(ts.c/ts.t*100):null;const st=getStatus(t,stats);
-                      const refs=TOPIC_REFS[t];const hasRefs=refs&&refs.tietz!=='—';
-                      const pKey=topicPdfKey(t);
-                      const files=pdfMeta[pKey]||[]; // array de PDFs adjuntos
-                      const hasPdfs=files.length>0;
-                      const hasStudy=!!studyNotes[t];
-                      const isGenerating=generatingStudy===t;
-                      return(
-                        <div key={t} style={{background:T.surface,borderRadius:8,border:`1px solid ${hasPdfs?T.green:hasStudy?T.teal:T.border}`,transition:'border-color 0.2s'}}>
-                          <div style={{padding:'9px 12px'}}>
-                          <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:hasRefs||hasPdfs?5:0}}>
-                            <span style={{width:7,height:7,borderRadius:'50%',background:STATUS_COLORS[st],flexShrink:0,marginTop:4}}/>
-                            <span style={{fontSize:13,color:T.text,flex:1,lineHeight:1.4,fontWeight:500}}>{t}</span>
-                            <div style={{display:'flex',gap:5,alignItems:'center',flexShrink:0}}>
-                              {tpct!==null?<span style={{fontSize:11,fontWeight:700,color:tpct>=70?T.green:tpct>=50?T.amber:T.red}}>{tpct}%</span>:<span style={{fontSize:10,color:STATUS_COLORS[st],background:STATUS_BG[st],padding:'1px 7px',borderRadius:10,fontWeight:600}}>{STATUS_LABELS[st]}</span>}
-                              <button
-                                onClick={()=>hasStudy?goToStudy(t):generateStudy(t)}
-                                disabled={isGenerating}
-                                title={hasStudy?'Ver apuntes en pestaña Estudio':'Generar apuntes con IA'}
-                                style={{background:isGenerating?T.amberS:hasStudy?T.tealS:T.purpleS,border:`1px solid ${isGenerating?T.amber:hasStudy?T.teal:T.purple}`,borderRadius:20,padding:'2px 9px',fontSize:10,cursor:isGenerating?'wait':'pointer',color:isGenerating?T.amberText:hasStudy?T.teal:T.purple,fontWeight:600,fontFamily:FONT,flexShrink:0,whiteSpace:'nowrap'}}>
-                                {isGenerating?'⏳ Generando…':hasStudy?'📖 Ver':'📖 Generar'}
-                              </button>
-                              <button onClick={async()=>{
-                                const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';inp.multiple=true;
-                                inp.onchange=async e=>{
-                                  const files=Array.from(e.target.files||[]);
-                                  for(const f of files){
-                                    if(f.size>200*1024*1024){alert(`"${f.name}" supera 200 MB.`);continue;}
-                                    setSplittingKey(pKey);
-                                    await savePdfForTopic(t,f);
-                                    setSplittingKey(null);
-                                  }
-                                };
-                                inp.click();
-                              }} disabled={splittingKey===pKey}
-                                title="Adjuntar PDF(s) del capítulo — se divide automáticamente si >80 páginas"
-                                style={{background:splittingKey===pKey?T.amberS:hasPdfs?T.greenS:T.blueS,border:`1px solid ${splittingKey===pKey?T.amber:hasPdfs?'#86efac':'#93c5fd'}`,borderRadius:20,padding:'2px 9px',fontSize:10,cursor:splittingKey===pKey?'wait':'pointer',color:splittingKey===pKey?T.amberText:hasPdfs?T.greenText:T.blueText,fontWeight:600,fontFamily:FONT,flexShrink:0,whiteSpace:'nowrap'}}>
-                                {splittingKey===pKey?'⏳ Procesando…':hasPdfs?`📄 +${files.length} · Añadir`:'+ PDF'}
-                              </button>
-                            </div>
-                          </div>
-                          {/* Lista de PDFs adjuntos */}
-                          {hasPdfs&&(
-                            <div style={{paddingLeft:15,display:'flex',flexDirection:'column',gap:3,marginBottom:hasRefs?5:0}}>
-                              {files.map(f=>(
-                                <div key={f.id} style={{display:'flex',alignItems:'center',gap:6,background:T.greenS,borderRadius:6,padding:'3px 8px'}}>
-                                  <span style={{fontSize:10,color:T.greenText,fontWeight:600,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={`${f.name} · ${(f.size/1024/1024).toFixed(1)} MB · ${fmtDate(f.date)}`}>
-                                    📄 {f.name}
-                                  </span>
-                                  {f.pages&&<span style={{fontSize:9,color:T.muted,flexShrink:0,background:T.card,padding:'1px 5px',borderRadius:8}}>pp. {f.pages}</span>}
-                                  <span style={{fontSize:10,color:T.dim,flexShrink:0}}>{(f.size/1024/1024).toFixed(1)} MB</span>
-                                  <button onClick={()=>deletePdfForTopic(t,f.id)} title="Eliminar este PDF" style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:13,padding:0,lineHeight:1,flexShrink:0}}>×</button>
+                <div style={{background:T.card,borderTop:`1px solid ${T.border}`}}>
+                  {topicsWithData.map(({t,tpct,st,refs,pKey,files,hasPdfs,hasStudy},ti)=>{
+                    const isGenerating=generatingStudy===t;
+                    const hasRefs=refs&&refs.tietz!=='—';
+                    return(
+                      <div key={t} style={{borderTop:ti>0?`1px solid ${T.border}`:'none',padding:'10px 20px 10px 44px'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:10}}>
+                          <span style={{width:7,height:7,borderRadius:'50%',background:STATUS_COLORS[st],flexShrink:0}}/>
+                          <span style={{fontSize:13,color:T.text,flex:1,lineHeight:1.4,fontWeight:500}}>{t}</span>
+                          <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+                            {tpct!==null?(
+                              <>
+                                <div style={{width:72,height:4,background:T.border,borderRadius:3}}>
+                                  <div style={{width:`${tpct}%`,height:'100%',borderRadius:3,background:tpct>=70?T.green:tpct>=50?T.amber:T.red}}/>
                                 </div>
-                              ))}
-                            </div>
-                          )}
-                          {/* Badges Tietz/Henry */}
-                          {hasRefs&&(
-                            <div style={{display:'flex',gap:6,paddingLeft:15,flexWrap:'wrap',marginTop:hasPdfs?4:0}}>
-                              <span title={refs.tietzD||refs.tietz} style={{fontSize:10,color:T.blueText,background:T.blueS,border:'1px solid #93c5fd',padding:'2px 8px',borderRadius:20,fontWeight:600,cursor:'help'}}>📘 Tietz {refs.tietz}</span>
-                              <span title={refs.henryD||refs.henry} style={{fontSize:10,color:T.amberText,background:'#fef9c3',border:'1px solid #fde047',padding:'2px 8px',borderRadius:20,fontWeight:600,cursor:'help'}}>📙 Henry {refs.henry}</span>
-                            </div>
-                          )}
-                          {studyMsg[t]&&<div style={{marginTop:6,fontSize:11,color:studyMsg[t].startsWith('❌')?T.red:T.muted,paddingLeft:15}}>{studyMsg[t]}</div>}
+                                <span style={{fontSize:12,fontWeight:700,color:tpct>=70?T.green:tpct>=50?T.amber:T.red,minWidth:30,textAlign:'right'}}>{tpct}%</span>
+                              </>
+                            ):(
+                              <span style={{fontSize:10,color:STATUS_COLORS[st],background:STATUS_BG[st],padding:'2px 8px',borderRadius:10,fontWeight:600,whiteSpace:'nowrap'}}>{STATUS_LABELS[st]}</span>
+                            )}
+                            <button onClick={()=>hasStudy?goToStudy(t):generateStudy(t)} disabled={isGenerating}
+                              style={{background:isGenerating?T.amberS:hasStudy?T.tealS:T.purpleS,border:`1px solid ${isGenerating?T.amber:hasStudy?T.teal:T.purple}`,borderRadius:20,padding:'3px 10px',fontSize:10,cursor:isGenerating?'wait':'pointer',color:isGenerating?T.amberText:hasStudy?T.teal:T.purple,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>
+                              {isGenerating?'⏳…':hasStudy?'📖 Ver':'📖 Generar'}
+                            </button>
+                            <button onClick={async()=>{
+                              const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';inp.multiple=true;
+                              inp.onchange=async e=>{
+                                const fs=Array.from(e.target.files||[]);
+                                for(const f of fs){
+                                  if(f.size>200*1024*1024){alert(`"${f.name}" supera 200 MB.`);continue;}
+                                  setSplittingKey(pKey);await savePdfForTopic(t,f);setSplittingKey(null);
+                                }
+                              };inp.click();
+                            }} disabled={splittingKey===pKey}
+                              style={{background:splittingKey===pKey?T.amberS:hasPdfs?T.greenS:T.blueS,border:`1px solid ${splittingKey===pKey?T.amber:hasPdfs?'#86efac':T.border2}`,borderRadius:20,padding:'3px 10px',fontSize:10,cursor:splittingKey===pKey?'wait':'pointer',color:splittingKey===pKey?T.amberText:hasPdfs?T.greenText:T.blueText,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>
+                              {splittingKey===pKey?'⏳…':hasPdfs?`📄 ${files.length}`:'+ PDF'}
+                            </button>
                           </div>
                         </div>
-                      );
-                    })}
+                        {hasPdfs&&(
+                          <div style={{paddingLeft:17,marginTop:5,display:'flex',flexWrap:'wrap',gap:4}}>
+                            {files.map(f=>(
+                              <div key={f.id} style={{display:'flex',alignItems:'center',gap:5,background:T.greenS,borderRadius:6,padding:'2px 8px'}}>
+                                <span style={{fontSize:10,color:T.greenText,fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>📄 {f.name}</span>
+                                {f.pages&&<span style={{fontSize:9,color:T.muted}}>pp.{f.pages}</span>}
+                                <button onClick={()=>deletePdfForTopic(t,f.id)} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:12,padding:0,lineHeight:1}}>×</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {hasRefs&&(
+                          <div style={{paddingLeft:17,marginTop:4,display:'flex',gap:5,flexWrap:'wrap'}}>
+                            <span style={{fontSize:10,color:T.blueText,background:T.blueS,border:`1px solid ${T.border2}`,padding:'1px 7px',borderRadius:20,fontWeight:600}}>📘 Tietz {refs.tietz}</span>
+                            <span style={{fontSize:10,color:T.amberText,background:'#fef9c3',border:'1px solid #fde047',padding:'1px 7px',borderRadius:20,fontWeight:600}}>📙 Henry {refs.henry}</span>
+                          </div>
+                        )}
+                        {studyMsg[t]&&<div style={{marginTop:5,fontSize:11,color:studyMsg[t].startsWith('❌')?T.red:T.muted,paddingLeft:17}}>{studyMsg[t]}</div>}
+                      </div>
+                    );
+                  })}
+                  {/* Notes + generate button */}
+                  <div style={{padding:'12px 20px',borderTop:`1px solid ${T.border}`,background:s.colorS}}>
+                    <div style={{fontSize:11,color:s.color,fontWeight:700,marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Mis notas</div>
+                    <textarea defaultValue={notes[s.id]||''} onBlur={e=>setNote(s.id,e.target.value)}
+                      placeholder="Notas, esquemas o conceptos clave..."
+                      style={{width:'100%',minHeight:60,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'8px 10px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:10}}/>
+                    <button onClick={()=>setTab('banco')} style={{background:s.color,color:'#fff',border:'none',borderRadius:8,padding:'7px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>✨ Generar preguntas de este bloque →</button>
                   </div>
-                  {/* Notes */}
-                  <div style={{marginBottom:12}}>
-                    <div style={{fontSize:11,color:s.color,fontWeight:700,marginBottom:6,letterSpacing:0.5,textTransform:'uppercase'}}>Mis notas</div>
-                    <textarea defaultValue={notes[s.id]||''} onBlur={e=>setNote(s.id,e.target.value)} placeholder="Escribe tus notas, esquemas o conceptos clave para este bloque..."
-                      style={{width:'100%',minHeight:72,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'8px 10px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box'}}/>
-                  </div>
-                  <button onClick={()=>setTab('banco')} style={{background:s.color,color:'#fff',border:'none',borderRadius:7,padding:'7px 16px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT,boxShadow:sh.sm}}>✨ Generar preguntas →</button>
                 </div>
               )}
             </div>
