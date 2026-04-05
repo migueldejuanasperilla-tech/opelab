@@ -94,19 +94,23 @@ async function splitPdfIfNeeded(file){
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 const T={
-  bg:'#edf6f2',surface:'#ffffff',card:'#f4faf7',
-  border:'#cce4da',border2:'#aed0c4',
-  text:'#0c2820',muted:'#3d7060',dim:'#8ab5a8',
-  blue:'#2057b8',blueDk:'#174494',blueS:'#eaf1fc',blueText:'#174494',
-  green:'#177a5a',greenDk:'#105e44',greenS:'#e6f7f1',greenText:'#0b4232',
-  teal:'#0882a8',tealDk:'#066888',tealS:'#e0f4fa',tealText:'#054f68',
+  bg:'#f4f9f7',surface:'#ffffff',card:'#ffffff',
+  border:'#e0eeea',border2:'#c8e0d8',
+  text:'#1b3a30',muted:'#68a090',dim:'#a8c8be',
+  blue:'#2055b8',blueDk:'#174494',blueS:'#eaf2fc',blueText:'#174494',
+  green:'#05b490',greenDk:'#048a6e',greenS:'#e6faf5',greenText:'#035c4a',
+  teal:'#0891b2',tealDk:'#0678a0',tealS:'#e0f4fa',tealText:'#054f68',
   amber:'#c47d0a',amberS:'#fef6e4',amberText:'#7a4d06',
-  red:'#c82020',redDk:'#a01818',redS:'#fdf0f0',redText:'#7a1212',
+  red:'#e53e3e',redDk:'#c53030',redS:'#fff5f5',redText:'#742a2a',
   purple:'#6b34d4',purpleDk:'#5828aa',purpleS:'#f2eeff',purpleText:'#3d1d82',
   orange:'#d45010',orangeS:'#fdf3ec',orangeText:'#7a2e08',
 };
-const FONT="'Syne',system-ui,sans-serif";
-const sh={sm:'0 1px 4px rgba(0,40,20,.07),0 1px 2px rgba(0,40,20,.04)',md:'0 4px 12px rgba(0,40,20,.08),0 2px 4px rgba(0,40,20,.04)'};
+const FONT="'DM Sans',system-ui,sans-serif";
+const sh={
+  sm:'0 1px 4px rgba(0,50,30,.06),0 1px 2px rgba(0,50,30,.04)',
+  md:'0 4px 24px rgba(0,50,30,.08),0 2px 8px rgba(0,50,30,.04)',
+  lg:'0 8px 40px rgba(0,50,30,.10)',
+};
 
 // ── Sections ─────────────────────────────────────────────────────────────────
 const SECTIONS=[
@@ -570,7 +574,7 @@ export default function App(){
           <span style={{fontWeight:700,fontSize:15,color:T.text}}>⚙️ Ajustes</span>
         </div>
       </div>
-      <div style={{maxWidth:960,margin:'0 auto',padding:'28px 20px'}}>
+      <div style={{maxWidth:1100,margin:'0 auto',padding:'32px 24px'}}>
         <Ajustes apiKey={apiKey} onSave={saveApiKey}/>
       </div>
     </div>
@@ -578,18 +582,18 @@ export default function App(){
 
   return(
     <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14}}>
-      <div style={{background:T.surface,borderBottom:`1px solid ${T.border}`,boxShadow:sh.sm,position:'sticky',top:0,zIndex:50}}>
-        <div style={{maxWidth:960,margin:'0 auto',padding:'0 20px'}}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',paddingTop:12,paddingBottom:4}}>
-            <div style={{display:'flex',alignItems:'center',gap:10}}>
-              <div style={{width:32,height:32,borderRadius:8,background:`linear-gradient(135deg,${T.green},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>🔬</div>
-              <div><span style={{fontWeight:700,fontSize:15,color:T.text,letterSpacing:-0.3}}>OPE Lab</span><span style={{color:T.dim,fontSize:11,marginLeft:8}}>FEA Laboratorio Clínico · SESCAM 2025</span></div>
+      <div style={{background:'rgba(255,255,255,0.85)',backdropFilter:'blur(10px)',borderBottom:`1px solid ${T.border}`,boxShadow:sh.sm,position:'sticky',top:0,zIndex:50}}>
+        <div style={{maxWidth:1100,margin:'0 auto',padding:'0 24px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',paddingTop:14,paddingBottom:6}}>
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              <div style={{width:36,height:36,borderRadius:12,background:`linear-gradient(135deg,${T.green},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,boxShadow:sh.sm}}>🔬</div>
+              <div><span style={{fontWeight:700,fontSize:16,color:T.text,letterSpacing:'-0.3px'}}>OPE Lab</span><span style={{color:T.muted,fontSize:11,marginLeft:8,fontWeight:400}}>FEA Laboratorio Clínico · SESCAM 2025</span></div>
             </div>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
               <Chip color={T.blue} bg={T.blueS}>{qs.length} preg.</Chip>
               {dueQs.length>0&&<Chip color={T.amber} bg={T.amberS}>{dueQs.length} pendientes</Chip>}
               {errSet.size>0&&<Chip color={T.red} bg={T.redS}>{errSet.size} errores</Chip>}
-              <button onClick={()=>setTab('ajustes')} title="Ajustes" style={{background:'none',border:`1px solid ${T.border}`,borderRadius:7,padding:'4px 8px',cursor:'pointer',color:T.muted,fontSize:14,lineHeight:1,marginLeft:4}}>⚙️</button>
+              <button onClick={()=>setTab('ajustes')} title="Ajustes" style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:'6px 10px',cursor:'pointer',color:T.muted,fontSize:14,lineHeight:1,marginLeft:4,boxShadow:sh.sm}}>⚙️</button>
             </div>
           </div>
           <div style={{display:'flex',marginTop:4,gap:0}}>
@@ -602,7 +606,7 @@ export default function App(){
         </div>
       </div>
 
-      <div style={{maxWidth:960,margin:'0 auto',padding:'28px 20px'}}>
+      <div style={{maxWidth:1100,margin:'0 auto',padding:'32px 24px'}}>
         {normalizedTab==='panel'   &&<PanelTab shared={shared} examDate={examDate} sessions={sessions} stats={stats} setExamDate={setExamDate} goToBank={goToBank} setTab={setTab} errSet={errSet} dueQs={dueQs}/>}
         {normalizedTab==='temario' &&<TemarioConEstudio setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} studyPreselect={studyPreselect} onStudyPreselect={()=>setStudyPreselect(null)} goToStudy={t=>{setStudyPreselect(t);setTab('temario');}}/>}
         {normalizedTab==='practica'&&<PracticaTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs}/>}
@@ -730,7 +734,7 @@ function Chip({color,bg,children}){return <span style={{background:bg,color,padd
 function Lbl({children}){return <div style={{fontSize:11,color:T.muted,fontWeight:700,marginBottom:6,letterSpacing:0.5,textTransform:'uppercase'}}>{children}</div>;}
 function Btn({onClick,disabled,children,variant='primary',style:st}){
   const v={primary:{bg:T.blue,c:'#fff',b:T.blueDk},green:{bg:T.green,c:'#fff',b:T.greenDk},ghost:{bg:T.surface,c:T.text,b:T.border2},danger:{bg:T.redS,c:T.red,b:'#fca5a5'},teal:{bg:T.teal,c:'#fff',b:T.tealDk},purple:{bg:T.purple,c:'#fff',b:T.purpleDk},orange:{bg:T.orange,c:'#fff',b:'#c2410c'}}[variant];
-  return <button onClick={onClick} disabled={disabled} style={{background:disabled?T.card:v.bg,color:disabled?T.dim:v.c,border:`1px solid ${disabled?T.border:v.b}`,borderRadius:7,padding:'9px 20px',fontWeight:600,fontSize:13,cursor:disabled?'not-allowed':'pointer',fontFamily:FONT,boxShadow:disabled?'none':sh.sm,...st}}>{children}</button>;
+  return <button onClick={onClick} disabled={disabled} style={{background:disabled?T.card:v.bg,color:disabled?T.dim:v.c,border:'none',borderRadius:12,padding:'10px 22px',fontWeight:700,fontSize:13,cursor:disabled?'not-allowed':'pointer',fontFamily:FONT,boxShadow:disabled?'none':sh.sm,letterSpacing:'0.1px',...st}}>{children}</button>;
 }
 function RadioGroup({options,value,onChange}){
   return <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:16}}>
@@ -741,7 +745,7 @@ function RadioGroup({options,value,onChange}){
   </div>;
 }
 function PBar({pct,color,height=6}){const c=color||(pct>=70?T.green:pct>=50?T.amber:T.red);return <div style={{background:T.border,borderRadius:4,height}}><div style={{background:c,width:`${Math.min(pct,100)}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>;}
-function Card({children,style:st}){return <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,boxShadow:sh.sm,...st}}>{children}</div>;}
+function Card({children,style:st}){return <div style={{background:T.surface,borderRadius:20,boxShadow:sh.md,...st}}>{children}</div>;}
 function Sel({value,onChange,children,style:st}){return <select value={value} onChange={e=>onChange(e.target.value)} style={{width:'100%',background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',marginBottom:14,fontFamily:FONT,boxShadow:sh.sm,...st}}>{children}</select>;}
 
 // ═══════════════════════════════════════════════════════════════════════════
