@@ -425,6 +425,7 @@ export default function App(){
   const [sessions,setSessions]=useState([]);
   const [examDate,setExamDateState]=useState('');
   const [notes,setNotesState]=useState({});
+  const [topicNotes,setTopicNotesState]=useState({});
   const [bankPreselect,setBankPreselect]=useState(null);
   const [studyPreselect,setStudyPreselect]=useState(null);
   const [pdfMeta,setPdfMetaState]=useState({});
@@ -442,6 +443,7 @@ export default function App(){
       const sess=load('olab_sessions',[]);
       const ed=load('olab_exam_date','');
       const nt=load('olab_notes',{});
+      const tn=load('olab_topic_notes',{});
       const pm=load('olab_pdf_meta',{});
       const ak=load('olab_api_key','');
       const sn=load('olab_study_notes',{});
@@ -459,7 +461,7 @@ export default function App(){
       }
 
       setQs(q);setSr(s);setStats(st);setMarked(new Set(mk));setErrSet(new Set(er));
-      setSessions(sess);setExamDateState(ed);setNotesState(nt);setPdfMetaState(pm);
+      setSessions(sess);setExamDateState(ed);setNotesState(nt);setTopicNotesState(tn);setPdfMetaState(pm);
       setApiKeyState(ak);setStudyNotesState(sn);setLoaded(true);
     })();
   },[]);
@@ -486,6 +488,7 @@ export default function App(){
   },[]);
   const setExamDate=useCallback(d=>{setExamDateState(d);save('olab_exam_date',d);},[]);
   const setNote=useCallback((sid,text)=>{setNotesState(prev=>{const n={...prev,[sid]:text};save('olab_notes',n);return n;});},[]);
+  const saveTopicNote=useCallback((topic,text)=>{setTopicNotesState(prev=>{const n={...prev,[topic]:text};save('olab_topic_notes',n);return n;});},[]);
 
   // Guardar PDF — divide automáticamente si >80 páginas
   const savePdfForTopic=useCallback(async(topic,file)=>{
@@ -569,7 +572,7 @@ export default function App(){
   if(normalizedTab==='ajustes') return(
     <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14}}>
       <div style={{background:T.surface,borderBottom:`1px solid ${T.border}`,boxShadow:sh.sm}}>
-        <div style={{maxWidth:960,margin:'0 auto',padding:'14px 20px',display:'flex',alignItems:'center',gap:12}}>
+        <div style={{maxWidth:1200,margin:'0 auto',padding:'14px 40px',display:'flex',alignItems:'center',gap:12}}>
           <button onClick={()=>setTab('panel')} style={{background:'none',border:'none',cursor:'pointer',color:T.muted,fontSize:13,fontFamily:FONT,display:'flex',alignItems:'center',gap:4}}>← Volver</button>
           <span style={{fontWeight:700,fontSize:15,color:T.text}}>⚙️ Ajustes</span>
         </div>
@@ -608,7 +611,7 @@ export default function App(){
 
       <div style={{padding:'32px 40px'}}>
         {normalizedTab==='panel'   &&<PanelTab shared={shared} examDate={examDate} sessions={sessions} stats={stats} setExamDate={setExamDate} goToBank={goToBank} setTab={setTab} errSet={errSet} dueQs={dueQs}/>}
-        {normalizedTab==='temario' &&<TemarioConEstudio setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} studyPreselect={studyPreselect} onStudyPreselect={()=>setStudyPreselect(null)} goToStudy={t=>{setStudyPreselect(t);setTab('temario');}}/>}
+        {normalizedTab==='temario' &&<TemarioConEstudio setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} studyPreselect={studyPreselect} onStudyPreselect={()=>setStudyPreselect(null)} goToStudy={t=>{setStudyPreselect(t);setTab('temario');}} topicNotes={topicNotes} saveTopicNote={saveTopicNote}/>}
         {normalizedTab==='practica'&&<PracticaTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs}/>}
         {normalizedTab==='banco'   &&<BankManager {...shared} preselect={bankPreselect} onPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} apiKey={apiKey}/>}
       </div>
@@ -657,7 +660,7 @@ function Ajustes({apiKey,onSave}){
   const save=()=>{if(!key.trim()){setMsg('❌ Clave vacía.');return;}onSave(key.trim());setMsg('✅ API key guardada correctamente.');};
   const masked=apiKey?apiKey.slice(0,12)+'…'+apiKey.slice(-4):'—';
   return(
-    <div style={{maxWidth:520}}>
+    <div style={{maxWidth:'100%'}}>
       <h2 style={{fontSize:18,fontWeight:700,margin:'0 0 24px',color:T.text,letterSpacing:-0.3}}>⚙️ Ajustes</h2>
       <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:'20px 22px',marginBottom:16,boxShadow:sh.sm}}>
         <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:4}}>API Key de Anthropic</div>
@@ -692,7 +695,7 @@ function PanelTab({shared,examDate,sessions,stats,setExamDate,goToBank,setTab,er
 }
 
 // ── TemarioConEstudio — Temario + visor de apuntes integrado ──────────────────
-function TemarioConEstudio({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,studyPreselect,onStudyPreselect,goToStudy}){
+function TemarioConEstudio({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,studyPreselect,onStudyPreselect,goToStudy,topicNotes,saveTopicNote}){
   const [subTab,setSubTab]=useState(studyPreselect?'estudio':'temario');
   useEffect(()=>{if(studyPreselect){setSubTab('estudio');}},[studyPreselect]);
   const totalNotes=Object.keys(studyNotes).length;
@@ -704,7 +707,7 @@ function TemarioConEstudio({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopi
           📖 Apuntes {totalNotes>0&&<span style={{fontSize:10,background:T.tealS,color:T.teal,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{totalNotes}</span>}
         </button>
       </div>
-      {subTab==='temario'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setSubTab('estudio');goToStudy(t);}}/>}
+      {subTab==='temario'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setSubTab('estudio');goToStudy(t);}} topicNotes={topicNotes} saveTopicNote={saveTopicNote}/>}
       {subTab==='estudio'&&<EstudioTab studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} preselect={studyPreselect} onPreselect={onStudyPreselect} pdfMeta={pdfMeta}/>}
     </div>
   );
@@ -838,8 +841,10 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
 // ═══════════════════════════════════════════════════════════════════════════
 // TEMARIO — con notas por sección
 // ═══════════════════════════════════════════════════════════════════════════
-function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,goToStudy}){
+function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,goToStudy,topicNotes,saveTopicNote}){
   const [open,setOpen]=useState(null);
+  const [openNote,setOpenNote]=useState(null); // topic key with notes open
+  const [editingNote,setEditingNote]=useState(null); // topic key being edited
   const [splittingKey,setSplittingKey]=useState(null);
   const [generatingStudy,setGeneratingStudy]=useState(null);
   const [studyMsg,setStudyMsg]=useState({});
@@ -974,6 +979,60 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                           </div>
                         )}
                         {studyMsg[t]&&<div style={{marginTop:5,fontSize:11,color:studyMsg[t].startsWith('❌')?T.red:T.muted,paddingLeft:17}}>{studyMsg[t]}</div>}
+                        {/* Topic notes toggle */}
+                        <div style={{paddingLeft:17,marginTop:6}}>
+                          <button onClick={()=>setOpenNote(openNote===t?null:t)}
+                            style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:topicNotes[t]?T.teal:T.dim,fontFamily:FONT,padding:0,fontWeight:600,display:'flex',alignItems:'center',gap:4}}>
+                            {topicNotes[t]?'📝 Ver apuntes':'📝 Añadir apuntes'}
+                            {topicNotes[t]&&<span style={{background:T.tealS,color:T.teal,fontSize:9,padding:'1px 5px',borderRadius:8,fontWeight:700,border:`1px solid ${T.tealDk}30`}}>✓</span>}
+                          </button>
+                        </div>
+                        {openNote===t&&(
+                          <div style={{marginTop:8,marginLeft:17,background:T.surface,borderRadius:10,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:sh.sm}}>
+                            {/* Notes header */}
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',background:T.tealS,borderBottom:`1px solid ${T.border}`}}>
+                              <span style={{fontSize:11,fontWeight:700,color:T.teal,letterSpacing:0.3}}>📝 MIS APUNTES · {t.split('.')[0]}</span>
+                              <div style={{display:'flex',gap:6}}>
+                                {editingNote===t?(
+                                  <button onClick={()=>setEditingNote(null)} style={{background:T.teal,color:'#fff',border:'none',borderRadius:6,padding:'3px 10px',fontSize:10,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>✓ Guardar</button>
+                                ):(
+                                  <button onClick={()=>setEditingNote(t)} style={{background:T.surface,color:T.teal,border:`1px solid ${T.teal}`,borderRadius:6,padding:'3px 10px',fontSize:10,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>✏️ Editar</button>
+                                )}
+                                <button onClick={()=>{setOpenNote(null);setEditingNote(null);}} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:16,padding:'0 2px',lineHeight:1}}>×</button>
+                              </div>
+                            </div>
+                            {/* Notes content */}
+                            {editingNote===t?(
+                              <textarea
+                                autoFocus
+                                defaultValue={topicNotes[t]||''}
+                                onBlur={e=>saveTopicNote(t,e.target.value)}
+                                onChange={e=>saveTopicNote(t,e.target.value)}
+                                placeholder={`Escribe tus apuntes para ${t.split('.')[0]}...\n\nPuedes usar:\n• Listas con guiones o puntos\n• Valores de referencia y puntos de corte\n• Mecanismos fisiopatológicos\n• Perlas para el examen`}
+                                style={{width:'100%',minHeight:200,background:T.surface,color:T.text,border:'none',padding:'12px 14px',fontSize:13,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.7}}
+                              />
+                            ):(
+                              <div style={{padding:'12px 14px',minHeight:80}}>
+                                {topicNotes[t]?(
+                                  <div style={{fontSize:13,color:T.text,lineHeight:1.8,whiteSpace:'pre-wrap',fontFamily:FONT}}>
+                                    {topicNotes[t].split('\n').map((line,i)=>{
+                                      if(!line.trim()) return <div key={i} style={{height:8}}/>;
+                                      const isBullet=line.trim().startsWith('-')||line.trim().startsWith('•')||line.trim().startsWith('*');
+                                      const isTitle=line.trim().startsWith('#');
+                                      if(isTitle) return <div key={i} style={{fontWeight:700,fontSize:14,color:T.text,marginBottom:4,marginTop:i>0?10:0}}>{line.replace(/^#+\s*/,'')}</div>;
+                                      if(isBullet) return <div key={i} style={{display:'flex',gap:8,alignItems:'flex-start',marginBottom:3}}><span style={{color:T.teal,fontWeight:700,flexShrink:0,marginTop:2}}>·</span><span>{line.replace(/^[-•*]\s*/,'')}</span></div>;
+                                      return <div key={i} style={{marginBottom:3}}>{line}</div>;
+                                    })}
+                                  </div>
+                                ):(
+                                  <div style={{color:T.dim,fontSize:12,fontStyle:'italic',textAlign:'center',paddingTop:16}}>
+                                    Sin apuntes · Pulsa Editar para añadir
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1268,7 +1327,7 @@ function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
     const sTopics=cfg.section==='all'?null:SECTIONS.find(s=>s.id===cfg.section)?.topics;
     const topicsForSec=cfg.section==='all'?[...new Set(testQs.map(q=>q.topic))].sort():(sTopics||[]).filter(t=>testQs.some(q=>q.topic===t));
     return(
-      <div style={{maxWidth:500}}>
+      <div style={{maxWidth:680}}>
         <h2 style={{fontSize:18,fontWeight:700,marginBottom:20,color:T.text,letterSpacing:-0.3}}>🧪 Configurar test</h2>
         <Lbl>Bloque temático</Lbl>
         <Sel value={cfg.section} onChange={v=>setCfg({...cfg,section:v,topic:'all'})}>
@@ -1314,7 +1373,7 @@ function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
 
   const q=session[idx];const OPT=['A','B','C','D'];
   return(
-    <div style={{maxWidth:700}}>
+    <div style={{maxWidth:860}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
         <div style={{display:'flex',alignItems:'center',gap:10}}>
           <span style={{fontSize:13,color:T.muted,fontWeight:500}}>Pregunta {idx+1}/{session.length}</span>
@@ -1412,7 +1471,7 @@ function Simulacro({testQs,recordAnswer,addSession}){
 
   // ── Setup ──
   if(phase==='setup') return(
-    <div style={{maxWidth:500}}>
+    <div style={{maxWidth:680}}>
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:24}}>
         <div style={{width:40,height:40,borderRadius:10,background:T.orangeS,border:`2px solid ${T.orange}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>⚡</div>
         <div><h2 style={{fontSize:18,fontWeight:700,margin:0,color:T.text,letterSpacing:-0.3}}>Simulacro de examen</h2><p style={{color:T.muted,fontSize:13,margin:0}}>Condiciones reales: tiempo total, sin feedback inmediato, penalización por error</p></div>
@@ -1598,7 +1657,7 @@ function FlashcardMode({fcQs,dueQs,sr,marked,toggleMark,recordAnswer,addSession}
   };
 
   if(phase==='setup')return(
-    <div style={{maxWidth:460}}>
+    <div style={{maxWidth:'100%'}}>
       <h2 style={{fontSize:18,fontWeight:700,marginBottom:20,color:T.text,letterSpacing:-0.3}}>🃏 Flashcards · Repaso espaciado SM-2</h2>
       <Lbl>Sesión</Lbl>
       <RadioGroup value={mode} onChange={setMode} options={[{value:'due',label:`📅 Pendientes de hoy (${dueQs.length})`},{value:'all',label:`🔄 Todas (${fcQs.length})`},{value:'section',label:'📂 Por bloque temático'}]}/>
@@ -1609,7 +1668,7 @@ function FlashcardMode({fcQs,dueQs,sr,marked,toggleMark,recordAnswer,addSession}
   );
 
   if(phase==='done')return(
-    <Card style={{textAlign:'center',padding:'48px 24px',maxWidth:400,margin:'0 auto'}}>
+    <Card style={{textAlign:'center',padding:'48px 24px'}}>
       <div style={{fontSize:48,marginBottom:12}}>🎓</div>
       <div style={{fontSize:20,fontWeight:700,color:T.text}}>¡Sesión completada!</div>
       <div style={{color:T.muted,marginTop:8,marginBottom:8,fontSize:14}}>Has repasado {session.length} flashcards</div>
@@ -1621,7 +1680,7 @@ function FlashcardMode({fcQs,dueQs,sr,marked,toggleMark,recordAnswer,addSession}
   if(idx>=session.length)return null;
   const q=session[idx];const srInfo=sr[q.id]||{};
   return(
-    <div style={{maxWidth:600}}>
+    <div style={{maxWidth:'100%'}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
         <span style={{color:T.muted,fontSize:13,fontWeight:500}}>Tarjeta {idx+1}/{session.length}</span>
         <div style={{display:'flex',gap:10,alignItems:'center'}}>
@@ -1877,7 +1936,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
       </div>
 
       {subTab==='ai'&&(
-        <div style={{maxWidth:580}}>
+        <div style={{maxWidth:720}}>
           <p style={{color:T.muted,fontSize:13,marginTop:0,marginBottom:20,lineHeight:1.6}}>Selecciona bloque y tema. Si el tema tiene un PDF adjunto (desde el Temario), se cargará automáticamente como fuente de conocimiento.</p>
           <Lbl>1. Bloque temático (SESCAM 2025)</Lbl>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(175px,1fr))',gap:6,marginBottom:18}}>
@@ -2026,7 +2085,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
       )}
 
       {subTab==='upload'&&(
-        <div style={{maxWidth:600}}>
+        <div style={{maxWidth:'100%'}}>
           <h3 style={{color:T.text,fontSize:16,fontWeight:600,marginBottom:4}}>📤 Importar banco JSON</h3>
           <p style={{color:T.muted,fontSize:13,marginTop:0,marginBottom:12}}>Usa los campos "topic" del temario SESCAM para estadísticas correctas. Acepta mezcla de test y flashcard.</p>
           <textarea value={upText} onChange={e=>setUpText(e.target.value)} placeholder={'[\n  {"topic":"T15. Equilibrio ácido-base...","type":"test","question":"...","options":["A","B","C","D"],"correct":0,"explanation":"..."}\n]'} style={{width:'100%',minHeight:140,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:12,fontSize:12,fontFamily:'monospace',boxSizing:'border-box',resize:'vertical',outline:'none',boxShadow:sh.sm}}/>
