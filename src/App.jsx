@@ -750,6 +750,66 @@ function PracticaTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs}){
   );
 }
 
+// ── PdfViewer ─────────────────────────────────────────────────────────────────
+function PdfViewer({topic,fileId,name,onClose}){
+  const [url,setUrl]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState(null);
+
+  useEffect(()=>{
+    let objectUrl=null;
+    (async()=>{
+      try{
+        const blob=await idbLoad(topicFilePdfKey(topic,fileId));
+        if(!blob){setError('No se encontró el PDF en el almacenamiento local.');setLoading(false);return;}
+        objectUrl=URL.createObjectURL(blob instanceof File?blob:new File([blob],name,{type:'application/pdf'}));
+        setUrl(objectUrl);
+      }catch(e){setError(e.message);}
+      setLoading(false);
+    })();
+    return()=>{if(objectUrl)URL.revokeObjectURL(objectUrl);};
+  },[topic,fileId]);
+
+  return(
+    <div style={{marginTop:10,marginLeft:17,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:sh.md,background:T.surface}}>
+      {/* Header */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:T.greenS,borderBottom:`1px solid ${T.border}`}}>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:15}}>📄</span>
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:T.greenText}}>{name}</div>
+            <div style={{fontSize:10,color:T.muted}}>{topic.split('.')[0]} · Visor PDF</div>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          {url&&<a href={url} download={name} style={{fontSize:11,color:T.green,fontWeight:600,textDecoration:'none',background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,padding:'3px 10px'}}>⬇ Descargar</a>}
+          <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:18,padding:'0 4px',lineHeight:1}}>×</button>
+        </div>
+      </div>
+      {/* Viewer */}
+      <div style={{height:700,background:T.card}}>
+        {loading&&(
+          <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:T.muted,fontSize:13}}>
+            <span>⏳ Cargando PDF...</span>
+          </div>
+        )}
+        {error&&(
+          <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:T.red,fontSize:13}}>
+            ❌ {error}
+          </div>
+        )}
+        {url&&!loading&&(
+          <iframe
+            src={url}
+            title={name}
+            style={{width:'100%',height:'100%',border:'none'}}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── TopicNotesPanel ───────────────────────────────────────────────────────────
 function TopicNotesPanel({topic,value,onChange,onClose,editing,setEditing}){
   const taRef=useRef(null);
@@ -1011,8 +1071,9 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
 // ═══════════════════════════════════════════════════════════════════════════
 function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,goToStudy,topicNotes,saveTopicNote}){
   const [open,setOpen]=useState(null);
-  const [openNote,setOpenNote]=useState(null); // topic key with notes open
-  const [editingNote,setEditingNote]=useState(null); // topic key being edited
+  const [openNote,setOpenNote]=useState(null);
+  const [editingNote,setEditingNote]=useState(null);
+  const [openPdf,setOpenPdf]=useState(null); // {topic, fileId, name}
   const [splittingKey,setSplittingKey]=useState(null);
   const [generatingStudy,setGeneratingStudy]=useState(null);
   const [studyMsg,setStudyMsg]=useState({});
@@ -1132,13 +1193,21 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                         </div>
                         {hasPdfs&&(
                           <div style={{paddingLeft:17,marginTop:5,display:'flex',flexWrap:'wrap',gap:4}}>
-                            {files.map(f=>(
-                              <div key={f.id} style={{display:'flex',alignItems:'center',gap:5,background:T.greenS,borderRadius:6,padding:'2px 8px'}}>
-                                <span style={{fontSize:10,color:T.greenText,fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>📄 {f.name}</span>
-                                {f.pages&&<span style={{fontSize:9,color:T.muted}}>pp.{f.pages}</span>}
-                                <button onClick={()=>deletePdfForTopic(t,f.id)} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:12,padding:0,lineHeight:1}}>×</button>
-                              </div>
-                            ))}
+                            {files.map(f=>{
+                              const isViewingThis=openPdf&&openPdf.topic===t&&openPdf.fileId===f.id;
+                              return(
+                                <div key={f.id} style={{display:'flex',alignItems:'center',gap:0,background:isViewingThis?T.green:T.greenS,borderRadius:6,overflow:'hidden',border:`1px solid ${isViewingThis?T.greenDk:'#86efac'}`}}>
+                                  <button onClick={()=>setOpenPdf(isViewingThis?null:{topic:t,fileId:f.id,name:f.name})}
+                                    style={{background:'none',border:'none',cursor:'pointer',padding:'3px 8px',display:'flex',alignItems:'center',gap:4}}>
+                                    <span style={{fontSize:10,color:isViewingThis?'#fff':T.greenText,fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                      {isViewingThis?'▼':'📄'} {f.name}
+                                    </span>
+                                    {f.pages&&<span style={{fontSize:9,color:isViewingThis?'#ffffffaa':T.muted}}>pp.{f.pages}</span>}
+                                  </button>
+                                  <button onClick={()=>deletePdfForTopic(t,f.id)} style={{background:'none',border:'none',borderLeft:`1px solid ${isViewingThis?T.greenDk:'#86efac'}`,cursor:'pointer',color:isViewingThis?'#fff':T.dim,fontSize:12,padding:'3px 6px',lineHeight:1}}>×</button>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                         {hasRefs&&(
@@ -1148,6 +1217,10 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                           </div>
                         )}
                         {studyMsg[t]&&<div style={{marginTop:5,fontSize:11,color:studyMsg[t].startsWith('❌')?T.red:T.muted,paddingLeft:17}}>{studyMsg[t]}</div>}
+                        {/* PDF viewer inline */}
+                        {openPdf&&openPdf.topic===t&&(
+                          <PdfViewer key={openPdf.fileId} topic={t} fileId={openPdf.fileId} name={openPdf.name} onClose={()=>setOpenPdf(null)}/>
+                        )}
                         {/* Topic notes toggle */}
                         <div style={{paddingLeft:17,marginTop:6}}>
                           <button onClick={()=>setOpenNote(openNote===t?null:t)}
