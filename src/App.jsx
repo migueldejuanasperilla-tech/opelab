@@ -732,6 +732,156 @@ function PracticaTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs}){
   );
 }
 
+// ── TopicNotesPanel ───────────────────────────────────────────────────────────
+function TopicNotesPanel({topic,value,onChange,onClose,editing,setEditing}){
+  const taRef=useRef(null);
+  const [saved,setSaved]=useState(false);
+  const wordCount=value.trim()?value.trim().split(/\s+/).length:0;
+  const lineCount=value?value.split('\n').length:0;
+
+  const handleChange=e=>{onChange(e.target.value);setSaved(false);};
+  const handleBlur=()=>{setSaved(true);setTimeout(()=>setSaved(false),2000);};
+
+  const insert=(before,after='',placeholder='texto')=>{
+    const ta=taRef.current;if(!ta)return;
+    const s=ta.selectionStart,e=ta.selectionEnd;
+    const sel=value.slice(s,e)||placeholder;
+    const next=value.slice(0,s)+before+sel+after+value.slice(e);
+    onChange(next);
+    setTimeout(()=>{ta.focus();ta.setSelectionRange(s+before.length,s+before.length+sel.length);},0);
+  };
+
+  const insertLine=(prefix)=>{
+    const ta=taRef.current;if(!ta)return;
+    const s=ta.selectionStart;
+    const lineStart=value.lastIndexOf('\n',s-1)+1;
+    const next=value.slice(0,lineStart)+prefix+value.slice(lineStart);
+    onChange(next);
+    setTimeout(()=>{ta.focus();ta.setSelectionRange(s+prefix.length,s+prefix.length);},0);
+  };
+
+  const renderLine=(line,i)=>{
+    if(!line.trim()) return <div key={i} style={{height:10}}/>;
+    if(line.startsWith('## ')) return <div key={i} style={{fontWeight:700,fontSize:16,color:T.text,margin:'16px 0 6px',borderBottom:`2px solid ${T.border}`,paddingBottom:4}}>{line.slice(3)}</div>;
+    if(line.startsWith('# ')) return <div key={i} style={{fontWeight:800,fontSize:19,color:T.text,margin:'20px 0 8px',letterSpacing:-0.5}}>{line.slice(2)}</div>;
+    if(line.startsWith('> ')) return <div key={i} style={{borderLeft:`3px solid ${T.teal}`,background:T.tealS,padding:'6px 12px',borderRadius:'0 6px 6px 0',fontSize:13,color:T.tealText,margin:'6px 0',lineHeight:1.6}}>{renderInline(line.slice(2))}</div>;
+    if(line.startsWith('! ')) return <div key={i} style={{borderLeft:`3px solid ${T.amber}`,background:T.amberS,padding:'6px 12px',borderRadius:'0 6px 6px 0',fontSize:13,color:T.amberText,margin:'6px 0',fontWeight:600,lineHeight:1.6}}>⚠️ {renderInline(line.slice(2))}</div>;
+    if(line.match(/^---+$/)) return <hr key={i} style={{border:'none',borderTop:`1px solid ${T.border}`,margin:'12px 0'}}/>;
+    if(line.match(/^(\s*[-•*]|\d+\.) /)){
+      const isNum=line.match(/^\d+\./);
+      const depth=(line.match(/^\s+/)||[''])[0].length;
+      const text=line.replace(/^\s*[-•*\d.]+\s*/,'');
+      return <div key={i} style={{display:'flex',gap:8,alignItems:'flex-start',marginBottom:4,paddingLeft:depth*12}}>
+        <span style={{color:isNum?T.blue:T.green,fontWeight:700,flexShrink:0,minWidth:16,marginTop:1,fontSize:isNum?12:16}}>{isNum?line.match(/^(\d+)/)[1]+'.':'·'}</span>
+        <span style={{fontSize:13,color:T.text,lineHeight:1.65}}>{renderInline(text)}</span>
+      </div>;
+    }
+    return <div key={i} style={{fontSize:13,color:T.text,lineHeight:1.75,marginBottom:2}}>{renderInline(line)}</div>;
+  };
+
+  const renderInline=(text)=>{
+    const parts=[];let remaining=text;let ki=0;
+    const re=/\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`/g;let m;let last=0;
+    while((m=re.exec(text))!==null){
+      if(m.index>last)parts.push(<span key={ki++}>{text.slice(last,m.index)}</span>);
+      if(m[1]) parts.push(<strong key={ki++} style={{color:T.text,fontWeight:700}}>{m[1]}</strong>);
+      else if(m[2]) parts.push(<em key={ki++} style={{color:T.muted}}>{m[2]}</em>);
+      else if(m[3]) parts.push(<code key={ki++} style={{background:T.blueS,color:T.blueText,padding:'1px 5px',borderRadius:4,fontSize:12,fontFamily:'DM Mono,monospace'}}>{m[3]}</code>);
+      last=m.index+m[0].length;
+    }
+    if(last<text.length)parts.push(<span key={ki++}>{text.slice(last)}</span>);
+    return parts.length?parts:text;
+  };
+
+  const TBtn=({onClick,title,children,active})=>(
+    <button onClick={onClick} title={title}
+      style={{background:active?T.tealS:'none',border:active?`1px solid ${T.teal}`:'1px solid transparent',borderRadius:5,padding:'3px 7px',cursor:'pointer',color:active?T.teal:T.muted,fontSize:12,fontFamily:FONT,fontWeight:600,lineHeight:1.4,transition:'all 0.1s'}}>
+      {children}
+    </button>
+  );
+
+  return(
+    <div style={{marginTop:10,marginLeft:17,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:sh.md,background:T.surface}}>
+      {/* Header */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:`linear-gradient(90deg,${T.tealS},${T.blueS})`,borderBottom:`1px solid ${T.border}`}}>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:14}}>📝</span>
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:T.tealText}}>{topic.split('.')[0]} — Mis apuntes</div>
+            <div style={{fontSize:10,color:T.muted}}>{wordCount} palabras · {lineCount} líneas {saved&&<span style={{color:T.green}}>· ✓ Guardado</span>}</div>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          <button onClick={()=>setEditing(!editing)}
+            style={{background:editing?T.teal:T.surface,color:editing?'#fff':T.teal,border:`1px solid ${T.teal}`,borderRadius:8,padding:'4px 12px',fontSize:11,cursor:'pointer',fontFamily:FONT,fontWeight:700}}>
+            {editing?'👁 Vista previa':'✏️ Editar'}
+          </button>
+          <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:18,padding:'0 4px',lineHeight:1}}>×</button>
+        </div>
+      </div>
+
+      {/* Toolbar — only in edit mode */}
+      {editing&&(
+        <div style={{display:'flex',alignItems:'center',gap:2,padding:'6px 10px',background:T.card,borderBottom:`1px solid ${T.border}`,flexWrap:'wrap'}}>
+          <TBtn onClick={()=>insertLine('# ')} title="Título H1">H1</TBtn>
+          <TBtn onClick={()=>insertLine('## ')} title="Título H2">H2</TBtn>
+          <div style={{width:1,height:16,background:T.border,margin:'0 4px'}}/>
+          <TBtn onClick={()=>insert('**','**')} title="Negrita"><strong>B</strong></TBtn>
+          <TBtn onClick={()=>insert('*','*')} title="Cursiva"><em>I</em></TBtn>
+          <TBtn onClick={()=>insert('`','`')} title="Código">{'<>'}</TBtn>
+          <div style={{width:1,height:16,background:T.border,margin:'0 4px'}}/>
+          <TBtn onClick={()=>insertLine('- ')} title="Lista">• Lista</TBtn>
+          <TBtn onClick={()=>insertLine('1. ')} title="Lista numerada">1. Lista</TBtn>
+          <div style={{width:1,height:16,background:T.border,margin:'0 4px'}}/>
+          <TBtn onClick={()=>insertLine('> ')} title="Cita / destacado">💬 Cita</TBtn>
+          <TBtn onClick={()=>insertLine('! ')} title="Aviso / perla">⚠️ Perla</TBtn>
+          <div style={{width:1,height:16,background:T.border,margin:'0 4px'}}/>
+          <TBtn onClick={()=>onChange(value+'\n---\n')} title="Separador">―――</TBtn>
+          <div style={{flex:1}}/>
+          <span style={{fontSize:10,color:T.dim,fontStyle:'italic'}}>** negrita **  · * cursiva * · ` código `</span>
+        </div>
+      )}
+
+      {/* Body: edit or preview */}
+      {editing?(
+        <textarea
+          ref={taRef}
+          autoFocus
+          value={value}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          placeholder={'# Título del tema\n\n## Valores de referencia\n- Glucosa basal: 70–100 mg/dL\n- HbA1c diagnóstico DM: ≥6.5%\n\n## Mecanismos clave\n**Resistencia insulínica** → hiperglucemia crónica\n\n> Perla: el péptido C distingue DM1 de DM2\n\n! La HbA1c no sirve en hemoglobinopatías\n\n## Técnicas analíticas\n1. Glucosa en plasma venoso (hexoquinasa)\n2. HbA1c por HPLC o inmunoturbidimetría'}
+          style={{width:'100%',minHeight:280,background:T.surface,color:T.text,border:'none',padding:'16px 18px',fontSize:13,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.8,tabSize:2}}
+        />
+      ):(
+        <div style={{padding:'18px 20px',minHeight:120,background:T.surface}}>
+          {value.trim()?(
+            <div>{value.split('\n').map((line,i)=>renderLine(line,i))}</div>
+          ):(
+            <div style={{textAlign:'center',padding:'32px 0',color:T.dim}}>
+              <div style={{fontSize:28,marginBottom:8}}>📝</div>
+              <div style={{fontSize:13,fontWeight:500,color:T.muted,marginBottom:4}}>Sin apuntes para este tema</div>
+              <div style={{fontSize:12,color:T.dim}}>Pulsa Editar para empezar</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Footer */}
+      <div style={{padding:'8px 14px',background:T.card,borderTop:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <span style={{fontSize:10,color:T.dim}}>
+          Markdown: <code style={{background:T.blueS,color:T.blueText,padding:'0 4px',borderRadius:3,fontSize:9}}># H1</code>{' '}
+          <code style={{background:T.blueS,color:T.blueText,padding:'0 4px',borderRadius:3,fontSize:9}}>## H2</code>{' '}
+          <code style={{background:T.blueS,color:T.blueText,padding:'0 4px',borderRadius:3,fontSize:9}}>**negrita**</code>{' '}
+          <code style={{background:T.blueS,color:T.blueText,padding:'0 4px',borderRadius:3,fontSize:9}}>&gt; cita</code>{' '}
+          <code style={{background:T.amberS,color:T.amberText,padding:'0 4px',borderRadius:3,fontSize:9}}>! perla</code>
+        </span>
+        {value&&<button onClick={()=>{if(confirm('¿Borrar todos los apuntes de este tema?'))onChange('');}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:T.dim,fontFamily:FONT}}>🗑 Borrar</button>}
+      </div>
+    </div>
+  );
+}
+
 // ── Primitives ────────────────────────────────────────────────────────────────
 function Chip({color,bg,children}){return <span style={{background:bg,color,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600}}>{children}</span>;}
 function Lbl({children}){return <div style={{fontSize:11,color:T.muted,fontWeight:700,marginBottom:6,letterSpacing:0.5,textTransform:'uppercase'}}>{children}</div>;}
@@ -984,55 +1134,10 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                           <button onClick={()=>setOpenNote(openNote===t?null:t)}
                             style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:topicNotes[t]?T.teal:T.dim,fontFamily:FONT,padding:0,fontWeight:600,display:'flex',alignItems:'center',gap:4}}>
                             {topicNotes[t]?'📝 Ver apuntes':'📝 Añadir apuntes'}
-                            {topicNotes[t]&&<span style={{background:T.tealS,color:T.teal,fontSize:9,padding:'1px 5px',borderRadius:8,fontWeight:700,border:`1px solid ${T.tealDk}30`}}>✓</span>}
+                            {topicNotes[t]&&<span style={{background:T.tealS,color:T.tealText,fontSize:9,padding:'1px 5px',borderRadius:8,fontWeight:700}}>✓</span>}
                           </button>
                         </div>
-                        {openNote===t&&(
-                          <div style={{marginTop:8,marginLeft:17,background:T.surface,borderRadius:10,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:sh.sm}}>
-                            {/* Notes header */}
-                            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',background:T.tealS,borderBottom:`1px solid ${T.border}`}}>
-                              <span style={{fontSize:11,fontWeight:700,color:T.teal,letterSpacing:0.3}}>📝 MIS APUNTES · {t.split('.')[0]}</span>
-                              <div style={{display:'flex',gap:6}}>
-                                {editingNote===t?(
-                                  <button onClick={()=>setEditingNote(null)} style={{background:T.teal,color:'#fff',border:'none',borderRadius:6,padding:'3px 10px',fontSize:10,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>✓ Guardar</button>
-                                ):(
-                                  <button onClick={()=>setEditingNote(t)} style={{background:T.surface,color:T.teal,border:`1px solid ${T.teal}`,borderRadius:6,padding:'3px 10px',fontSize:10,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>✏️ Editar</button>
-                                )}
-                                <button onClick={()=>{setOpenNote(null);setEditingNote(null);}} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:16,padding:'0 2px',lineHeight:1}}>×</button>
-                              </div>
-                            </div>
-                            {/* Notes content */}
-                            {editingNote===t?(
-                              <textarea
-                                autoFocus
-                                defaultValue={topicNotes[t]||''}
-                                onBlur={e=>saveTopicNote(t,e.target.value)}
-                                onChange={e=>saveTopicNote(t,e.target.value)}
-                                placeholder={`Escribe tus apuntes para ${t.split('.')[0]}...\n\nPuedes usar:\n• Listas con guiones o puntos\n• Valores de referencia y puntos de corte\n• Mecanismos fisiopatológicos\n• Perlas para el examen`}
-                                style={{width:'100%',minHeight:200,background:T.surface,color:T.text,border:'none',padding:'12px 14px',fontSize:13,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.7}}
-                              />
-                            ):(
-                              <div style={{padding:'12px 14px',minHeight:80}}>
-                                {topicNotes[t]?(
-                                  <div style={{fontSize:13,color:T.text,lineHeight:1.8,whiteSpace:'pre-wrap',fontFamily:FONT}}>
-                                    {topicNotes[t].split('\n').map((line,i)=>{
-                                      if(!line.trim()) return <div key={i} style={{height:8}}/>;
-                                      const isBullet=line.trim().startsWith('-')||line.trim().startsWith('•')||line.trim().startsWith('*');
-                                      const isTitle=line.trim().startsWith('#');
-                                      if(isTitle) return <div key={i} style={{fontWeight:700,fontSize:14,color:T.text,marginBottom:4,marginTop:i>0?10:0}}>{line.replace(/^#+\s*/,'')}</div>;
-                                      if(isBullet) return <div key={i} style={{display:'flex',gap:8,alignItems:'flex-start',marginBottom:3}}><span style={{color:T.teal,fontWeight:700,flexShrink:0,marginTop:2}}>·</span><span>{line.replace(/^[-•*]\s*/,'')}</span></div>;
-                                      return <div key={i} style={{marginBottom:3}}>{line}</div>;
-                                    })}
-                                  </div>
-                                ):(
-                                  <div style={{color:T.dim,fontSize:12,fontStyle:'italic',textAlign:'center',paddingTop:16}}>
-                                    Sin apuntes · Pulsa Editar para añadir
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
+                        {openNote===t&&<TopicNotesPanel topic={t} value={topicNotes[t]||''} onChange={v=>saveTopicNote(t,v)} onClose={()=>{setOpenNote(null);setEditingNote(null);}} editing={editingNote===t} setEditing={v=>setEditingNote(v?t:null)}/>}
                       </div>
                     );
                   })}
