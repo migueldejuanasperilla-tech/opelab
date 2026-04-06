@@ -2014,17 +2014,22 @@ function ExamPdfImporter({qs,saveQs,apiKey}){
   const fileRef=useRef(null);
   const [progress,setProgress]=useState(null); // {done,total}
 
-  const BATCH=15;
-  const DELAY=30000;
+  const BATCH=20;
+  const DELAY=15000;
 
-  const makePrompt=(from,to,total)=>`Eres un experto en oposiciones FEA Laboratorio Clínico SESCAM 2025.
-Tienes delante un examen oficial de oposición en PDF con ${total} preguntas en total.
-Extrae ÚNICAMENTE las preguntas ${from} a ${to} (ambas inclusive).
+  const extractTextPrompt=`Extrae y transcribe el texto completo de este examen de oposición tal como aparece, incluyendo todos los enunciados, opciones y solucionario si existe. No resumas ni omitas nada. Solo texto plano.`;
+
+  const makePrompt=(chunk,from,to,total)=>`Eres un experto en oposiciones FEA Laboratorio Clínico SESCAM 2025.
+Tienes el texto de un examen oficial con ${total} preguntas en total.
+Extrae ÚNICAMENTE las preguntas ${from} a ${to} del siguiente texto y conviértelas a JSON.
+
+TEXTO DEL EXAMEN:
+${chunk}
 
 Para cada pregunta extrae:
 - Enunciado completo
 - Las 4 opciones (A, B, C, D) completas
-- La respuesta correcta si aparece solucionario (índice 0=A,1=B,2=C,3=D) o null si no hay solucionario
+- La respuesta correcta si aparece solucionario (índice 0=A,1=B,2=C,3=D) o null si no aparece
 - El tema T1-T60 del temario SESCAM 2025 más apropiado
 
 Responde ÚNICAMENTE con array JSON válido sin texto previo ni backticks:
@@ -2039,17 +2044,14 @@ Responde ÚNICAMENTE con array JSON válido sin texto previo ni backticks:
     setFile(f);setPreview(null);setMsg('');
   };
 
-  const callAPI=async(pdfB64,prompt)=>{
+  const callAPI=async(prompt,pdfB64=null)=>{
+    const content=[];
+    if(pdfB64)content.push({type:'document',source:{type:'base64',media_type:'application/pdf',data:pdfB64}});
+    content.push({type:'text',text:prompt});
     const res=await fetch('/api/anthropic',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-5',max_tokens:8192,
-        messages:[{role:'user',content:[
-          {type:'document',source:{type:'base64',media_type:'application/pdf',data:pdfB64}},
-          {type:'text',text:prompt}
-        ]}]
-      })
+      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content}]})
     });
     if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
     const data=await res.json();
@@ -2062,37 +2064,51 @@ Responde ÚNICAMENTE con array JSON válido sin texto previo ni backticks:
     try{
       const b64=await blobToB64(file);
 
-      // Step 1: count questions
-      setMsg('🔍 Contando preguntas en el examen...');
-      const countText=await callAPI(b64,countPrompt);
-      const total=parseInt(countText.replace(/\D/g,''));
-      if(!total||total>300)throw new Error(`No se pudo determinar el número de preguntas (respuesta: "${countText}")`);
+      // Step 1: extract full text from PDF (one call with the PDF)
+      setMsg('📄 Extrayendo texto del examen...');
+      const fullText=await callAPI(extractTextPrompt,b64);
+      if(!fullText||fullText.length<100)throw new Error('No se pudo extraer texto del PDF.');
 
+      // Step 2: count questions from text (no PDF needed)
+      setMsg('🔍 Contando preguntas...');
+      await new Promise(r=>setTimeout(r,DELAY));
+      const countText=await callAPI(`Del siguiente texto de examen, cuenta exactamente cuántas preguntas tipo test hay. Responde ÚNICAMENTE con un número entero.\n\n${fullText.slice(0,8000)}`);
+      const total=parseInt(countText.replace(/\D/g,''));
+      if(!total||total>300)throw new Error(`No se pudo determinar el número de preguntas.`);
+
+      // Step 3: split text into chunks and process each batch (no PDF)
+      const lines=fullText.split('\n');
+      const chunkSize=Math.ceil(lines.length/Math.ceil(total/BATCH));
       const batches=Math.ceil(total/BATCH);
-      setMsg(`📊 ${total} preguntas detectadas · Extrayendo en ${batches} lotes...`);
+      setMsg(`📊 ${total} preguntas · Procesando en ${batches} lotes...`);
       setProgress({done:0,total:batches});
 
       const all=[];
       for(let b=0;b<batches;b++){
         const from=b*BATCH+1;
         const to=Math.min((b+1)*BATCH,total);
+        const chunkStart=b*chunkSize;
+        const chunk=lines.slice(chunkStart,chunkStart+chunkSize+50).join('\n');
+
         if(b>0){
           for(let t=DELAY/1000;t>0;t--){
             setMsg(`⏳ Lote ${b}/${batches} completado · Esperando ${t}s...`);
             await new Promise(r=>setTimeout(r,1000));
           }
         }
-        setMsg(`🤖 Extrayendo preguntas ${from}–${to} (lote ${b+1}/${batches})...`);
-        const text=await callAPI(b64,makePrompt(from,to,total));
+        setMsg(`🤖 Procesando preguntas ${from}–${to} (lote ${b+1}/${batches})...`);
+        const text=await callAPI(makePrompt(chunk,from,to,total));
         const cleaned=text.replace(/```json|```/g,'').trim();
-        const parsed=JSON.parse(repairJSON(cleaned));
-        if(Array.isArray(parsed))all.push(...parsed);
+        try{
+          const parsed=JSON.parse(repairJSON(cleaned));
+          if(Array.isArray(parsed))all.push(...parsed);
+        }catch(e){console.warn(`Lote ${b+1} falló:`,e.message);}
         setProgress({done:b+1,total:batches});
       }
 
-      if(!all.length)throw new Error('No se encontraron preguntas en el PDF.');
+      if(!all.length)throw new Error('No se encontraron preguntas.');
       setPreview(all);
-      setMsg(`✅ ${all.length} preguntas extraídas. Revisa y confirma la importación.`);
+      setMsg(`✅ ${all.length} preguntas extraídas. Revisa y confirma.`);
     }catch(e){setMsg(`❌ ${e.message}`);}
     setLoading(false);setProgress(null);
   };
