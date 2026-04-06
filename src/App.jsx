@@ -2014,8 +2014,8 @@ function ExamPdfImporter({qs,saveQs,apiKey}){
   const fileRef=useRef(null);
   const [progress,setProgress]=useState(null); // {done,total}
 
-  const BATCH=25;
-  const DELAY=12000;
+  const BATCH=15;
+  const DELAY=30000;
 
   const makePrompt=(from,to,total)=>`Eres un experto en oposiciones FEA Laboratorio Clínico SESCAM 2025.
 Tienes delante un examen oficial de oposición en PDF con ${total} preguntas en total.
