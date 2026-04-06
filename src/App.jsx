@@ -2004,7 +2004,153 @@ function FlashcardMode({fcQs,dueQs,sr,marked,toggleMark,recordAnswer,addSession}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BANK MANAGER — con exportar
+// EXAM PDF IMPORTER
+// ═══════════════════════════════════════════════════════════════════════════
+function ExamPdfImporter({qs,saveQs,apiKey}){
+  const [file,setFile]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [msg,setMsg]=useState('');
+  const [preview,setPreview]=useState(null);
+  const [confirmed,setConfirmed]=useState(false);
+  const fileRef=useRef(null);
+
+  const PROMPT=`Eres un experto en oposiciones FEA Laboratorio Clínico SESCAM 2025.
+Tienes delante un examen oficial de oposición en PDF. Extrae TODAS las preguntas tipo test del examen.
+
+Para cada pregunta:
+1. Extrae el enunciado completo tal como aparece
+2. Extrae las 4 opciones (A, B, C, D) tal como aparecen
+3. Identifica la respuesta correcta (si aparece el solucionario al final) — si no aparece, pon correct: null
+4. Asigna el tema del temario SESCAM 2025 más apropiado basándote en el contenido
+
+Responde ÚNICAMENTE con un array JSON válido sin texto previo, sin backticks:
+[{"topic":"T18. Hidratos de carbono: metabolismo glucídico, diabetes mellitus, HbA1c, insulina, péptido C","type":"test","question":"Enunciado completo de la pregunta","options":["Opción A completa","Opción B completa","Opción C completa","Opción D completa"],"correct":0,"explanation":""}]
+
+IMPORTANTE:
+- correct es el índice (0=A, 1=B, 2=C, 3=D) o null si no hay solucionario
+- Extrae TODAS las preguntas del examen, sin omitir ninguna
+- Si hay varias páginas o secciones, extrae todas
+- topic debe coincidir exactamente con uno de los temas T1-T60 del temario SESCAM 2025`;
+
+  const handleFile=e=>{
+    const f=e.target.files?.[0];
+    if(!f)return;
+    if(f.size>50*1024*1024){setMsg('❌ El PDF supera 50 MB.');return;}
+    setFile(f);setPreview(null);setConfirmed(false);setMsg('');
+  };
+
+  const extract=async()=>{
+    if(!file)return;
+    setLoading(true);setMsg('📄 Leyendo PDF y extrayendo preguntas...');setPreview(null);
+    try{
+      const b64=await blobToB64(file);
+      const res=await fetch('/api/anthropic',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:'claude-sonnet-4-5',
+          max_tokens:8192,
+          messages:[{role:'user',content:[
+            {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}},
+            {type:'text',text:PROMPT}
+          ]}]
+        })
+      });
+      if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
+      const data=await res.json();
+      const text=(data.content||[]).map(c=>c.text||'').join('').trim();
+      const cleaned=text.replace(/```json|```/g,'').trim();
+      const parsed=JSON.parse(repairJSON(cleaned));
+      if(!Array.isArray(parsed)||!parsed.length)throw new Error('No se encontraron preguntas en el PDF.');
+      setPreview(parsed);
+      setMsg(`✅ ${parsed.length} preguntas extraídas. Revisa antes de importar.`);
+    }catch(e){setMsg(`❌ ${e.message}`);}
+    setLoading(false);
+  };
+
+  const confirm=async()=>{
+    if(!preview)return;
+    const withIds=preview.map(q=>({...q,id:uid(),correct:q.correct??0}));
+    await saveQs([...qs,...withIds]);
+    setMsg(`✅ ${withIds.length} preguntas importadas al banco.`);
+    setPreview(null);setFile(null);setConfirmed(true);
+  };
+
+  const nullCount=preview?.filter(q=>q.correct===null).length||0;
+
+  return(
+    <div style={{maxWidth:800}}>
+      <h3 style={{fontSize:16,fontWeight:700,color:T.text,marginBottom:6}}>📄 Importar examen oficial PDF</h3>
+      <p style={{color:T.muted,fontSize:13,marginBottom:20,lineHeight:1.6}}>Sube un PDF de examen oficial de oposición. La IA extrae todas las preguntas automáticamente y las añade al banco con el tema asignado.</p>
+
+      {/* Upload area */}
+      <div onClick={()=>fileRef.current?.click()}
+        style={{border:`2px dashed ${file?T.green:T.border}`,borderRadius:12,padding:'28px 20px',textAlign:'center',cursor:'pointer',background:file?T.greenS:T.card,transition:'all 0.2s',marginBottom:16}}>
+        <div style={{fontSize:32,marginBottom:8}}>{file?'📄':'⬆️'}</div>
+        {file?(
+          <div>
+            <div style={{fontWeight:600,color:T.greenText,fontSize:14}}>{file.name}</div>
+            <div style={{fontSize:12,color:T.muted,marginTop:2}}>{(file.size/1024/1024).toFixed(1)} MB · Listo para extraer</div>
+          </div>
+        ):(
+          <div>
+            <div style={{fontWeight:600,color:T.muted,fontSize:14}}>Haz clic para seleccionar el PDF del examen</div>
+            <div style={{fontSize:12,color:T.dim,marginTop:4}}>Exámenes oficiales OPE/MIR · Máx. 50 MB</div>
+          </div>
+        )}
+        <input ref={fileRef} type="file" accept=".pdf" onChange={handleFile} style={{display:'none'}}/>
+      </div>
+
+      {file&&!preview&&(
+        <Btn onClick={extract} disabled={loading} variant="green">
+          {loading?'⏳ Extrayendo preguntas...':'🤖 Extraer preguntas con IA'}
+        </Btn>
+      )}
+
+      {msg&&<div style={{marginTop:12,fontSize:13,color:msg.startsWith('❌')?T.red:msg.startsWith('✅')?T.green:T.muted,padding:'8px 12px',background:msg.startsWith('❌')?T.redS:msg.startsWith('✅')?T.greenS:T.card,borderRadius:8,border:`1px solid ${msg.startsWith('❌')?'#fca5a5':msg.startsWith('✅')?'#86efac':T.border}`}}>{msg}</div>}
+
+      {/* Preview */}
+      {preview&&(
+        <div style={{marginTop:20}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+            <div>
+              <span style={{fontWeight:700,fontSize:14,color:T.text}}>{preview.length} preguntas extraídas</span>
+              {nullCount>0&&<span style={{marginLeft:8,fontSize:12,color:T.amber}}>⚠️ {nullCount} sin respuesta correcta identificada</span>}
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <Btn variant="ghost" onClick={()=>{setPreview(null);setMsg('');}}>Descartar</Btn>
+              <Btn variant="green" onClick={confirm}>✅ Importar {preview.length} preguntas →</Btn>
+            </div>
+          </div>
+          {nullCount>0&&<div style={{background:T.amberS,border:`1px solid ${T.amber}`,borderRadius:8,padding:'8px 12px',fontSize:12,color:T.amberText,marginBottom:12}}>
+            ⚠️ El solucionario no estaba incluido en el PDF o no se pudo leer. Las preguntas sin respuesta se importarán con la opción A marcada por defecto — corrígelas manualmente en el banco.
+          </div>}
+          <div style={{display:'flex',flexDirection:'column',gap:8,maxHeight:400,overflowY:'auto',paddingRight:4}}>
+            {preview.slice(0,20).map((q,i)=>(
+              <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 14px'}}>
+                <div style={{display:'flex',gap:8,alignItems:'flex-start',marginBottom:6}}>
+                  <span style={{fontSize:10,background:T.blueS,color:T.blueText,padding:'2px 7px',borderRadius:20,fontWeight:600,flexShrink:0,whiteSpace:'nowrap'}}>{q.topic?.split('.')[0]||'?'}</span>
+                  <span style={{fontSize:12,color:T.text,fontWeight:500,lineHeight:1.4}}>{q.question}</span>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4,paddingLeft:4}}>
+                  {(q.options||[]).map((opt,j)=>(
+                    <div key={j} style={{fontSize:11,color:q.correct===j?T.greenText:T.muted,background:q.correct===j?T.greenS:'transparent',borderRadius:5,padding:'2px 6px'}}>
+                      <span style={{fontWeight:700}}>{['A','B','C','D'][j]}.</span> {opt}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {preview.length>20&&<div style={{textAlign:'center',fontSize:12,color:T.dim,padding:8}}>... y {preview.length-20} preguntas más</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BANK MANAGER
 // ═══════════════════════════════════════════════════════════════════════════
 function BankManager({qs,saveQs,preselect,onPreselect,pdfMeta,apiKey}){
   const [subTab,setSubTab]=useState('ai');
@@ -2227,7 +2373,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
   return(
     <div>
       <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
-        {[{id:'ai',label:'🤖 Generar con IA'},{id:'list',label:`📋 Preguntas (${qs.length})`},{id:'upload',label:'📤 Importar JSON'}].map(t=><button key={t.id} onClick={()=>setSubTab(t.id)} style={{padding:'10px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab===t.id?600:400,color:subTab===t.id?T.blue:T.muted,borderBottom:`2px solid ${subTab===t.id?T.blue:'transparent'}`,fontFamily:FONT}}>{t.label}</button>)}
+        {[{id:'ai',label:'🤖 Generar con IA'},{id:'exam',label:'📄 Importar examen PDF'},{id:'list',label:`📋 Preguntas (${qs.length})`},{id:'upload',label:'📤 Importar JSON'}].map(t=><button key={t.id} onClick={()=>setSubTab(t.id)} style={{padding:'10px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab===t.id?600:400,color:subTab===t.id?T.blue:T.muted,borderBottom:`2px solid ${subTab===t.id?T.blue:'transparent'}`,fontFamily:FONT}}>{t.label}</button>)}
       </div>
 
       {subTab==='ai'&&(
@@ -2377,6 +2523,10 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
             </Card>)}
           </div>}
         </div>
+      )}
+
+      {subTab==='exam'&&(
+        <ExamPdfImporter qs={qs} saveQs={saveQs} apiKey={apiKey}/>
       )}
 
       {subTab==='upload'&&(
