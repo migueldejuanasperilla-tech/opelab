@@ -501,23 +501,40 @@ const STATUS_BG={sinEmpezar:T.card,necesitaTrabajo:T.redS,enProgreso:T.amberS,do
 const STATUS_ORDER={sinEmpezar:0,necesitaTrabajo:1,enProgreso:2,dominado:3};
 
 // ── Learning status helpers ─────────────────────────────────────────────────
-// Score for a single section: postTest 40% + flashcards 30% + clinical 30%
-function calcSectionScore(sec){
-  if(!sec?.generated) return null;
-  const prog=sec.generated.progress||{};
+// Score for a single unit (section or subsection): postTest 40% + flashcards 30% + clinical 30%
+// External test data also contributes to the score
+function calcUnitScore(unit){
+  if(!unit?.generated) return null;
+  const prog=unit.generated.progress||{};
   let total=0,parts=0;
   if(prog.postTest?.completed){total+=prog.postTest.score*0.4;parts+=0.4;}
-  if(prog.flashcardsDominated!=null&&sec.generated.phases?.flashcards?.length){
-    total+=(prog.flashcardsDominated/sec.generated.phases.flashcards.length*100)*0.3;parts+=0.3;
+  if(prog.flashcardsDominated!=null&&unit.generated.phases?.flashcards?.length){
+    total+=(prog.flashcardsDominated/unit.generated.phases.flashcards.length*100)*0.3;parts+=0.3;
   }
   if(prog.clinicalScore!=null){total+=prog.clinicalScore*0.3;parts+=0.3;}
+  // Blend external test performance (from Test/Simulacro) if available
+  if(prog.externalTests?.t>=3){
+    const extScore=Math.round(prog.externalTests.c/prog.externalTests.t*100);
+    if(parts>0){total=total*0.85+extScore*0.15;} // 15% weight for external
+    else{total=extScore;parts=1;}
+  }
   return parts>0?Math.round(total/parts):null;
+}
+// Score for a section: if it has subsections, weighted average of subsections; otherwise direct score
+function calcSectionScore(sec){
+  if(sec?.subsections?.length){
+    const subScores=sec.subsections.map(calcUnitScore).filter(s=>s!==null);
+    if(!subScores.length) return calcUnitScore(sec); // fallback to section's own score
+    return Math.round(subScores.reduce((a,b)=>a+b,0)/subScores.length);
+  }
+  return calcUnitScore(sec);
 }
 // Global learning status for a topic: {coverage, mastery, status, color}
 function getLearningStatus(learning){
   if(!learning?.sections||!learning.sections.length) return {coverage:0,mastery:0,status:'sinEmpezar',color:T.dim,label:'Sin empezar'};
   const total=learning.sections.length;
-  const generated=learning.sections.filter(s=>s.generated).length;
+  // A section counts as "generated" if it or any of its subsections have generated content
+  const generated=learning.sections.filter(s=>s.generated||(s.subsections||[]).some(sub=>sub.generated)).length;
   const scores=learning.sections.map(calcSectionScore).filter(s=>s!==null);
   const mastery=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):0;
   const coverage=Math.round(generated/total*100);
@@ -644,10 +661,28 @@ export default function App(){
     });
   },[]);
 
-  const recordAnswer=useCallback(async(qid,topic,correct,quality)=>{
+  const recordAnswer=useCallback(async(qid,topic,correct,quality,questionMeta)=>{
+    // Update topic stats (feeds getStatus traffic light)
     setStats(prev=>{const ns={...prev};if(!ns[topic])ns[topic]={c:0,t:0};ns[topic]={c:ns[topic].c+(correct?1:0),t:ns[topic].t+1};save('olab_stats',ns);return ns;});
     setSr(prev=>{const nsr={...prev,[qid]:sm2Update(prev[qid],quality)};save('olab_sr',nsr);return nsr;});
     setErrSet(prev=>{const ne=new Set(prev);correct?ne.delete(qid):ne.add(qid);save('olab_er',[...ne]);return ne;});
+    // Cross-update learning mastery if question has section metadata
+    if(questionMeta?.seccion){
+      setLearningData(prev=>{
+        const ld=prev[topic];if(!ld?.sections)return prev;
+        const secIdx=ld.sections.findIndex(s=>s.title===questionMeta.seccion);
+        if(secIdx<0)return prev;
+        const sec=ld.sections[secIdx];if(!sec?.generated)return prev;
+        // Update external test stats on the section
+        const ext=sec.generated.progress?.externalTests||{c:0,t:0};
+        const newExt={c:ext.c+(correct?1:0),t:ext.t+1};
+        const newProg={...sec.generated.progress,externalTests:newExt};
+        const updSections=ld.sections.map((s,i)=>i===secIdx?{...s,generated:{...s.generated,progress:newProg}}:s);
+        const updated={...ld,sections:updSections};
+        idbSaveLearning(topic,updated);
+        return{...prev,[topic]:updated};
+      });
+    }
   },[]);
 
   const toggleMark=useCallback(async qid=>{
@@ -2026,81 +2061,136 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
     return text.replace(/```json|```/g,'').trim();
   };
 
-  const generateSection=async(idx)=>{
+  // ── Extract topic number for metadata ────────────────────────────────────
+  const topicNum=topic.match(/^T(\d+)/)?.[1]||'';
+  const topicTag=topicNum?`T${topicNum}`:'';
+
+  const generateSection=async(idx,subIdx)=>{
+    // subIdx: if defined, generate for a subsection within section[idx]
     const sec=sections[idx];
-    if(!sec?.text?.trim()){setGenError('Pega texto en la sección primero.');return;}
-    setGenIdx(idx);setGenError('');setGenPct(0);
+    const sub=subIdx!=null?sec.subsections?.[subIdx]:null;
+    const targetText=sub?sub.text:sec.text;
+    const targetTitle=sub?`${sec.title} > ${sub.title}`:sec.title;
+    if(!targetText?.trim()){setGenError('Pega texto primero.');return;}
+    setGenIdx(subIdx!=null?`${idx}-${subIdx}`:idx);setGenError('');setGenPct(0);
 
     const SYS='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
-    const CTX=`TEMA: "${topic}"\nSECCIÓN: "${sec.title}"\n\nTEXTO:\n${sec.text.slice(0,30000)}`;
+    const CTX=`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"\n\nTEXTO:\n${targetText.slice(0,30000)}`;
+    const now=new Date();
+    const dateTag=now.toISOString().slice(0,10);
+    // Metadata template for question tagging
+    const META=`\n\nIMPORTANTE — cada pregunta DEBE incluir estos campos de metadatos:\n"tema":"${topicTag}","seccion":"${sec.title}","subseccion":"${sub?.title||''}","fechaGeneracion":"${dateTag}"`;
+    const DIFF=`\n\nPara cada pregunta incluye: "tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta"`;
 
     try{
       // 1. Extract concepts
-      setGenStep('Extrayendo conceptos...');setGenPct(10);
+      setGenStep('Extrayendo conceptos...');setGenPct(8);
       const rawC=await callClaude(`${SYS}\n\nExtrae TODA la información clave de esta sección.\n\n${CTX}\n\nJSON:\n{"concepts":[{"t":"título (5-8 palabras)","d":"Descripción concisa. Máximo 2 frases.","cat":"concept|value|mechanism|clinical"}]}\n\nSé exhaustivo.`);
       const conceptsParsed=JSON.parse(repairJSON(rawC));
       const conceptList=conceptsParsed.concepts||conceptsParsed;
       const cMap=JSON.stringify(Array.isArray(conceptList)?conceptList.slice(0,150):[]);
 
-      // 2. Pre-test
-      setGenStep('Generando pre-test (18 preguntas)...');setGenPct(25);
-      const p1=await callClaude(`${SYS}\n\nGenera 18 preguntas tipo test (PRE-TEST) basándote en estos conceptos de "${sec.title}".\n\nCONCEPTOS:\n${cMap}\n\nMezcla 6 fáciles, 6 medias, 6 difíciles.\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}`,8192);
+      // 2. Pre-test (20 preguntas)
+      setGenStep('Generando pre-test (20 preguntas)...');setGenPct(20);
+      const p1=await callClaude(`${SYS}\n\nGenera exactamente 20 preguntas tipo test (PRE-TEST) basándote en estos conceptos de "${targetTitle}".\n\nCONCEPTOS:\n${cMap}\n\nMezcla 7 fáciles, 7 medias, 6 difíciles. 4 opciones (A-D).${META}\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","fase":"pretest"${DIFF.slice(1)}}]}`,8192);
       const preTest=JSON.parse(repairJSON(p1));
 
       // 3. Guided reading
-      setGenStep('Generando lectura guiada...');setGenPct(40);
-      const p2=await callClaude(`${SYS}\n\nOrganiza estos conceptos de "${sec.title}" en subsecciones de lectura guiada (3-6).\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}`,8192);
+      setGenStep('Generando lectura guiada...');setGenPct(35);
+      const p2=await callClaude(`${SYS}\n\nOrganiza estos conceptos de "${targetTitle}" en subsecciones de lectura guiada (3-6).\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}`,8192);
       const guided=JSON.parse(repairJSON(p2));
 
-      // 4. Flashcards
-      setGenStep('Generando flashcards (15)...');setGenPct(55);
-      const p3=await callClaude(`${SYS}\n\nGenera 15 flashcards de los conceptos más importantes de "${sec.title}".\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta","back":"Respuesta"}]}`,4096);
+      // 4. Flashcards (25 tarjetas)
+      setGenStep('Generando flashcards (25)...');setGenPct(50);
+      const p3=await callClaude(`${SYS}\n\nGenera exactamente 25 flashcards de los conceptos más importantes de "${targetTitle}".\n\nCONCEPTOS:\n${cMap}${META}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta concreta","back":"Respuesta precisa","fase":"flashcard","tipo":"concepto|mecanismo|valor|clinico|aplicacion","tema":"${topicTag}","seccion":"${sec.title}","subseccion":"${sub?.title||''}","fechaGeneracion":"${dateTag}"}]}\n\n25 flashcards exactas. Prioriza valores numéricos, criterios diagnósticos, clasificaciones.`,6144);
       const fc=JSON.parse(repairJSON(p3));
 
-      // 5. Clinical cases
-      setGenStep('Generando casos clínicos (3)...');setGenPct(70);
-      const p4=await callClaude(`${SYS}\n\nCrea 3 casos clínicos realistas para "${sec.title}".\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"..."}]}`,6144);
+      // 5. Clinical cases (5 casos)
+      setGenStep('Generando casos clínicos (5)...');setGenPct(65);
+      const p4=await callClaude(`${SYS}\n\nCrea exactamente 5 casos clínicos realistas para "${targetTitle}".\n\nCONCEPTOS:\n${cMap}${META}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"...","fase":"caso","tipo":"clinico","dificultad":"alta","tema":"${topicTag}","seccion":"${sec.title}","subseccion":"${sub?.title||''}","fechaGeneracion":"${dateTag}"}]}`,8192);
       const cc=JSON.parse(repairJSON(p4));
 
-      // 6. Post-test
-      setGenStep('Generando post-test (10 preguntas)...');setGenPct(85);
-      const p5=await callClaude(`${SYS}\n\nGenera 10 preguntas DIFÍCILES (POST-TEST) para "${sec.title}". Aplicación clínica e integración.\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}`,8192);
+      // 6. Post-test (25 preguntas)
+      setGenStep('Generando post-test (25 preguntas)...');setGenPct(80);
+      const p5=await callClaude(`${SYS}\n\nGenera exactamente 25 preguntas DIFÍCILES (POST-TEST) para "${targetTitle}". Aplicación clínica, diagnóstico diferencial, integración.\n\nCONCEPTOS:\n${cMap}${META}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","fase":"posttest"${DIFF.slice(1)}}]}\n\n25 preguntas exactas, nivel alto.`,8192);
       const postTest=JSON.parse(repairJSON(p5));
 
-      setGenPct(100);setGenStep('Guardando...');
+      setGenPct(95);setGenStep('Etiquetando y guardando...');
 
-      const now=new Date();
+      // Tag all generated items with metadata
+      const tag=(arr,fase)=>(Array.isArray(arr)?arr:[]).map((q,i)=>({...q,id:uid(),tema:topicTag,seccion:sec.title,subseccion:sub?.title||'',fase,fechaGeneracion:dateTag,tipo:q.tipo||'concepto',dificultad:q.dificultad||'media'}));
+      const taggedPreTest=tag(preTest.questions||preTest,'pretest');
+      const taggedPostTest=tag(postTest.questions||postTest,'posttest');
+      const taggedFlashcards=(fc.flashcards||fc||[]).map((f,i)=>({...f,id:uid(),tema:topicTag,seccion:sec.title,subseccion:sub?.title||'',fase:'flashcard',fechaGeneracion:dateTag}));
+      const taggedClinical=tag(cc.clinicalCases||cc,'caso');
+
       const addDays=(d,n)=>{const r=new Date(d);r.setDate(r.getDate()+n);return r.toISOString().slice(0,10);};
       const generated={
         generatedAt:now.toISOString(),
         conceptMap:Array.isArray(conceptList)?conceptList:[],
         phases:{
-          preTest:preTest.questions||preTest,
+          preTest:taggedPreTest,
           guidedReading:guided.sections||guided,
-          flashcards:fc.flashcards||fc,
-          clinicalCases:cc.clinicalCases||cc,
-          postTest:postTest.questions||postTest,
+          flashcards:taggedFlashcards,
+          clinicalCases:taggedClinical,
+          postTest:taggedPostTest,
         },
         progress:{preTest:null,postTest:null,flashcardsDominated:null,clinicalScore:null}
       };
 
-      const updSections=sections.map((s,i)=>i===idx?{...s,generated}:s);
-      // Init spaced repetition on first generation
+      let updSections;
+      if(subIdx!=null){
+        // Update subsection
+        const updSubs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,generated}:s);
+        updSections=sections.map((s,i)=>i===idx?{...s,subsections:updSubs}:s);
+      }else{
+        updSections=sections.map((s,i)=>i===idx?{...s,generated}:s);
+      }
       let sr=data.spacedRepetition;
       if(!sr){sr={startDate:now.toISOString().slice(0,10),reviews:{'D+1':{date:addDays(now,1),completed:false},'D+3':{date:addDays(now,3),completed:false},'D+7':{date:addDays(now,7),completed:false},'D+14':{date:addDays(now,14),completed:false},'D+30':{date:addDays(now,30),completed:false}}};}
       await save({...data,sections:updSections,spacedRepetition:sr});
-      setGenStep('');
+      setGenStep('');setGenPct(100);
     }catch(e){setGenError(`Error: ${e.message}`);}
     setGenIdx(null);
   };
 
-  // ── Save progress for a section's phase ───────────────────────────────────
-  const saveSectionProgress=async(secIdx,key,value)=>{
-    const sec=sections[secIdx];if(!sec?.generated)return;
-    const newProg={...sec.generated.progress,[key]:value};
-    const updGen={...sec.generated,progress:newProg};
-    const updSections=sections.map((s,i)=>i===secIdx?{...s,generated:updGen}:s);
-    await save({...data,sections:updSections});
+  // ── Save progress for a section or subsection's phase ───────────────────
+  const saveSectionProgress=async(secIdx,key,value,subIdx)=>{
+    if(subIdx!=null){
+      // Update subsection progress
+      const sec=sections[secIdx];const sub=sec?.subsections?.[subIdx];if(!sub?.generated)return;
+      const newProg={...sub.generated.progress,[key]:value};
+      const updSubs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,generated:{...s.generated,progress:newProg}}:s);
+      const updSections=sections.map((s,i)=>i===secIdx?{...s,subsections:updSubs}:s);
+      await save({...data,sections:updSections});
+    }else{
+      const sec=sections[secIdx];if(!sec?.generated)return;
+      const newProg={...sec.generated.progress,[key]:value};
+      const updGen={...sec.generated,progress:newProg};
+      const updSections=sections.map((s,i)=>i===secIdx?{...s,generated:updGen}:s);
+      await save({...data,sections:updSections});
+    }
+  };
+
+  // ── Subsection management ─────────────────────────────────────────────────
+  const addSubsection=(secIdx,title)=>{
+    if(!title?.trim())return;
+    const sec=sections[secIdx];
+    const subs=[...(sec.subsections||[]),{id:uid(),title:title.trim(),text:'',generated:null}];
+    const updSections=sections.map((s,i)=>i===secIdx?{...s,subsections:subs}:s);
+    save({...data,sections:updSections});
+  };
+  const removeSubsection=(secIdx,subIdx)=>{
+    const sec=sections[secIdx];
+    const subs=(sec.subsections||[]).filter((_,i)=>i!==subIdx);
+    const updSections=sections.map((s,i)=>i===secIdx?{...s,subsections:subs}:s);
+    save({...data,sections:updSections});
+  };
+  const updateSubsectionText=(secIdx,subIdx,text)=>{
+    const sec=sections[secIdx];
+    const subs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,text}:s);
+    const updSections=sections.map((s,i)=>i===secIdx?{...s,subsections:subs}:s);
+    save({...data,sections:updSections});
   };
 
   // ── Global progress metrics ───────────────────────────────────────────────
@@ -2160,73 +2250,70 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
               {/* Expanded section content */}
               {isOpen&&(
                 <div style={{borderTop:`1px solid ${T.border}`,padding:'14px 16px'}}>
-                  {/* Text input */}
+                  {/* Section-level content generation */}
                   {!hasGen&&(
-                    <div>
+                    <div style={{marginBottom:(sec.subsections||[]).length?12:0}}>
                       <textarea value={sec.text||''} onChange={e=>updateSectionText(idx,e.target.value)}
                         placeholder="Pega aquí el texto de esta sección del capítulo..."
-                        style={{width:'100%',minHeight:140,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 12px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:10}}/>
+                        style={{width:'100%',minHeight:120,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 12px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:10}}/>
                       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-                        <button onClick={()=>generateSection(idx)} disabled={isGen||!sec.text?.trim()}
-                          style={{background:isGen?T.amberS:(!sec.text?.trim()?T.card:T.purple),color:isGen?T.amberText:(!sec.text?.trim()?T.dim:'#fff'),border:'none',borderRadius:8,padding:'8px 20px',fontSize:12,fontWeight:600,cursor:isGen||!sec.text?.trim()?'not-allowed':'pointer',fontFamily:FONT}}>
-                          {isGen?`⏳ ${genStep}`:'🧠 Generar aprendizaje'}
+                        <button onClick={()=>generateSection(idx)} disabled={genIdx!=null||!sec.text?.trim()}
+                          style={{background:genIdx===idx?T.amberS:(!sec.text?.trim()?T.card:T.purple),color:genIdx===idx?T.amberText:(!sec.text?.trim()?T.dim:'#fff'),border:'none',borderRadius:8,padding:'8px 20px',fontSize:12,fontWeight:600,cursor:genIdx!=null||!sec.text?.trim()?'not-allowed':'pointer',fontFamily:FONT}}>
+                          {genIdx===idx?`⏳ ${genStep}`:'🧠 Generar (20 pre + 25 post + 25 FC + 5 casos)'}
                         </button>
                         {sec.text?.trim()&&<span style={{fontSize:11,color:T.muted}}>{sec.text.trim().split(/\s+/).length} palabras</span>}
                       </div>
-                      {isGen&&(
-                        <div style={{marginTop:10}}>
-                          <div style={{background:T.border,borderRadius:4,height:4}}><div style={{background:T.purple,width:`${genPct}%`,height:'100%',borderRadius:4,transition:'width 0.3s'}}/></div>
-                        </div>
-                      )}
+                      {genIdx===idx&&<div style={{marginTop:10}}><div style={{background:T.border,borderRadius:4,height:4}}><div style={{background:T.purple,width:`${genPct}%`,height:'100%',borderRadius:4,transition:'width 0.3s'}}/></div></div>}
                       {genError&&genIdx===idx&&<div style={{marginTop:8,fontSize:11,color:T.red}}>{genError}</div>}
                     </div>
                   )}
 
-                  {/* Generated content — 6 phases */}
-                  {hasGen&&(
-                    <div>
-                      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
-                        <div style={{fontSize:11,color:T.muted}}>Generado el {fmtDate(sec.generated.generatedAt)} · {sec.generated.conceptMap?.length||0} conceptos</div>
-                        <button onClick={()=>{const updSections=sections.map((s,i)=>i===idx?{...s,generated:null}:s);save({...data,sections:updSections});}}
-                          style={{fontSize:10,background:'none',border:`1px solid ${T.border}`,borderRadius:5,padding:'2px 8px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>🔄 Regenerar</button>
-                      </div>
+                  {/* Generated section phases */}
+                  {hasGen&&<SectionPhasesUI gen={sec.generated} idx={idx} subIdx={null} phasesList={phasesList} curPhase={curPhase} setActivePhase={setActivePhase} saveSectionProgress={saveSectionProgress} save={save} data={data} sections={sections} topic={topic} saveLearningData={saveLearningData}/>}
 
-                      {/* Phase tabs */}
-                      <div style={{display:'flex',gap:4,marginBottom:12,flexWrap:'wrap'}}>
-                        {phasesList.map((p,pi)=>(
-                          <button key={p.id} onClick={()=>setActivePhase(prev=>({...prev,[idx]:pi}))}
-                            style={{padding:'4px 10px',fontSize:10,fontWeight:curPhase===pi?700:500,color:curPhase===pi?p.color:T.muted,background:curPhase===pi?p.color+'15':T.card,border:`1px solid ${curPhase===pi?p.color:T.border}`,borderRadius:6,cursor:'pointer',fontFamily:FONT}}>
-                            {p.icon} {p.label}
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* Phase content */}
-                      {curPhase===0&&<QuizPhase questions={sec.generated.phases.preTest} title="Pre-Test" progress={sec.generated.progress?.preTest} onSaveProgress={p=>saveSectionProgress(idx,'preTest',p)} color={T.blue}/>}
-                      {curPhase===1&&<GuidedReadingPhase sections={sec.generated.phases.guidedReading}/>}
-                      {curPhase===2&&<FlashcardsPhase cards={sec.generated.phases.flashcards} onDominatedChange={count=>saveSectionProgress(idx,'flashcardsDominated',count)}/>}
-                      {curPhase===3&&<ClinicalCasesPhase cases={sec.generated.phases.clinicalCases} onScoreChange={score=>saveSectionProgress(idx,'clinicalScore',score)}/>}
-                      {curPhase===4&&(
-                        <div>
-                          <QuizPhase questions={sec.generated.phases.postTest} title="Post-Test" progress={sec.generated.progress?.postTest} onSaveProgress={p=>saveSectionProgress(idx,'postTest',p)} color={T.red}/>
-                          {sec.generated.progress?.preTest?.completed&&sec.generated.progress?.postTest?.completed&&(
-                            <Card style={{padding:'14px 18px',marginTop:12,borderLeft:`3px solid ${T.green}`}}>
-                              <div style={{fontSize:12,fontWeight:600,color:T.text,marginBottom:6}}>📊 Pre vs Post</div>
-                              <div style={{display:'flex',gap:16,alignItems:'center'}}>
-                                <div><span style={{fontSize:18,fontWeight:700,color:T.blue}}>{sec.generated.progress.preTest.score}%</span><span style={{fontSize:10,color:T.muted,marginLeft:4}}>Pre</span></div>
-                                <span style={{color:T.dim}}>→</span>
-                                <div><span style={{fontSize:18,fontWeight:700,color:T.green}}>{sec.generated.progress.postTest.score}%</span><span style={{fontSize:10,color:T.muted,marginLeft:4}}>Post</span></div>
-                                <span style={{fontSize:14,fontWeight:700,color:sec.generated.progress.postTest.score>sec.generated.progress.preTest.score?T.green:T.red}}>
-                                  {sec.generated.progress.postTest.score>sec.generated.progress.preTest.score?'+':''}{sec.generated.progress.postTest.score-sec.generated.progress.preTest.score}%
-                                </span>
+                  {/* Subsections */}
+                  {(sec.subsections||[]).length>0&&(
+                    <div style={{marginTop:12,borderTop:`1px solid ${T.border}`,paddingTop:12}}>
+                      <div style={{fontSize:11,fontWeight:700,color:T.muted,marginBottom:8,textTransform:'uppercase',letterSpacing:0.5}}>Subsecciones</div>
+                      {sec.subsections.map((sub,si)=>{
+                        const subGenKey=`${idx}-${si}`;
+                        const subHasGen=!!sub.generated;
+                        const subScore=calcUnitScore(sub);
+                        const subColor=subScore===null?T.dim:subScore>=80?T.green:subScore>=60?T.amber:T.red;
+                        const subPhase=activePhase[subGenKey]||0;
+                        return(
+                          <div key={sub.id||si} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:8,marginBottom:6,overflow:'hidden'}}>
+                            <div style={{padding:'8px 12px',display:'flex',alignItems:'center',gap:8}}>
+                              <span style={{width:7,height:7,borderRadius:'50%',background:subColor,flexShrink:0}}/>
+                              <span style={{fontSize:12,fontWeight:600,color:T.text,flex:1}}>{sub.title}</span>
+                              {subScore!==null&&<span style={{fontSize:10,fontWeight:700,color:subColor}}>{subScore}%</span>}
+                              <button onClick={()=>removeSubsection(idx,si)} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:14}}>×</button>
+                            </div>
+                            {!subHasGen&&(
+                              <div style={{padding:'8px 12px',borderTop:`1px solid ${T.border}`}}>
+                                <textarea value={sub.text||''} onChange={e=>updateSubsectionText(idx,si,e.target.value)} placeholder="Texto de la subsección..."
+                                  style={{width:'100%',minHeight:80,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:6,padding:'8px',fontSize:11,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:6}}/>
+                                <button onClick={()=>generateSection(idx,si)} disabled={genIdx!=null||!sub.text?.trim()}
+                                  style={{background:genIdx===subGenKey?T.amberS:(!sub.text?.trim()?T.card:T.teal),color:genIdx===subGenKey?T.amberText:(!sub.text?.trim()?T.dim:'#fff'),border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:600,cursor:genIdx!=null||!sub.text?.trim()?'not-allowed':'pointer',fontFamily:FONT}}>
+                                  {genIdx===subGenKey?`⏳ ${genStep}`:'🧠 Generar'}
+                                </button>
+                                {genIdx===subGenKey&&<div style={{marginTop:6}}><div style={{background:T.border,borderRadius:3,height:3}}><div style={{background:T.teal,width:`${genPct}%`,height:'100%',borderRadius:3,transition:'width 0.3s'}}/></div></div>}
                               </div>
-                            </Card>
-                          )}
-                        </div>
-                      )}
-                      {curPhase===5&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
+                            )}
+                            {subHasGen&&<div style={{padding:'8px 12px',borderTop:`1px solid ${T.border}`}}><SectionPhasesUI gen={sub.generated} idx={idx} subIdx={si} phasesList={phasesList} curPhase={subPhase} setActivePhase={setActivePhase} saveSectionProgress={saveSectionProgress} save={save} data={data} sections={sections} topic={topic} saveLearningData={saveLearningData} phaseKey={subGenKey}/></div>}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
+
+                  {/* Add subsection */}
+                  <div style={{marginTop:8,display:'flex',gap:6}}>
+                    <input placeholder="Título de subsección..." onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){addSubsection(idx,e.target.value);e.target.value='';}}}
+                      style={{flex:1,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:6,padding:'5px 10px',fontSize:11,outline:'none',fontFamily:FONT}}/>
+                    <button onClick={e=>{const inp=e.currentTarget.previousSibling;if(inp.value.trim()){addSubsection(idx,inp.value);inp.value='';}}}
+                      style={{background:T.tealS,border:`1px solid ${T.teal}`,borderRadius:6,padding:'5px 10px',fontSize:10,cursor:'pointer',color:T.tealText,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>+ Subsección</button>
+                  </div>
                 </div>
               )}
             </Card>
@@ -2253,6 +2340,54 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
           {extractMsg&&<span style={{fontSize:11,color:extractMsg.startsWith('✓')?T.green:extractMsg.startsWith('Error')?T.red:T.muted}}>{extractMsg}</span>}
         </div>
       </Card>
+    </div>
+  );
+}
+
+// ── Section Phases UI — reusable for sections and subsections ────────────────
+function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,saveSectionProgress,save,data,sections,topic,saveLearningData,phaseKey}){
+  const pKey=phaseKey||idx;
+  const onSaveProg=(key,val)=>saveSectionProgress(idx,key,val,subIdx);
+  return(
+    <div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+        <div style={{fontSize:10,color:T.muted}}>Generado el {fmtDate(gen.generatedAt)} · {gen.conceptMap?.length||0} conceptos</div>
+        <button onClick={()=>{
+          if(subIdx!=null){const sec=sections[idx];const subs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,generated:null}:s);const upd=sections.map((s,i)=>i===idx?{...s,subsections:subs}:s);save({...data,sections:upd});}
+          else{const upd=sections.map((s,i)=>i===idx?{...s,generated:null}:s);save({...data,sections:upd});}
+        }} style={{fontSize:10,background:'none',border:`1px solid ${T.border}`,borderRadius:5,padding:'2px 8px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>🔄 Regenerar</button>
+      </div>
+      <div style={{display:'flex',gap:3,marginBottom:10,flexWrap:'wrap'}}>
+        {phasesList.map((p,pi)=>(
+          <button key={p.id} onClick={()=>setActivePhase(prev=>({...prev,[pKey]:pi}))}
+            style={{padding:'3px 8px',fontSize:9,fontWeight:curPhase===pi?700:500,color:curPhase===pi?p.color:T.muted,background:curPhase===pi?p.color+'15':T.card,border:`1px solid ${curPhase===pi?p.color:T.border}`,borderRadius:5,cursor:'pointer',fontFamily:FONT}}>
+            {p.icon} {p.label}
+          </button>
+        ))}
+      </div>
+      {curPhase===0&&<QuizPhase questions={gen.phases.preTest} title="Pre-Test (20)" progress={gen.progress?.preTest} onSaveProgress={p=>onSaveProg('preTest',p)} color={T.blue}/>}
+      {curPhase===1&&<GuidedReadingPhase sections={gen.phases.guidedReading}/>}
+      {curPhase===2&&<FlashcardsPhase cards={gen.phases.flashcards} onDominatedChange={count=>onSaveProg('flashcardsDominated',count)}/>}
+      {curPhase===3&&<ClinicalCasesPhase cases={gen.phases.clinicalCases} onScoreChange={score=>onSaveProg('clinicalScore',score)}/>}
+      {curPhase===4&&(
+        <div>
+          <QuizPhase questions={gen.phases.postTest} title="Post-Test (25)" progress={gen.progress?.postTest} onSaveProgress={p=>onSaveProg('postTest',p)} color={T.red}/>
+          {gen.progress?.preTest?.completed&&gen.progress?.postTest?.completed&&(
+            <Card style={{padding:'12px 16px',marginTop:10,borderLeft:`3px solid ${T.green}`}}>
+              <div style={{fontSize:11,fontWeight:600,color:T.text,marginBottom:4}}>📊 Pre vs Post</div>
+              <div style={{display:'flex',gap:14,alignItems:'center'}}>
+                <span style={{fontSize:16,fontWeight:700,color:T.blue}}>{gen.progress.preTest.score}%</span>
+                <span style={{color:T.dim}}>→</span>
+                <span style={{fontSize:16,fontWeight:700,color:T.green}}>{gen.progress.postTest.score}%</span>
+                <span style={{fontSize:13,fontWeight:700,color:gen.progress.postTest.score>gen.progress.preTest.score?T.green:T.red}}>
+                  {gen.progress.postTest.score>gen.progress.preTest.score?'+':''}{gen.progress.postTest.score-gen.progress.preTest.score}%
+                </span>
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
+      {curPhase===5&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
     </div>
   );
 }
@@ -2556,7 +2691,7 @@ function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
   const handleReveal=useCallback((sel,sess,i)=>{
     clearInterval(timerRef.current);
     const q=sess[i];if(!q)return;
-    recordAnswer(q.id,q.topic,sel===q.correct,sel===null?0:sel===q.correct?5:2);
+    recordAnswer(q.id,q.topic,sel===q.correct,sel===null?0:sel===q.correct?5:2,{seccion:q.seccion,subseccion:q.subseccion,tipo:q.tipo,fase:q.fase});
     setSelected(sel);setRevealed(true);
   },[recordAnswer]);
 
@@ -2692,7 +2827,7 @@ function Simulacro({testQs,recordAnswer,addSession}){
     ans.forEach((a,i)=>{
       const q=sess[i];if(!q)return;
       const correct=a===q.correct;
-      recordAnswer(q.id,q.topic,correct,a===null?0:correct?5:2);
+      recordAnswer(q.id,q.topic,correct,a===null?0:correct?5:2,{seccion:q.seccion,subseccion:q.subseccion,tipo:q.tipo,fase:q.fase});
     });
     setResults(r);
     addSession({mode:'simulacro',topics:[...new Set(sess.map(q=>q.topic))],n:sess.length,...r,duration:Math.round((Date.now()-startTs)/1000)});
@@ -2903,7 +3038,7 @@ function FlashcardMode({fcQs,dueQs,sr,marked,toggleMark,recordAnswer,addSession}
 
   const rate=async quality=>{
     const q=session[idx];
-    await recordAnswer(q.id,q.topic,quality>=3,quality);
+    await recordAnswer(q.id,q.topic,quality>=3,quality,{seccion:q.seccion,subseccion:q.subseccion,tipo:q.tipo,fase:q.fase});
     if(quality>=3)setCorrect(c=>c+1);
     if(idx+1>=session.length){
       const c2=quality>=3?correct+1:correct;

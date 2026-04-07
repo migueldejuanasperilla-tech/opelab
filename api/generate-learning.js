@@ -64,24 +64,24 @@ export default async function handler(req, res) {
     const conceptList = concepts.concepts || concepts;
     const conceptMap = JSON.stringify(Array.isArray(conceptList) ? conceptList.slice(0, 150) : []);
 
-    // 2. Pre-test (18 questions)
-    const p1 = await callClaude(`${SYS}\n\nGenera 18 preguntas tipo test (PRE-TEST) basándote en estos conceptos de la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nMezcla 6 fáciles, 6 medias, 6 difíciles. 4 opciones (A-D) por pregunta.\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}`, 8192);
+    // 2. Pre-test (20 questions)
+    const p1 = await callClaude(`${SYS}\n\nGenera exactamente 20 preguntas tipo test (PRE-TEST) basándote en estos conceptos de la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nMezcla 7 fáciles, 7 medias, 6 difíciles. 4 opciones (A-D) por pregunta.\n\nCada pregunta incluye: "tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta","tema":"${topic}","seccion":"${sectionTitle}","fase":"pretest"\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","tipo":"concepto","dificultad":"media","fase":"pretest"}]}`, 8192);
     const preTest = JSON.parse(repairJSON(p1));
 
     // 3. Guided reading
     const p2 = await callClaude(`${SYS}\n\nOrganiza estos conceptos de la sección "${sectionTitle}" en subsecciones de lectura guiada.\n\nCONCEPTOS:\n${conceptMap}\n\nPara cada subsección: título, resumen (3-5 frases), puntos clave con datos concretos, pregunta de comprensión.\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}\n\n3-6 subsecciones.`, 8192);
     const guidedReading = JSON.parse(repairJSON(p2));
 
-    // 4. Flashcards (15)
-    const p3 = await callClaude(`${SYS}\n\nGenera 15 flashcards de los conceptos más importantes de la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta concreta","back":"Respuesta precisa"}]}\n\n15 flashcards exactas. Prioriza valores numéricos, criterios diagnósticos, clasificaciones.`, 4096);
+    // 4. Flashcards (25)
+    const p3 = await callClaude(`${SYS}\n\nGenera exactamente 25 flashcards de los conceptos más importantes de la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta concreta","back":"Respuesta precisa","tipo":"concepto|mecanismo|valor|clinico","fase":"flashcard"}]}\n\n25 flashcards exactas. Prioriza valores numéricos, criterios diagnósticos, clasificaciones.`, 6144);
     const flashcards = JSON.parse(repairJSON(p3));
 
-    // 5. Clinical cases (3)
-    const p4 = await callClaude(`${SYS}\n\nCrea 3 casos clínicos realistas para la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"..."}]}`, 6144);
+    // 5. Clinical cases (5)
+    const p4 = await callClaude(`${SYS}\n\nCrea exactamente 5 casos clínicos realistas para la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"...","tipo":"clinico","dificultad":"alta","fase":"caso"}]}`, 8192);
     const clinicalCases = JSON.parse(repairJSON(p4));
 
-    // 6. Post-test (10)
-    const p5 = await callClaude(`${SYS}\n\nGenera 10 preguntas DIFÍCILES (POST-TEST) para la sección "${sectionTitle}" del tema "${topic}". Aplicación clínica, diagnóstico diferencial, integración.\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}`, 8192);
+    // 6. Post-test (25 questions)
+    const p5 = await callClaude(`${SYS}\n\nGenera exactamente 25 preguntas DIFÍCILES (POST-TEST) para la sección "${sectionTitle}" del tema "${topic}". Aplicación clínica, diagnóstico diferencial, integración.\n\nCONCEPTOS:\n${conceptMap}\n\nCada pregunta incluye: "tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta","fase":"posttest"\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","tipo":"aplicacion","dificultad":"alta","fase":"posttest"}]}`, 8192);
     const postTest = JSON.parse(repairJSON(p5));
 
     res.status(200).json({
