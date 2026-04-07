@@ -456,6 +456,28 @@ function getMasteryLevel(score){
 // Streak data: {current, max, lastDate}
 function loadStreak(){return load('olab_streak',{current:0,max:0,lastDate:null});}
 function saveStreak(s){save('olab_streak',s);return s;}
+// Difficulty calibration: track accuracy by question type
+function loadDiffProfile(){return load('olab_diff_profile',{concepto:{c:0,t:0},mecanismo:{c:0,t:0},valor:{c:0,t:0},clinico:{c:0,t:0},aplicacion:{c:0,t:0}});}
+function updateDiffProfile(tipo,correct){
+  const p=loadDiffProfile();
+  const key=tipo||'concepto';
+  if(!p[key])p[key]={c:0,t:0};
+  p[key]={c:p[key].c+(correct?1:0),t:p[key].t+1};
+  save('olab_diff_profile',p);return p;
+}
+function getDiffCalibration(){
+  const p=loadDiffProfile();
+  const types=Object.entries(p).filter(([,v])=>v.t>=5);
+  if(types.length<2)return''; // not enough data
+  const accs=types.map(([k,v])=>({k,acc:Math.round(v.c/v.t*100)})).sort((a,b)=>a.acc-b.acc);
+  const weak=accs.filter(a=>a.acc<70).map(a=>a.k);
+  const strong=accs.filter(a=>a.acc>85).map(a=>a.k);
+  if(!weak.length&&!strong.length)return'';
+  let hint='\n\nCALIBRACIÓN DE DIFICULTAD basada en el perfil del estudiante:';
+  if(weak.length)hint+=`\n- Generar MÁS preguntas de tipo: ${weak.join(', ')} (puntos débiles del estudiante)`;
+  if(strong.length)hint+=`\n- Generar MENOS preguntas de tipo: ${strong.join(', ')} (ya dominados)`;
+  return hint;
+}
 function updateStreak(){
   const s=loadStreak();
   const today=new Date().toISOString().slice(0,10);
@@ -676,6 +698,8 @@ export default function App(){
     // Update topic stats (feeds getStatus traffic light)
     setStats(prev=>{const ns={...prev};if(!ns[topic])ns[topic]={c:0,t:0};ns[topic]={c:ns[topic].c+(correct?1:0),t:ns[topic].t+1};save('olab_stats',ns);return ns;});
     setStreakData(updateStreak());
+    // Update difficulty calibration profile
+    if(questionMeta?.tipo) updateDiffProfile(questionMeta.tipo,correct);
     setSr(prev=>{const nsr={...prev,[qid]:sm2Update(prev[qid],quality)};save('olab_sr',nsr);return nsr;});
     setErrSet(prev=>{const ne=new Set(prev);correct?ne.delete(qid):ne.add(qid);save('olab_er',[...ne]);return ne;});
     // Cross-update learning mastery if question has section metadata
@@ -2061,7 +2085,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
         </div>
       ))()}</div>
 
-      <div style={{display:activeTab==='aprendizaje'?'block':'none'}}><AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData} pdfMeta={pdfMeta} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob}/></div>
+      <div style={{display:activeTab==='aprendizaje'?'block':'none'}}><AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData} pdfMeta={pdfMeta} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob} allLearningData={learningData} setTopicView={onBack}/></div>
 
       <div style={{display:activeTab==='apuntes'?'block':'none'}}><TopicApuntesTab topic={topic} learning={learning} saveLearningData={saveLearningData} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob}/></div>
 
@@ -2345,7 +2369,7 @@ function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,l
 // ═══════════════════════════════════════════════════════════════════════════
 // APRENDIZAJE TAB — Secciones desplegables con generación independiente
 // ═══════════════════════════════════════════════════════════════════════════
-function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJob,clearJob}){
+function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJob,clearJob,allLearningData,setTopicView}){
   const [newTitle,setNewTitle]=useState('');
   const [openSec,setOpenSec]=useState(null);    // index of open section accordion
   const [activePhase,setActivePhase]=useState({}); // {secIdx: phaseIdx}
@@ -2443,17 +2467,43 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     save(updated);
   };
 
-  // ── Generate learning for a single section ────────────────────────────────
-  const callClaude=async(prompt,maxTokens=4096)=>{
-    const res=await fetch('/api/anthropic',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})
-    });
-    if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
-    const r=await res.json();
-    const text=(r.content||[]).map(c=>c.text||'').join('').trim();
-    return text.replace(/```json|```/g,'').trim();
+  // ── API caller with retries and truncation detection ────────────────────
+  const callClaude=async(prompt,maxTokens=4096,retries=3)=>{
+    for(let attempt=1;attempt<=retries;attempt++){
+      try{
+        console.log(`[OPELab] API call (attempt ${attempt}/${retries}, max_tokens=${maxTokens})`);
+        const res=await fetch('/api/anthropic',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})
+        });
+        if(!res.ok){
+          const d=await res.json().catch(()=>({}));
+          const msg=d?.error?.message||`HTTP ${res.status}`;
+          if(attempt<retries&&(res.status===429||res.status>=500)){
+            console.warn(`[OPELab] Retryable error: ${msg}. Waiting ${attempt*5}s...`);
+            await new Promise(r=>setTimeout(r,attempt*5000));
+            continue;
+          }
+          throw new Error(msg);
+        }
+        const r=await res.json();
+        if(r.stop_reason==='max_tokens'){
+          console.warn('[OPELab] Response TRUNCATED by max_tokens');
+          if(attempt<retries&&maxTokens<12000){
+            console.log('[OPELab] Retrying with more tokens...');
+            maxTokens=Math.min(maxTokens+4096,16000);
+            continue;
+          }
+        }
+        const text=(r.content||[]).map(c=>c.text||'').join('').trim();
+        return text.replace(/```json|```/g,'').trim();
+      }catch(e){
+        if(attempt>=retries)throw e;
+        console.warn(`[OPELab] Attempt ${attempt} failed: ${e.message}. Retrying in ${attempt*3}s...`);
+        await new Promise(r=>setTimeout(r,attempt*3000));
+      }
+    }
   };
 
   // ── Extract topic number for metadata ────────────────────────────────────
@@ -2491,8 +2541,9 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
       // 2. Pre-test (20 preguntas de transferencia)
       setGenStep('Fase 2/8: Pre-test (20 preguntas)...');setGenPct(12);
       console.log('[OPELab] Fase 2: Generando pre-test...');
-      const TRANSFER='IMPORTANTE: NUNCA preguntes directamente lo que dice el texto. SIEMPRE presenta el concepto en un contexto clínico o analítico NUEVO donde el estudiante tenga que APLICAR el conocimiento, no reconocerlo. Ejemplo: en lugar de "¿Qué hace la PTH?" → "Un paciente presenta hipocalcemia persistente tras tiroidectomía. ¿Qué hormona está deficitaria?"';
-      const p1=await callClaude(`${SYS}\n\n${TRANSFER}\n\nGenera 20 preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\n7 fáciles, 7 medias, 6 difíciles. JSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
+      const TRANSFER='IMPORTANTE: NUNCA preguntes directamente lo que dice el texto. SIEMPRE presenta el concepto en un contexto clínico o analítico NUEVO donde el estudiante tenga que APLICAR el conocimiento, no reconocerlo.';
+      const CALIB=getDiffCalibration();
+      const p1=await callClaude(`${SYS}\n\n${TRANSFER}${CALIB}\n\nGenera 20 preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\n7 fáciles, 7 medias, 6 difíciles. JSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
       const preTest=JSON.parse(repairJSON(p1));
       console.log('[OPELab] Fase 2 OK:',(preTest.questions||preTest).length,'preguntas');
 
@@ -2531,10 +2582,24 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
       const dd=JSON.parse(repairJSON(p7));
       console.log('[OPELab] Fase 7 OK:',(dd.diffDiagnosis||dd).length,'pares');
 
-      // 8. Post-test (25 preguntas de transferencia) — split into 2 batches
-      setGenStep('Fase 8/8: Post-test (13+12 preguntas)...');setGenPct(75);
+      // 8. Open-ended questions (3)
+      setGenStep('Fase 8/10: Preguntas abiertas (3)...');setGenPct(72);
+      console.log('[OPELab] Fase 8: Generando preguntas abiertas...');
+      const p8=await callClaude(`${SYS}\n\nGenera 3 preguntas de respuesta abierta sobre "${targetTitle}". El estudiante debe escribir su respuesta sin opciones. CONCEPTOS:\n${cMap}\n\nJSON:\n{"openQuestions":[{"id":"oq1","question":"Pregunta que requiere explicar un mecanismo o interpretar resultados","modelAnswer":"Respuesta modelo completa","keyConcepts":["concepto clave 1","concepto clave 2"]}]}`,4096);
+      const oq=JSON.parse(repairJSON(p8));
+      console.log('[OPELab] Fase 8 OK:',(oq.openQuestions||oq).length,'preguntas abiertas');
+
+      // 9. Concept map relationships
+      setGenStep('Fase 9/10: Mapa de relaciones...');setGenPct(78);
+      console.log('[OPELab] Fase 9: Generando mapa de relaciones...');
+      const p9=await callClaude(`${SYS}\n\nA partir de los conceptos de "${targetTitle}", genera un mapa de relaciones modelo.\n\nCONCEPTOS:\n${cMap}\n\nIdentifica las 8-12 relaciones más importantes entre conceptos.\n\nJSON:\n{"relationships":[{"from":"concepto A","to":"concepto B","relation":"tipo de relación: causa, regula, inhibe, aumenta, disminuye, diagnostica, etc."}]}`,4096);
+      const rm=JSON.parse(repairJSON(p9));
+      console.log('[OPELab] Fase 9 OK:',(rm.relationships||rm).length,'relaciones');
+
+      // 10. Post-test (25 preguntas de transferencia) — split into 2 batches
+      setGenStep('Fase 10/10: Post-test (13+12 preguntas)...');setGenPct(82);
       console.log('[OPELab] Fase 8: Generando post-test batch 1 (13 preguntas)...');
-      const postPromptBase=`${SYS}\n\n${TRANSFER}\n\nPreguntas DIFÍCILES (POST-TEST) de "${targetTitle}". Aplicación clínica, diagnóstico diferencial.\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
+      const postPromptBase=`${SYS}\n\n${TRANSFER}${CALIB}\n\nPreguntas DIFÍCILES (POST-TEST) de "${targetTitle}". Aplicación clínica, diagnóstico diferencial.\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
       const p5a=await callClaude(postPromptBase+'\n\nGenera exactamente 13 preguntas.',8192);
       const postBatch1=JSON.parse(repairJSON(p5a));
       const postQs1=postBatch1.questions||postBatch1;
@@ -2571,14 +2636,34 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
           clinicalCases:taggedClinical,
           fillBlanks:fb.fillBlanks||fb||[],
           diffDiagnosis:dd.diffDiagnosis||dd||[],
+          openQuestions:oq.openQuestions||oq||[],
+          conceptRelations:rm.relationships||rm||[],
           postTest:taggedPostTest,
         },
-        progress:{preTest:null,postTest:null,flashcardsDominated:null,flashcardsSm2:null,clinicalScore:null,fillBlanks:null}
+        progress:{preTest:null,postTest:null,flashcardsDominated:null,flashcardsSm2:null,clinicalScore:null,fillBlanks:null,openQuestions:null}
       };
+
+      // Detect cross-topic connections
+      const myConceptNames=new Set((Array.isArray(conceptList)?conceptList:[]).map(c=>(c.t||'').toLowerCase()));
+      const connections=[];
+      if(allLearningData){
+        Object.entries(allLearningData).forEach(([otherTopic,otherData])=>{
+          if(otherTopic===topic||!otherData?.sections)return;
+          otherData.sections.forEach(otherSec=>{
+            if(!otherSec?.generated?.conceptMap)return;
+            otherSec.generated.conceptMap.forEach(c=>{
+              const name=(c.t||'').toLowerCase();
+              if(myConceptNames.has(name)&&!connections.some(x=>x.concept===name&&x.topic===otherTopic)){
+                connections.push({concept:c.t,topic:otherTopic,section:otherSec.title});
+              }
+            });
+          });
+        });
+      }
+      if(connections.length)generated.connections=connections.slice(0,10);
 
       let updSections;
       if(subIdx!=null){
-        // Update subsection
         const updSubs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,generated}:s);
         updSections=sections.map((s,i)=>i===idx?{...s,subsections:updSubs}:s);
       }else{
@@ -2640,8 +2725,10 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     {id:'clinicalCases',label:'Casos Lab',icon:'🔬',color:T.orange},
     {id:'fillBlanks',label:'Completar',icon:'✏️',color:T.purple},
     {id:'diffDiagnosis',label:'Diferencial',icon:'⚖️',color:T.amber},
+    {id:'openQuestions',label:'Abiertas',icon:'💬',color:T.teal},
+    {id:'conceptMap',label:'Mapa',icon:'🗺️',color:T.green},
     {id:'postTest',label:'Post-Test',icon:'✅',color:T.red},
-    {id:'spacedRepetition',label:'Repaso SM-2',icon:'📅',color:T.blue},
+    {id:'spacedRepetition',label:'Repaso',icon:'📅',color:T.blue},
   ];
 
   return(
@@ -2820,7 +2907,9 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
       {curPhase===3&&<ClinicalCasesPhase cases={gen.phases.clinicalCases} onScoreChange={score=>onSaveProg('clinicalScore',score)}/>}
       {curPhase===4&&<FillBlanksPhase items={gen.phases.fillBlanks||[]} progress={gen.progress?.fillBlanks} onSaveProgress={p=>onSaveProg('fillBlanks',p)}/>}
       {curPhase===5&&<DiffDiagnosisPhase pairs={gen.phases.diffDiagnosis||[]}/>}
-      {curPhase===6&&(
+      {curPhase===6&&<OpenQuestionsPhase questions={gen.phases.openQuestions||[]} progress={gen.progress?.openQuestions} onSaveProgress={p=>onSaveProg('openQuestions',p)}/>}
+      {curPhase===7&&<ConceptMapPhase concepts={gen.conceptMap||[]} relations={gen.phases.conceptRelations||[]}/>}
+      {curPhase===8&&(
         <div>
           <QuizPhase questions={gen.phases.postTest} title="Post-Test (25)" progress={gen.progress?.postTest} onSaveProgress={p=>onSaveProg('postTest',p)} color={T.red}/>
           {gen.progress?.preTest?.completed&&gen.progress?.postTest?.completed&&(
@@ -2838,7 +2927,18 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
           )}
         </div>
       )}
-      {curPhase===7&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
+      {curPhase===9&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
+      {/* Cross-topic connections */}
+      {gen.connections&&gen.connections.length>0&&(
+        <Card style={{padding:'12px 16px',marginTop:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.teal,marginBottom:6}}>🔗 Conectado con</div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+            {gen.connections.map((c,i)=>(
+              <span key={i} style={{fontSize:10,background:T.tealS,color:T.tealText,padding:'2px 8px',borderRadius:6,border:`0.5px solid ${T.teal}`,cursor:'pointer'}} title={c.concept}>{c.topic} · {c.section}</span>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -3195,6 +3295,158 @@ function DiffDiagnosisPhase({pairs}){
           <button key={i} onClick={()=>setCurrent(i)} style={{width:28,height:28,borderRadius:'50%',background:current===i?T.amber:T.surface,border:`0.5px solid ${current===i?T.amber:T.border}`,color:current===i?'#000':T.dim,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>{i+1}</button>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Open Questions Phase (AI-evaluated free response) ───────────────────────
+function OpenQuestionsPhase({questions,progress,onSaveProgress}){
+  const [current,setCurrent]=useState(0);
+  const [answers,setAnswers]=useState(progress?.answers||{});
+  const [evals,setEvals]=useState(progress?.evals||{});
+  const [evaluating,setEvaluating]=useState(false);
+
+  if(!Array.isArray(questions)||!questions.length) return <div style={{color:T.dim,textAlign:'center',padding:40}}>Sin preguntas abiertas. Regenera la sección.</div>;
+
+  const q=questions[current];if(!q)return null;
+  const ev=evals[current];
+  const answered=Object.keys(evals).length;
+
+  const evaluate=async()=>{
+    const userAnswer=(answers[current]||'').trim();
+    if(!userAnswer)return;
+    setEvaluating(true);
+    try{
+      const res=await fetch('/api/anthropic',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:1024,messages:[{role:'user',content:`Eres un evaluador experto en bioquímica clínica (FEA Laboratorio Clínico). Evalúa esta respuesta. Responde SOLO con JSON válido.\n\nPREGUNTA: ${q.question}\nRESPUESTA: ${userAnswer}\n\nEscala 0-4: 0=incorrecta, 1=parcial, 2=correcta con lagunas, 3=correcta, 4=completa.\n\nJSON: {"score":0,"feedback":"evaluación específica","missing":["concepto que faltó"]}`}]})
+      });
+      if(!res.ok)throw new Error('Error evaluando');
+      const data=await res.json();
+      const text=(data.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
+      const result=JSON.parse(text);
+      const newEvals={...evals,[current]:result};
+      setEvals(newEvals);
+      const totalScore=Object.values(newEvals).reduce((a,e)=>a+e.score,0);
+      const maxScore=Object.keys(newEvals).length*4;
+      onSaveProgress?.({answers,evals:newEvals,score:Math.round(totalScore/maxScore*100),completed:Object.keys(newEvals).length>=questions.length});
+    }catch(e){setEvals(prev=>({...prev,[current]:{score:0,feedback:`Error: ${e.message}`,missing:[]}}));}
+    setEvaluating(false);
+  };
+
+  const scoreColors=['#ef4444','#f97316','#fbbf24','#4ade80','#22c55e'];
+
+  return(
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <span style={{fontSize:13,fontWeight:600,color:T.text}}>💬 Pregunta abierta — {current+1}/{questions.length}</span>
+        <span style={{fontSize:12,color:T.muted}}>{answered}/{questions.length} evaluadas</span>
+      </div>
+      <Card style={{padding:'18px'}}>
+        <div style={{fontSize:14,color:T.text,lineHeight:1.8,marginBottom:14,fontWeight:500}}>{q.question}</div>
+        {!ev?(
+          <div>
+            <textarea value={answers[current]||''} onChange={e=>setAnswers(prev=>({...prev,[current]:e.target.value}))} placeholder="Escribe tu respuesta completa..."
+              style={{width:'100%',minHeight:120,background:T.bg,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'10px 12px',fontSize:13,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.7,marginBottom:10}}/>
+            <button onClick={evaluate} disabled={evaluating||!answers[current]?.trim()}
+              style={{background:evaluating?T.surface:T.teal,color:evaluating?T.dim:'#000',border:`0.5px solid ${evaluating?T.border:T.teal}`,borderRadius:8,padding:'8px 20px',fontSize:12,fontWeight:700,cursor:evaluating?'wait':'pointer',fontFamily:FONT}}>
+              {evaluating?'⏳ Evaluando con IA...':'Evaluar respuesta'}
+            </button>
+          </div>
+        ):(
+          <div>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+              <span style={{fontSize:24,fontWeight:700,color:scoreColors[ev.score]||T.dim}}>{ev.score}/4</span>
+              <span style={{fontSize:12,color:T.muted}}>{['Incorrecta','Parcial','Con lagunas','Correcta','Completa'][ev.score]||'—'}</span>
+            </div>
+            <div style={{fontSize:12,color:T.text,lineHeight:1.7,background:T.bg,padding:'10px 14px',borderRadius:8,border:`0.5px solid ${T.border}`,marginBottom:8}}>{ev.feedback}</div>
+            {ev.missing?.length>0&&(
+              <div style={{fontSize:11,color:T.amber}}>Conceptos que faltaron: {ev.missing.join(', ')}</div>
+            )}
+            {q.modelAnswer&&<div style={{marginTop:8,fontSize:11,color:T.dim,borderLeft:`2px solid ${T.green}`,paddingLeft:10}}>Respuesta modelo: {q.modelAnswer}</div>}
+          </div>
+        )}
+        <div style={{display:'flex',justifyContent:'space-between',marginTop:12}}>
+          <button onClick={()=>setCurrent(Math.max(0,current-1))} disabled={current===0} style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'5px 12px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>←</button>
+          <button onClick={()=>setCurrent(Math.min(questions.length-1,current+1))} disabled={current===questions.length-1} style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'5px 12px',fontSize:12,cursor:current===questions.length-1?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>→</button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── Concept Map Phase (free recall + model comparison) ──────────────────────
+function ConceptMapPhase({concepts,relations}){
+  const [showModel,setShowModel]=useState(false);
+  const [userConnections,setUserConnections]=useState([]);
+  const [selectedA,setSelectedA]=useState(null);
+
+  const conceptNames=(concepts||[]).slice(0,15).map(c=>c.t||c.nombre||'');
+
+  const addConnection=(a,b)=>{
+    if(a===b)return;
+    if(userConnections.some(c=>(c.from===a&&c.to===b)||(c.from===b&&c.to===a)))return;
+    setUserConnections(prev=>[...prev,{from:a,to:b}]);
+  };
+
+  return(
+    <div>
+      <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:6}}>🗺️ Mapa de relaciones</div>
+      <div style={{fontSize:11,color:T.dim,marginBottom:14,lineHeight:1.5}}>Selecciona dos conceptos para conectarlos. Construye tu mapa de memoria. Después compara con el modelo.</div>
+
+      {/* Concept buttons */}
+      <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:16}}>
+        {conceptNames.filter(Boolean).map((c,i)=>(
+          <button key={i} onClick={()=>{
+            if(selectedA===null)setSelectedA(c);
+            else{addConnection(selectedA,c);setSelectedA(null);}
+          }} style={{padding:'5px 12px',fontSize:11,borderRadius:8,cursor:'pointer',fontFamily:FONT,fontWeight:600,
+            background:selectedA===c?T.green+'30':T.surface,
+            border:`0.5px solid ${selectedA===c?T.green:T.border}`,
+            color:selectedA===c?T.green:T.text}}>
+            {c}
+          </button>
+        ))}
+      </div>
+      {selectedA&&<div style={{fontSize:11,color:T.green,marginBottom:8}}>Seleccionado: "{selectedA}" — elige el segundo concepto para conectar</div>}
+
+      {/* User connections */}
+      {userConnections.length>0&&(
+        <Card style={{padding:'12px 16px',marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:6}}>Tus conexiones ({userConnections.length})</div>
+          <div style={{display:'flex',flexDirection:'column',gap:3}}>
+            {userConnections.map((c,i)=>(
+              <div key={i} style={{display:'flex',alignItems:'center',gap:6,fontSize:11}}>
+                <span style={{color:T.teal,fontWeight:600}}>{c.from}</span>
+                <span style={{color:T.dim}}>↔</span>
+                <span style={{color:T.teal,fontWeight:600}}>{c.to}</span>
+                <button onClick={()=>setUserConnections(prev=>prev.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:10,padding:'0 4px'}}>×</button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Show/hide model */}
+      <button onClick={()=>setShowModel(!showModel)}
+        style={{background:showModel?T.greenS:T.surface,border:`0.5px solid ${showModel?T.green:T.border}`,borderRadius:8,padding:'8px 18px',fontSize:12,cursor:'pointer',color:showModel?T.green:T.muted,fontWeight:600,fontFamily:FONT,marginBottom:12}}>
+        {showModel?'Ocultar mapa modelo':'Mostrar mapa modelo para comparar'}
+      </button>
+
+      {showModel&&(relations||[]).length>0&&(
+        <Card style={{padding:'14px 16px',borderLeft:`2px solid ${T.green}`}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.green,marginBottom:8}}>Mapa modelo ({relations.length} relaciones)</div>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {relations.map((r,i)=>(
+              <div key={i} style={{display:'flex',alignItems:'center',gap:6,fontSize:11}}>
+                <span style={{color:T.text,fontWeight:600}}>{r.from}</span>
+                <span style={{color:T.amber,fontSize:10,fontStyle:'italic'}}>—{r.relation}→</span>
+                <span style={{color:T.text,fontWeight:600}}>{r.to}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
