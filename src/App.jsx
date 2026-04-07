@@ -1777,15 +1777,31 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
 function AprendizajeTab({topic,learning,saveLearningData}){
   const [chapterText,setChapterText]=useState('');
   const [generating,setGenerating]=useState(false);
-  const [genPhase,setGenPhase]=useState('');
+  const [genStep,setGenStep]=useState('');    // current step label
+  const [genPct,setGenPct]=useState(0);       // 0-100 progress
+  const [genSteps,setGenSteps]=useState([]);  // completed step labels
   const [genError,setGenError]=useState('');
   const [activePhase,setActivePhase]=useState(0);
 
-  const callClaude=async(prompt)=>{
+  // ── Split text into ~2500-word blocks respecting paragraph boundaries ─────
+  const splitIntoBlocks=(text,targetWords=2500)=>{
+    const paragraphs=text.split(/\n\s*\n/).filter(p=>p.trim());
+    if(!paragraphs.length) return [text];
+    const blocks=[];let current=[];let cw=0;
+    for(const para of paragraphs){
+      const wc=para.trim().split(/\s+/).length;
+      if(cw+wc>targetWords&&current.length>0){blocks.push(current.join('\n\n'));current=[para];cw=wc;}
+      else{current.push(para);cw+=wc;}
+    }
+    if(current.length>0) blocks.push(current.join('\n\n'));
+    return blocks;
+  };
+
+  const callClaude=async(prompt,maxTokens=4096)=>{
     const res=await fetch('/api/anthropic',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})
     });
     if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
     const data=await res.json();
@@ -1793,51 +1809,87 @@ function AprendizajeTab({topic,learning,saveLearningData}){
     return text.replace(/```json|```/g,'').trim();
   };
 
+  const markStep=(label,pct)=>{setGenStep(label);setGenPct(pct);setGenSteps(prev=>[...prev,label]);};
+
   const generateLearning=async()=>{
     if(!chapterText.trim()){setGenError('Pega el texto del capítulo primero.');return;}
-    setGenerating(true);setGenError('');
-    const ctx=`Tema: "${topic}"\n\nTEXTO DEL CAPÍTULO:\n${chapterText.slice(0,50000)}`;
-    const sys='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
+    setGenerating(true);setGenError('');setGenSteps([]);setGenPct(0);
+
+    const SYS='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
 
     try{
-      // Phase 1: Pre-test (18 questions)
-      setGenPhase('Generando pre-test (1/4)...');
-      const p1=await callClaude(`${sys}\n\n${ctx}\n\nGenera exactamente 18 preguntas tipo test de opción múltiple para un PRE-TEST (evaluar conocimientos previos antes de estudiar). Mezcla 6 fáciles, 6 medias y 6 difíciles.\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}\n\n- "correct" = índice 0-3 de la opción correcta\n- 18 preguntas exactas\n- Las opciones deben incluir la letra (A, B, C, D)\n- Explicación breve de por qué la opción es correcta`);
+      // ── PHASE A: Split and extract concept map ────────────────────────────
+      setGenStep('Dividiendo texto en bloques...');
+      const blocks=splitIntoBlocks(chapterText);
+      const totalSteps=blocks.length+5; // N extraction + 5 generation
+      const allConcepts=[];
+
+      for(let i=0;i<blocks.length;i++){
+        const label=`Extrayendo conceptos del bloque ${i+1} de ${blocks.length}...`;
+        setGenStep(label);setGenPct(Math.round((i/totalSteps)*100));
+
+        const raw=await callClaude(`${SYS}\n\nExtrae TODA la información clave de este bloque de texto. Devuelve una lista compacta en JSON.\n\nTEMA: "${topic}"\nBLOQUE ${i+1} de ${blocks.length}:\n${blocks[i]}\n\nJSON:\n{"concepts":[{"t":"título del concepto (5-8 palabras)","d":"Descripción concisa con dato específico. Máximo 2 frases.","cat":"concept|value|mechanism|clinical"}]}\n\nCategorías:\n- concept: definiciones, clasificaciones, criterios\n- value: valores numéricos, rangos de referencia, porcentajes, tiempos\n- mechanism: rutas metabólicas, fisiopatología, mecanismos de acción\n- clinical: notas diagnósticas, terapéuticas, correlaciones clínicas\n\nSé exhaustivo — extrae cada dato, valor, mecanismo y nota clínica. Incluye nombres de enzimas, genes, proteínas, criterios diagnósticos con sus valores.`);
+        const parsed=JSON.parse(repairJSON(raw));
+        const concepts=parsed.concepts||parsed;
+        if(Array.isArray(concepts)) allConcepts.push(...concepts);
+        setGenSteps(prev=>[...prev.filter(s=>!s.startsWith('Extrayendo')),`✓ Bloque ${i+1}/${blocks.length} — ${concepts.length||0} conceptos`]);
+      }
+
+      // ── PHASE B: Generate from accumulated concept map ────────────────────
+      const conceptMap=JSON.stringify(allConcepts.slice(0,300));
+      const conceptSummary=`MAPA DE CONCEPTOS (${allConcepts.length} conceptos extraídos de ${blocks.length} bloques):\n${conceptMap}`;
+      const baseIdx=blocks.length;
+
+      // B1: Pre-test
+      setGenStep('Generando pre-test (18 preguntas)...');setGenPct(Math.round((baseIdx/totalSteps)*100));
+      const p1=await callClaude(`${SYS}\n\nUsando este mapa completo de conceptos del tema "${topic}", genera exactamente 18 preguntas tipo test para un PRE-TEST.\n\n${conceptSummary}\n\nRequisitos:\n- 18 preguntas que cubran TODO el tema equilibradamente\n- Mezcla 6 fáciles, 6 medias, 6 difíciles\n- 4 opciones por pregunta (A-D)\n- Cada pregunta basada en conceptos del mapa\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}`,8192);
       const preTest=JSON.parse(repairJSON(p1));
+      markStep('✓ Pre-test generado',Math.round(((baseIdx+1)/totalSteps)*100));
 
-      // Phase 2: Guided reading
-      setGenPhase('Generando lectura guiada (2/4)...');
-      const p2=await callClaude(`${sys}\n\n${ctx}\n\nDivide el texto en secciones lógicas de lectura guiada (5-8 secciones). Para cada sección proporciona un resumen, puntos clave destacados y una pregunta de comprensión con su respuesta.\n\nJSON:\n{"sections":[{"title":"Título de la sección","summary":"Resumen de 3-5 frases con los conceptos principales","keyPoints":["punto clave 1","punto clave 2","punto clave 3"],"checkQuestion":{"question":"Pregunta de comprensión","answer":"Respuesta completa"}}]}`);
+      // B2: Guided reading
+      setGenStep('Generando lectura guiada por secciones...');setGenPct(Math.round(((baseIdx+1)/totalSteps)*100));
+      const p2=await callClaude(`${SYS}\n\nUsando este mapa de conceptos del tema "${topic}", organiza el contenido en secciones de lectura guiada. Agrupa los conceptos por área temática natural.\n\n${conceptSummary}\n\nPara cada sección: título, resumen de 3-5 frases integrando conceptos, puntos clave con datos concretos, pregunta de comprensión.\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}\n\n- 5-8 secciones que cubran todo el tema\n- Puntos clave con datos específicos del mapa`,8192);
       const guidedReading=JSON.parse(repairJSON(p2));
+      markStep('✓ Lectura guiada generada',Math.round(((baseIdx+2)/totalSteps)*100));
 
-      // Phase 3: Flashcards + Clinical cases
-      setGenPhase('Generando flashcards y casos clínicos (3/4)...');
-      const p3=await callClaude(`${sys}\n\n${ctx}\n\nGenera:\n1. Exactamente 15 flashcards con datos concretos e importantes (valores de referencia, mecanismos, clasificaciones, criterios diagnósticos)\n2. Exactamente 3 casos clínicos con presentación realista de paciente, pregunta tipo test y discusión detallada\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta o concepto clave","back":"Respuesta concisa con datos concretos"}],"clinicalCases":[{"id":"cc1","presentation":"Paciente de X años que acude por... Analítica: ...","question":"¿Cuál es el diagnóstico más probable?","options":["A) Opción 1","B) Opción 2","C) Opción 3","D) Opción 4"],"correct":0,"discussion":"Discusión detallada del caso y por qué la respuesta correcta es..."}]}`);
-      const fcData=JSON.parse(repairJSON(p3));
+      // B3: Flashcards
+      setGenStep('Generando flashcards (15 conceptos clave)...');setGenPct(Math.round(((baseIdx+2)/totalSteps)*100));
+      const p3=await callClaude(`${SYS}\n\nSelecciona los 15 conceptos más importantes y preguntables del tema "${topic}" y genera flashcards.\n\n${conceptSummary}\n\nPrioriza: valores numéricos, criterios diagnósticos, clasificaciones, mecanismos clave.\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta concreta","back":"Respuesta precisa con dato numérico o clasificación"}]}\n\n- Exactamente 15 flashcards\n- Distribución equilibrada por todo el tema`,4096);
+      const flashcards=JSON.parse(repairJSON(p3));
+      markStep('✓ Flashcards generadas',Math.round(((baseIdx+3)/totalSteps)*100));
 
-      // Phase 4: Post-test (10 questions)
-      setGenPhase('Generando post-test (4/4)...');
-      const p4=await callClaude(`${sys}\n\n${ctx}\n\nGenera exactamente 10 preguntas tipo test de dificultad ALTA para un POST-TEST (evaluar comprensión profunda tras estudiar). Enfócate en aplicación clínica, diagnóstico diferencial, interpretación de resultados analíticos y correlación clínico-patológica.\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}\n\n- 10 preguntas exactas, nivel alto\n- Preguntas de aplicación, no de memoria`);
-      const postTest=JSON.parse(repairJSON(p4));
+      // B4: Clinical cases
+      setGenStep('Generando casos clínicos (3 integradores)...');setGenPct(Math.round(((baseIdx+3)/totalSteps)*100));
+      const p4=await callClaude(`${SYS}\n\nCrea 3 casos clínicos realistas que integren conceptos de DISTINTAS secciones del tema "${topic}".\n\n${conceptSummary}\n\nCada caso debe:\n- Presentar paciente con datos analíticos concretos del mapa\n- Integrar 3-4 conceptos de diferentes categorías\n- Tener pregunta tipo test con 4 opciones (A-D)\n- Incluir discusión que conecte los conceptos\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente de X años...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"..."}]}`,6144);
+      const clinicalCases=JSON.parse(repairJSON(p4));
+      markStep('✓ Casos clínicos generados',Math.round(((baseIdx+4)/totalSteps)*100));
 
-      // Compute spaced repetition dates
+      // B5: Post-test
+      setGenStep('Generando post-test (10 preguntas de integración)...');setGenPct(Math.round(((baseIdx+4)/totalSteps)*100));
+      const p5=await callClaude(`${SYS}\n\nGenera 10 preguntas de dificultad ALTA para un POST-TEST del tema "${topic}". Evalúan comprensión profunda e integración global.\n\n${conceptSummary}\n\nRequisitos:\n- Preguntas que integren múltiples conceptos\n- Aplicación clínica, diagnóstico diferencial, interpretación de resultados\n- Nivel mayor que el pre-test\n- Distribución equilibrada\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}`,8192);
+      const postTest=JSON.parse(repairJSON(p5));
+      markStep('✓ Post-test generado',100);
+
+      // ── Save result ───────────────────────────────────────────────────────
       const now=new Date();
       const addDays=(d,n)=>{const r=new Date(d);r.setDate(r.getDate()+n);return r.toISOString().slice(0,10);};
-      const startDate=now.toISOString().slice(0,10);
 
       const result={
         topic,
         generatedAt:now.toISOString(),
         chapterTextPreview:chapterText.slice(0,300),
+        blocksProcessed:blocks.length,
+        conceptCount:allConcepts.length,
         phases:{
           preTest:preTest.questions||preTest,
           guidedReading:guidedReading.sections||guidedReading,
-          flashcards:fcData.flashcards||[],
-          clinicalCases:fcData.clinicalCases||[],
+          flashcards:flashcards.flashcards||flashcards,
+          clinicalCases:clinicalCases.clinicalCases||clinicalCases,
           postTest:postTest.questions||postTest,
         },
+        conceptMap:allConcepts,
         spacedRepetition:{
-          startDate,
+          startDate:now.toISOString().slice(0,10),
           reviews:{
             'D+1':{date:addDays(now,1),completed:false},
             'D+3':{date:addDays(now,3),completed:false},
@@ -1850,28 +1902,66 @@ function AprendizajeTab({topic,learning,saveLearningData}){
       };
 
       await saveLearningData(topic,result);
-      setGenPhase('');setChapterText('');
+      setGenStep('');setChapterText('');setGenPct(100);
     }catch(e){
       setGenError(`Error: ${e.message}`);
     }
     setGenerating(false);
   };
 
+  // ── Render: input form (no learning data yet) ─────────────────────────────
   if(!learning) return(
-    <Card style={{padding:'24px'}}>
-      <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:4}}>🧠 Aprendizaje interactivo</div>
-      <div style={{fontSize:12,color:T.muted,marginBottom:16,lineHeight:1.6}}>Pega el texto de un capítulo del libro (Tietz o Henry) y se generarán 6 fases de aprendizaje: pre-test, lectura guiada, flashcards, casos clínicos, post-test y plan de repaso espaciado.</div>
-      <textarea value={chapterText} onChange={e=>setChapterText(e.target.value)} placeholder="Pega aquí el texto completo del capítulo..."
-        style={{width:'100%',minHeight:200,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:12}}/>
-      <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
-        <button onClick={generateLearning} disabled={generating||!chapterText.trim()}
-          style={{background:generating?T.amberS:T.purple,color:generating?T.amberText:'#fff',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:600,cursor:generating?'wait':'pointer',fontFamily:FONT,boxShadow:sh.sm}}>
-          {generating?`⏳ ${genPhase}`:'🧠 Generar aprendizaje interactivo'}
-        </button>
-        {chapterText.trim()&&!generating&&<span style={{fontSize:11,color:T.muted}}>{chapterText.trim().split(/\s+/).length} palabras</span>}
-        {genError&&<span style={{fontSize:12,color:T.red}}>{genError}</span>}
-      </div>
-    </Card>
+    <div>
+      <Card style={{padding:'24px'}}>
+        <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:4}}>🧠 Aprendizaje interactivo</div>
+        <div style={{fontSize:12,color:T.muted,marginBottom:16,lineHeight:1.6}}>Pega el texto completo del capítulo (Tietz, Henry u otra fuente). El sistema lo divide automáticamente en bloques, extrae todos los conceptos y genera 6 fases de aprendizaje unificadas que cubren el tema entero.</div>
+        <textarea value={chapterText} onChange={e=>setChapterText(e.target.value)} placeholder="Pega aquí el texto completo del capítulo (puede ser muy largo — hasta 90 páginas)..."
+          style={{width:'100%',minHeight:200,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:12}}/>
+        {chapterText.trim()&&!generating&&(
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+            <span style={{fontSize:11,color:T.muted,background:T.card,padding:'3px 10px',borderRadius:20,border:`1px solid ${T.border}`}}>{chapterText.trim().split(/\s+/).length.toLocaleString()} palabras</span>
+            <span style={{fontSize:11,color:T.teal,background:T.tealS,padding:'3px 10px',borderRadius:20,border:`1px solid ${T.border}`}}>{splitIntoBlocks(chapterText).length} bloques de ~2500 palabras</span>
+            <span style={{fontSize:11,color:T.purple,background:T.purpleS,padding:'3px 10px',borderRadius:20,border:`1px solid ${T.border}`}}>{splitIntoBlocks(chapterText).length+5} llamadas a la IA</span>
+          </div>
+        )}
+        {!generating&&(
+          <button onClick={generateLearning} disabled={!chapterText.trim()}
+            style={{background:!chapterText.trim()?T.card:T.purple,color:!chapterText.trim()?T.dim:'#fff',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:600,cursor:!chapterText.trim()?'not-allowed':'pointer',fontFamily:FONT,boxShadow:sh.sm}}>
+            🧠 Generar aprendizaje interactivo
+          </button>
+        )}
+        {genError&&<div style={{marginTop:12,fontSize:12,color:T.red,background:T.redS,padding:'8px 12px',borderRadius:8}}>{genError}</div>}
+      </Card>
+
+      {/* Progress panel — visible while generating */}
+      {generating&&(
+        <Card style={{padding:'20px',marginTop:16,borderLeft:`3px solid ${T.purple}`}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+            <div style={{fontSize:14,fontWeight:700,color:T.purple}}>⏳ Generando aprendizaje...</div>
+            <span style={{fontSize:13,fontWeight:700,color:T.purple}}>{genPct}%</span>
+          </div>
+          <div style={{background:T.border,borderRadius:4,height:6,marginBottom:16}}>
+            <div style={{background:`linear-gradient(90deg,${T.purple},${T.teal})`,width:`${genPct}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/>
+          </div>
+          <div style={{fontSize:13,color:T.text,fontWeight:600,marginBottom:10,display:'flex',alignItems:'center',gap:8}}>
+            <span style={{display:'inline-block',width:8,height:8,borderRadius:'50%',background:T.purple,animation:'pulse 1s infinite'}}/>
+            {genStep}
+          </div>
+          {genSteps.length>0&&(
+            <div style={{display:'flex',flexDirection:'column',gap:4,paddingLeft:4}}>
+              {genSteps.filter(s=>s.startsWith('✓')).map((s,i)=>(
+                <div key={i} style={{fontSize:11,color:T.green,display:'flex',alignItems:'center',gap:6}}>
+                  <span style={{color:T.green,fontWeight:700}}>✓</span>{s.slice(2)}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{marginTop:12,fontSize:11,color:T.muted,lineHeight:1.6}}>
+            El proceso puede tardar varios minutos para capítulos largos. No cierres esta pestaña.
+          </div>
+        </Card>
+      )}
+    </div>
   );
 
   // Has learning data — show phases
@@ -1889,7 +1979,11 @@ function AprendizajeTab({topic,learning,saveLearningData}){
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
         <div>
           <div style={{fontSize:15,fontWeight:700,color:T.text}}>🧠 Aprendizaje interactivo</div>
-          <div style={{fontSize:11,color:T.muted}}>Generado el {fmtDate(learning.generatedAt)}</div>
+          <div style={{fontSize:11,color:T.muted,display:'flex',gap:8,flexWrap:'wrap',marginTop:3}}>
+            <span>Generado el {fmtDate(learning.generatedAt)}</span>
+            {learning.blocksProcessed&&<span style={{color:T.teal}}>· {learning.blocksProcessed} bloques procesados</span>}
+            {learning.conceptCount&&<span style={{color:T.purple}}>· {learning.conceptCount} conceptos extraídos</span>}
+          </div>
         </div>
         <button onClick={async()=>{await saveLearningData(topic,null);}} style={{fontSize:11,background:'none',border:`1px solid ${T.border2}`,borderRadius:6,padding:'4px 12px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>🗑 Regenerar</button>
       </div>
