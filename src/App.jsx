@@ -137,45 +137,41 @@ async function splitPdfIfNeeded(file){
   return chunks;
 }
 
-// ── Theme ────────────────────────────────────────────────────────────────────
+// ── Theme — Dark Mode ────────────────────────────────────────────────────────
 const T={
-  bg:'#f4f9f7',surface:'#ffffff',card:'#ffffff',
-  border:'#e0eeea',border2:'#c8e0d8',
-  text:'#1b3a30',muted:'#68a090',dim:'#a8c8be',
-  blue:'#2055b8',blueDk:'#174494',blueS:'#eaf2fc',blueText:'#174494',
-  green:'#05b490',greenDk:'#048a6e',greenS:'#e6faf5',greenText:'#035c4a',
-  teal:'#0891b2',tealDk:'#0678a0',tealS:'#e0f4fa',tealText:'#054f68',
-  amber:'#c47d0a',amberS:'#fef6e4',amberText:'#7a4d06',
-  red:'#e53e3e',redDk:'#c53030',redS:'#fff5f5',redText:'#742a2a',
-  purple:'#6b34d4',purpleDk:'#5828aa',purpleS:'#f2eeff',purpleText:'#3d1d82',
-  orange:'#d45010',orangeS:'#fdf3ec',orangeText:'#7a2e08',
+  bg:'#0a0a0a',surface:'#111111',card:'#111111',
+  border:'#1e1e1e',border2:'#2a2a2a',
+  text:'#f0f0f0',muted:'#888888',dim:'#555555',
+  blue:'#60a5fa',blueDk:'#3b82f6',blueS:'#1a1a2e',blueText:'#93bbfd',
+  green:'#4ade80',greenDk:'#22c55e',greenS:'#0a1a0f',greenText:'#1a3a1a',
+  teal:'#2dd4bf',tealDk:'#14b8a6',tealS:'#0a1a1a',tealText:'#5eead4',
+  amber:'#fbbf24',amberS:'#1a1500',amberText:'#fcd34d',
+  red:'#f87171',redDk:'#ef4444',redS:'#1a0a0a',redText:'#3a1a1a',
+  purple:'#a78bfa',purpleDk:'#8b5cf6',purpleS:'#1a0f2e',purpleText:'#c4b5fd',
+  orange:'#fb923c',orangeS:'#1a1008',orangeText:'#fdba74',
 };
-const FONT="'DM Sans',system-ui,sans-serif";
-const sh={
-  sm:'0 1px 4px rgba(0,50,30,.06),0 1px 2px rgba(0,50,30,.04)',
-  md:'0 4px 24px rgba(0,50,30,.08),0 2px 8px rgba(0,50,30,.04)',
-  lg:'0 8px 40px rgba(0,50,30,.10)',
-};
+const FONT="system-ui,-apple-system,sans-serif";
+const sh={sm:'none',md:'none',lg:'none'};
 
 // ── Sections ─────────────────────────────────────────────────────────────────
 const SECTIONS=[
-  {id:'comun',name:'Temario Común y Legislación',emoji:'⚖️',color:'#5a8a7a',colorS:'#edf6f2',colorBorder:'#aed0c4',desc:'Constitución, autonomía CLM, leyes sanitarias, SESCAM, legislación laboral y ética',tietz:'—',henry:'—',temas:[1,2,3,4,5,6],
+  {id:'comun',name:'Temario Común y Legislación',emoji:'⚖️',color:'#6ee7b7',colorS:'#0a1a12',colorBorder:'#1e3a2a',desc:'Constitución, autonomía CLM, leyes sanitarias, SESCAM, legislación laboral y ética',tietz:'—',henry:'—',temas:[1,2,3,4,5,6],
    topics:['T1. Constitución Española: derechos fundamentales y protección de la salud','T1. Estatuto de Autonomía CLM: instituciones y competencias de la Junta. Igualdad y violencia de género','T2. Ley General de Sanidad: organización del SNS, áreas de salud, CCAA','T2. SESCAM: funciones, organización y estructura. Ley de Ordenación Sanitaria CLM','T3. Ley de cohesión y calidad del SNS: prestaciones, garantías, Consejo Interterritorial','T4. Estatuto Marco del personal estatutario. Ley de Prevención de Riesgos Laborales','T5. Ley de derechos y deberes en salud CLM. Documentación sanitaria (Decreto 24/2011)','T6. Plan Dignifica SESCAM: humanización de la asistencia. Estratificación de crónicos']},
-  {id:'fundamentos',name:'Fundamentos del Laboratorio',emoji:'🏛️',color:T.blue,colorS:T.blueS,colorBorder:'#93c5fd',desc:'Preanalítica, control de calidad, postanalítica, estadística, gestión, ISO 15189, SIL, instrumentación',tietz:'Secc. I–II caps. 1–9, 16–30',henry:'Parte 1 caps. 1–14',temas:[7,8,9,10,11,12,13,14],
+  {id:'fundamentos',name:'Fundamentos del Laboratorio',emoji:'🏛️',color:T.blue,colorS:T.blueS,colorBorder:'#1a2a3a',desc:'Preanalítica, control de calidad, postanalítica, estadística, gestión, ISO 15189, SIL, instrumentación',tietz:'Secc. I–II caps. 1–9, 16–30',henry:'Parte 1 caps. 1–14',temas:[7,8,9,10,11,12,13,14],
    topics:['T7. Fase preanalítica: obtención, transporte, conservación y criterios de rechazo de muestras','T8. Control de calidad analítico: CCI, PECS/EQA, reglas de Westgard, Seis Sigma, variabilidad biológica','T9. Fase postanalítica: informe del laboratorio, valores de referencia, valores críticos, valor del cambio','T10. Bioestadística: descriptiva, inferencial, correlación, evaluación de pruebas diagnósticas (Se/Sp/VPP/VPN)','T11. Gestión del laboratorio clínico: gestión por procesos, RRHH, indicadores, cuadros de mando','T12. Modelos de gestión de calidad: ISO 15189, Joint Commission, EFQM. Bioética, protección de datos','T13. SIL, inteligencia artificial, Big Data y ciberseguridad en el laboratorio clínico','T14. Principios metodológicos: espectrofotometría, electroforesis, cromatografía, masas, POCT, automatización']},
-  {id:'bioquimica',name:'Bioquímica Clínica',emoji:'🧬',color:'#6b34d4',colorS:'#f2eeff',colorBorder:'#c4aff0',desc:'Gases, riñón, mineral, glucosa, lípidos, proteínas, hígado, corazón, inflamación, endocrinología, fármacos',tietz:'Secc. III–IV caps. 31–51',henry:'Parte 2 caps. 15–28',temas:[15,16,17,18,19,20,21,22,23,24,25,26,27],
+  {id:'bioquimica',name:'Bioquímica Clínica',emoji:'🧬',color:T.purple,colorS:T.purpleS,colorBorder:'#3b2a5a',desc:'Gases, riñón, mineral, glucosa, lípidos, proteínas, hígado, corazón, inflamación, endocrinología, fármacos',tietz:'Secc. III–IV caps. 31–51',henry:'Parte 2 caps. 15–28',temas:[15,16,17,18,19,20,21,22,23,24,25,26,27],
    topics:['T15. Equilibrio ácido-base y gases sanguíneos: fisiología, gasometría arterial, cooximetría','T16. Función renal y equilibrio hidroelectrolítico: FGe, proteinuria, osmolalidad, patología tubular','T17. Metabolismo mineral: hierro, calcio, magnesio, fósforo, metabolismo óseo y vitamina D','T18. Hidratos de carbono: metabolismo glucídico, diabetes mellitus, HbA1c, insulina, péptido C','T19. Lípidos y lipoproteínas: dislipemias, síndrome metabólico, riesgo cardiovascular','T20. Proteínas plasmáticas: electroforesis, paraproteínas, cadenas ligeras libres, enzimología, porfirias','T21. Función hepatobiliar: marcadores, hepatopatía aguda y crónica, índices de fibrosis, autoinmunidad hepática','T22. Función cardiaca y muscular: troponinas, BNP, síndrome coronario agudo, insuficiencia cardíaca','T23. Marcadores de inflamación y sepsis: PCR, PCT, IL-6, ferritina, dímero D','T24. Función gastrointestinal: páncreas, malabsorción, EII, estudio de heces, sangre oculta','T25. Marcadores tumorales: PSA, AFP, CEA, CA 125, CA 19-9; biopsia líquida, ADN circulante','T26. Función endocrina: hipotálamo-hipófisis, tiroides, paratiroides, suprarrenal, hormonas sexuales','T27. Monitorización de fármacos: farmacocinética, fármacos biológicos, drogas de abuso, intoxicaciones']},
-  {id:'liquidos',name:'Orina, Líquidos y Reproducción',emoji:'💧',color:'#0284c7',colorS:'#e0f2fe',colorBorder:'#7dd3fc',desc:'Análisis de orina, líquidos biológicos, seminograma, reproducción asistida y cribado prenatal',tietz:'Cap. 45, 58–59',henry:'Parte 3 caps. 29–30',temas:[28,29,30,31],
+  {id:'liquidos',name:'Orina, Líquidos y Reproducción',emoji:'💧',color:'#38bdf8',colorS:'#0a1520',colorBorder:'#1e3040',desc:'Análisis de orina, líquidos biológicos, seminograma, reproducción asistida y cribado prenatal',tietz:'Cap. 45, 58–59',henry:'Parte 3 caps. 29–30',temas:[28,29,30,31],
    topics:['T28. Estudio de la orina: análisis bioquímico, sedimento urinario, litiasis renal','T29. Líquidos biológicos: ascítico, cefalorraquídeo, pleural, amniótico, pericárdico, sinovial','T30. Líquido seminal: seminograma (criterios OMS), FIV, ICSI, inseminación artificial, donación de gametos','T31. Embarazo: cribado bioquímico de cromosomopatías, DPNI, trastornos hipertensivos del embarazo']},
-  {id:'hematologia',name:'Hematología',emoji:'🩸',color:T.red,colorS:T.redS,colorBorder:'#fca5a5',desc:'Hemograma, hematopoyesis, eritrocitos, leucocitos neoplásicos y no neoplásicos, plaquetas',tietz:'Secc. VII caps. 74–78',henry:'Parte 4 caps. 31–35',temas:[32,33,34,35,36,37],
+  {id:'hematologia',name:'Hematología',emoji:'🩸',color:T.red,colorS:T.redS,colorBorder:'#3a1a1a',desc:'Hemograma, hematopoyesis, eritrocitos, leucocitos neoplásicos y no neoplásicos, plaquetas',tietz:'Secc. VII caps. 74–78',henry:'Parte 4 caps. 31–35',temas:[32,33,34,35,36,37],
    topics:['T32. Hemograma: principios de automatización, tinción y morfología de frotis sanguíneo, VSG','T33. Hematopoyesis: médula ósea, eritropoyesis, leucopoyesis, trombopoyesis','T34. Patologías eritrocitarias: anemias, hemoglobinopatías, talasemias, poliglobulias','T35. Trastornos leucocitarios no neoplásicos: alteraciones en granulocitos, linfocitos, monocitos, eosinófilos','T36. Trastornos leucocitarios neoplásicos: leucemias, linfomas, mieloma múltiple, SMD, síndromes mieloproliferativos','T37. Trastornos plaquetarios: trombocitopenias, trombocitosis y disfunción plaquetaria']},
-  {id:'hemostasia',name:'Hemostasia y Transfusión',emoji:'🔴',color:T.orange,colorS:T.orangeS,colorBorder:'#fdba74',desc:'Coagulación, fibrinólisis, anticoagulación, inmunohematología y medicina transfusional',tietz:'Caps. 79–81, 90–93',henry:'Parte 4–5 caps. 36–43',temas:[38,39],
+  {id:'hemostasia',name:'Hemostasia y Transfusión',emoji:'🔴',color:T.orange,colorS:T.orangeS,colorBorder:'#3a2010',desc:'Coagulación, fibrinólisis, anticoagulación, inmunohematología y medicina transfusional',tietz:'Caps. 79–81, 90–93',henry:'Parte 4–5 caps. 36–43',temas:[38,39],
    topics:['T38. Hemostasia y trombosis: factores de coagulación, TP/TTPA/fibrinógeno, fibrinólisis, anticoagulantes (NACO)','T38. Trombofilia: estudio de trombosis venosa y arterial. Control del tratamiento anticoagulante','T39. Inmunohematología: sistemas ABO y Rh, anticuerpos irregulares, prueba de Coombs, crossmatch','T39. Medicina transfusional: componentes sanguíneos, indicaciones, reacciones adversas, hemovigilancia']},
-  {id:'microbiologia',name:'Microbiología',emoji:'🦠',color:T.green,colorS:T.greenS,colorBorder:'#86efac',desc:'Bacteriología, micobacterias, hongos, parásitos, virus, serología y patologías infecciosas',tietz:'Secc. VIII caps. 82–89',henry:'Parte 7 caps. 57–66',temas:[40,41,42,43,44,45,46,47,48,49,50],
+  {id:'microbiologia',name:'Microbiología',emoji:'🦠',color:T.green,colorS:T.greenS,colorBorder:'#1a3a1a',desc:'Bacteriología, micobacterias, hongos, parásitos, virus, serología y patologías infecciosas',tietz:'Secc. VIII caps. 82–89',henry:'Parte 7 caps. 57–66',temas:[40,41,42,43,44,45,46,47,48,49,50],
    topics:['T40. Muestras microbiológicas: obtención, procesamiento, medios de cultivo, tinciones','T41. Identificación microbiológica: antibiograma (EUCAST/CLSI), mecanismos de resistencia, MALDI-TOF','T42. Bacterias aerobias de interés clínico: Gram positivos y Gram negativos','T43. Bacterias anaerobias: Clostridium, Bacteroides, Actinomyces, diagnóstico y clínica','T44. Micobacterias: M. tuberculosis, NTM, Ziehl-Neelsen, MGIT 960, IGRA, PCR, tratamiento','T45. Otros microorganismos: micoplasmas, espiroquetas, clamidias, rickettsias, enfermedades emergentes','T46. Micología: levaduras (Candida, Cryptococcus), hongos filamentosos (Aspergillus), antifúngicos','T47. Parasitología: técnicas de diagnóstico, parásitos de interés clínico, tratamiento antiparasitario','T48. Virología: VIH, hepatitis A/B/C, virus respiratorios, PCR en tiempo real, priones','T49. Diagnóstico serológico: detección de antígenos y anticuerpos, pruebas de cribado y confirmación','T50. Patologías infecciosas: sepsis, infecciones nosocomiales, meningitis, ITS, paciente inmunodeprimido']},
-  {id:'molecular',name:'Biología Molecular y Genética',emoji:'🧪',color:T.teal,colorS:T.tealS,colorBorder:'#70c0d8',desc:'Genética humana, citogenética, farmacogenómica y biología molecular diagnóstica',tietz:'Secc. VI caps. 62–73',henry:'Parte 8 caps. 67–75',temas:[51,52,53,54],
+  {id:'molecular',name:'Biología Molecular y Genética',emoji:'🧪',color:T.teal,colorS:T.tealS,colorBorder:'#1a3030',desc:'Genética humana, citogenética, farmacogenómica y biología molecular diagnóstica',tietz:'Secc. VI caps. 62–73',henry:'Parte 8 caps. 67–75',temas:[51,52,53,54],
    topics:['T51. Genética humana: mutaciones, patrones de herencia, árboles genealógicos','T52. Citogenética: cariotipo, anomalías cromosómicas estructurales y numéricas, diagnóstico prenatal y preimplantacional','T53. Genética aplicada: farmacogenética, cribado poblacional, bases moleculares del cáncer, medicina de precisión','T54. Biología molecular diagnóstica: PCR, NGS, hibridación, array-CGH, exomas, biopsia líquida']},
-  {id:'inmunologia',name:'Inmunología',emoji:'🛡️',color:'#0d9488',colorS:'#ccfbf1',colorBorder:'#5eead4',desc:'Sistema inmune, HLA y trasplante, alergias, autoinmunidad sistémica y de órgano, inmunodeficiencias',tietz:'Secc. X caps. 94–100',henry:'Parte 6 caps. 44–56',temas:[55,56,57,58,59,60],
+  {id:'inmunologia',name:'Inmunología',emoji:'🛡️',color:'#2dd4bf',colorS:'#0a1a1a',colorBorder:'#1a3030',desc:'Sistema inmune, HLA y trasplante, alergias, autoinmunidad sistémica y de órgano, inmunodeficiencias',tietz:'Secc. X caps. 94–100',henry:'Parte 6 caps. 44–56',temas:[55,56,57,58,59,60],
    topics:['T55. Inmunología: sistema inmunitario, complemento, citometría de flujo, poblaciones leucocitarias','T56. Histocompatibilidad: HLA, técnicas de tipificación, trasplante de órganos y tejidos','T57. Enfermedades alérgicas: IgE total y específica, mecanismos de hipersensibilidad, anafilaxia, enfermedad celíaca','T58. Enfermedades autoinmunes órgano-específicas: autoanticuerpos (anti-TPO, anti-MBG, AMA, ANCA órgano-específicos)','T59. Enfermedades autoinmunes sistémicas: ANA, anti-dsDNA, anti-ENA, ANCA, FR, anti-CCP, algoritmos diagnósticos','T60. Inmunodeficiencias congénitas y adquiridas: clasificación, diagnóstico de laboratorio']},
 ];
 const ALL_TOPICS=SECTIONS.flatMap(s=>s.topics);
@@ -744,11 +740,11 @@ export default function App(){
 
   return(
     <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14}}>
-      <div style={{background:'rgba(255,255,255,0.85)',backdropFilter:'blur(10px)',borderBottom:`1px solid ${T.border}`,boxShadow:sh.sm,position:'sticky',top:0,zIndex:50}}>
+      <div style={{background:'rgba(10,10,10,0.9)',backdropFilter:'blur(12px)',borderBottom:`0.5px solid ${T.border}`,position:'sticky',top:0,zIndex:50}}>
         <div style={{padding:'0 40px'}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',paddingTop:14,paddingBottom:6}}>
             <div style={{display:'flex',alignItems:'center',gap:12}}>
-              <div style={{width:36,height:36,borderRadius:12,background:`linear-gradient(135deg,${T.green},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,boxShadow:sh.sm}}>🔬</div>
+              <div style={{width:36,height:36,borderRadius:12,background:`linear-gradient(135deg,${T.green},${T.teal})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>🔬</div>
               <div><span style={{fontWeight:700,fontSize:16,color:T.text,letterSpacing:'-0.3px'}}>OPE Lab</span><span style={{color:T.muted,fontSize:11,marginLeft:8,fontWeight:400}}>FEA Laboratorio Clínico · SESCAM 2025</span></div>
             </div>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -832,66 +828,12 @@ function Ajustes({apiKey,onSave}){
         <input value={key} onChange={e=>setKey(e.target.value)} type="password" placeholder="sk-ant-api03-..."
           style={{width:'100%',background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',marginBottom:12,boxSizing:'border-box',fontFamily:'monospace'}}
         />
-        <button onClick={save} style={{background:T.blue,color:'#fff',border:'none',borderRadius:7,padding:'9px 20px',fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:FONT,boxShadow:sh.sm}}>Guardar</button>
+        <button onClick={save} style={{background:T.blue,color:'#000',border:'none',borderRadius:7,padding:'9px 20px',fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:FONT,boxShadow:sh.sm}}>Guardar</button>
         {msg&&<span style={{marginLeft:12,fontSize:13,color:msg.startsWith('✅')?T.green:T.red}}>{msg}</span>}
       </div>
-      <div style={{background:T.blueS,border:'1px solid #93c5fd',borderRadius:10,padding:'14px 18px',fontSize:13,color:T.blueText,lineHeight:1.6}}>
-        <strong>Privacidad:</strong> la API key se guarda únicamente en <code style={{fontSize:11,background:'#bfdbfe',padding:'1px 4px',borderRadius:3}}>localStorage</code> de tu navegador. No se envía a ningún servidor excepto a la API de Anthropic cuando generas preguntas.
+      <div style={{background:T.blueS,border:'1px solid #1a2a3a',borderRadius:10,padding:'14px 18px',fontSize:13,color:T.blueText,lineHeight:1.6}}>
+        <strong>Privacidad:</strong> la API key se guarda únicamente en <code style={{fontSize:11,background:'#1a2a3a',padding:'1px 4px',borderRadius:3}}>localStorage</code> de tu navegador. No se envía a ningún servidor excepto a la API de Anthropic cuando generas preguntas.
       </div>
-    </div>
-  );
-}
-
-// ── PanelTab — Dashboard + Stats + Planificador ───────────────────────────────
-function PanelTab({shared,examDate,sessions,stats,setExamDate,goToBank,setTab,errSet,dueQs,learningData,setTopicView}){
-  const [subTab,setSubTab]=useState('dashboard');
-  const tabs=[{id:'dashboard',label:'Inicio'},{id:'stats',label:'Estadísticas'},{id:'planificador',label:'Planificador'}];
-  return(
-    <div>
-      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
-        {tabs.map(t=><button key={t.id} onClick={()=>setSubTab(t.id)} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab===t.id?600:400,color:subTab===t.id?T.blue:T.muted,borderBottom:`2px solid ${subTab===t.id?T.blue:'transparent'}`,fontFamily:FONT}}>{t.label}</button>)}
-      </div>
-      {subTab==='dashboard'   &&<Dashboard {...shared} examDate={examDate} sessions={sessions} learningData={learningData} setTopicView={setTopicView}/>}
-      {subTab==='stats'       &&<StatsView {...shared} sessions={sessions}/>}
-      {subTab==='planificador'&&<Planificador stats={stats} examDate={examDate} setExamDate={setExamDate} goToBank={goToBank}/>}
-    </div>
-  );
-}
-
-// ── TemarioConEstudio — Temario + visor de apuntes integrado ──────────────────
-function TemarioConEstudio({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,studyPreselect,onStudyPreselect,goToStudy,topicNotes,saveTopicNote,setTopicView,learningData}){
-  const [subTab,setSubTab]=useState(studyPreselect?'estudio':'temario');
-  useEffect(()=>{if(studyPreselect){setSubTab('estudio');}},[studyPreselect]);
-  const totalNotes=Object.keys(studyNotes).length;
-  return(
-    <div>
-      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
-        <button onClick={()=>setSubTab('temario')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='temario'?600:400,color:subTab==='temario'?T.blue:T.muted,borderBottom:`2px solid ${subTab==='temario'?T.blue:'transparent'}`,fontFamily:FONT}}>Temario</button>
-        <button onClick={()=>setSubTab('estudio')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='estudio'?600:400,color:subTab==='estudio'?T.teal:T.muted,borderBottom:`2px solid ${subTab==='estudio'?T.teal:'transparent'}`,fontFamily:FONT}}>
-          📖 Apuntes {totalNotes>0&&<span style={{fontSize:10,background:T.tealS,color:T.teal,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{totalNotes}</span>}
-        </button>
-      </div>
-      {subTab==='temario'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setSubTab('estudio');goToStudy(t);}} topicNotes={topicNotes} saveTopicNote={saveTopicNote} setTopicView={setTopicView} learningData={learningData}/>}
-      {subTab==='estudio'&&<EstudioTab studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} preselect={studyPreselect} onPreselect={onStudyPreselect} pdfMeta={pdfMeta}/>}
-    </div>
-  );
-}
-
-// ── PracticaTab — Test OPE + Simulacro + Flashcards ──────────────────────────
-function PracticaTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs}){
-  const [subTab,setSubTab]=useState('test');
-  return(
-    <div>
-      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
-        <button onClick={()=>setSubTab('test')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='test'?600:400,color:subTab==='test'?T.blue:T.muted,borderBottom:`2px solid ${subTab==='test'?T.blue:'transparent'}`,fontFamily:FONT}}>🧪 Test OPE</button>
-        <button onClick={()=>setSubTab('simulacro')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='simulacro'?600:400,color:subTab==='simulacro'?T.orange:T.muted,borderBottom:`2px solid ${subTab==='simulacro'?T.orange:'transparent'}`,fontFamily:FONT}}>⚡ Simulacro</button>
-        <button onClick={()=>setSubTab('flashcard')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='flashcard'?600:400,color:subTab==='flashcard'?T.teal:T.muted,borderBottom:`2px solid ${subTab==='flashcard'?T.teal:'transparent'}`,fontFamily:FONT}}>
-          🃏 Flashcards {dueQs.length>0&&<span style={{fontSize:10,background:T.amberS,color:T.amber,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{dueQs.length}</span>}
-        </button>
-      </div>
-      {subTab==='test'      &&<TestMode {...shared}/>}
-      {subTab==='simulacro' &&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey}/>}
-      {subTab==='flashcard' &&<FlashcardMode {...shared}/>}
     </div>
   );
 }
@@ -1131,8 +1073,8 @@ function TopicNotesPanel({topic,value,onChange,onClose,editing,setEditing}){
 function Chip({color,bg,children}){return <span style={{background:bg,color,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600}}>{children}</span>;}
 function Lbl({children}){return <div style={{fontSize:11,color:T.muted,fontWeight:700,marginBottom:6,letterSpacing:0.5,textTransform:'uppercase'}}>{children}</div>;}
 function Btn({onClick,disabled,children,variant='primary',style:st}){
-  const v={primary:{bg:T.blue,c:'#fff',b:T.blueDk},green:{bg:T.green,c:'#fff',b:T.greenDk},ghost:{bg:T.surface,c:T.text,b:T.border2},danger:{bg:T.redS,c:T.red,b:'#fca5a5'},teal:{bg:T.teal,c:'#fff',b:T.tealDk},purple:{bg:T.purple,c:'#fff',b:T.purpleDk},orange:{bg:T.orange,c:'#fff',b:'#c2410c'}}[variant];
-  return <button onClick={onClick} disabled={disabled} style={{background:disabled?T.card:v.bg,color:disabled?T.dim:v.c,border:'none',borderRadius:12,padding:'10px 22px',fontWeight:700,fontSize:13,cursor:disabled?'not-allowed':'pointer',fontFamily:FONT,boxShadow:disabled?'none':sh.sm,letterSpacing:'0.1px',...st}}>{children}</button>;
+  const v={primary:{bg:T.blue,c:'#000'},green:{bg:T.green,c:'#000'},ghost:{bg:'transparent',c:T.text},danger:{bg:T.redS,c:T.red},teal:{bg:T.teal,c:'#000'},purple:{bg:T.purple,c:'#000'},orange:{bg:T.orange,c:'#000'}}[variant];
+  return <button onClick={onClick} disabled={disabled} style={{background:disabled?T.surface:v.bg,color:disabled?T.dim:v.c,border:`0.5px solid ${disabled?T.border:v.bg}`,borderRadius:8,padding:'10px 22px',fontWeight:700,fontSize:13,cursor:disabled?'not-allowed':'pointer',fontFamily:FONT,letterSpacing:'0.1px',...st}}>{children}</button>;
 }
 function RadioGroup({options,value,onChange}){
   return <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:16}}>
@@ -1142,8 +1084,8 @@ function RadioGroup({options,value,onChange}){
     </label>)}
   </div>;
 }
-function PBar({pct,color,height=6}){const c=color||(pct>=70?T.green:pct>=50?T.amber:T.red);return <div style={{background:T.border,borderRadius:4,height}}><div style={{background:c,width:`${Math.min(pct,100)}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>;}
-function Card({children,style:st}){return <div style={{background:T.surface,borderRadius:20,boxShadow:sh.md,...st}}>{children}</div>;}
+function PBar({pct,color,height=4}){const c=color||(pct>=70?T.green:pct>=50?T.amber:T.red);return <div style={{background:'#1e1e1e',borderRadius:4,height}}><div style={{background:c,width:`${Math.min(pct,100)}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>;}
+function Card({children,style:st}){return <div style={{background:T.surface,borderRadius:12,border:`0.5px solid ${T.border}`,...st}}>{children}</div>;}
 function Sel({value,onChange,children,style:st}){return <select value={value} onChange={e=>onChange(e.target.value)} style={{width:'100%',background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',marginBottom:14,fontFamily:FONT,boxShadow:sh.sm,...st}}>{children}</select>;}
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1156,47 +1098,53 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
   const studied=ALL_TOPICS.filter(t=>stats[t]?.t>0).length;
   const dominated=ALL_TOPICS.filter(t=>getStatus(t,stats)==='dominado').length;
   const daysLeft=examDate?Math.max(0,Math.ceil((new Date(examDate).setHours(23,59,59)-Date.now())/86400000)):null;
-
-  const kpis=[
-    {label:'Test OPE',value:testQs.length,color:T.blue,bg:T.blueS,tab:'test',icon:'🧪'},
-    {label:'Flashcards',value:fcQs.length,color:T.teal,bg:T.tealS,tab:'flashcard',icon:'🃏'},
-    {label:'Para repasar',value:dueQs.length,color:T.amber,bg:T.amberS,tab:'flashcard',icon:'⏰'},
-    {label:'Con errores',value:errSet.size,color:T.red,bg:T.redS,tab:'test',icon:'❌'},
-    {label:'Temas vistos',value:`${studied}/${ALL_TOPICS.length}`,color:T.green,bg:T.greenS,tab:'temario',icon:'📋'},
-    {label:'Dominados',value:dominated,color:T.greenDk,bg:T.greenS,tab:'stats',icon:'🏆'},
-  ];
+  // Streak: count consecutive days with sessions
+  const streak=(()=>{let d=0;const today=new Date();for(let i=0;i<30;i++){const day=new Date(today);day.setDate(day.getDate()-i);const ds=day.toISOString().slice(0,10);if(sessions.some(s=>s.date?.slice(0,10)===ds))d++;else if(i>0)break;}return d;})();
+  // Global mastery from learning data
+  const allLS=Object.values(learningData||{}).map(getLearningStatus).filter(ls=>ls.status!=='sinEmpezar');
+  const globalMastery=allLS.length?Math.round(allLS.reduce((a,ls)=>a+ls.mastery,0)/allLS.length):0;
 
   return(
     <div>
-      <div style={{marginBottom:24,display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:12}}>
-        <div>
-          <h1 style={{fontSize:22,fontWeight:700,margin:'0 0 4px',color:T.text,letterSpacing:-0.5}}>Hola, Miguel 👋</h1>
-          <p style={{color:T.muted,margin:0,fontSize:14}}>{totalA>0?`${totalA} preg. respondidas · ${acc}% aciertos · OPE FEA Lab. Clínico SESCAM 2025`:'Empieza con el Temario o un Simulacro de examen.'}</p>
-        </div>
-        {daysLeft!==null&&(
-          <div style={{background:daysLeft<30?T.redS:daysLeft<90?T.amberS:T.blueS,border:`1px solid ${daysLeft<30?'#fca5a5':daysLeft<90?'#fde68a':'#93c5fd'}`,borderRadius:10,padding:'12px 20px',textAlign:'center',cursor:'pointer'}} onClick={()=>setTab('planificador')}>
-            <div style={{fontSize:30,fontWeight:800,color:daysLeft<30?T.red:daysLeft<90?T.amber:T.blue,lineHeight:1}}>{daysLeft}</div>
-            <div style={{fontSize:11,color:T.muted,marginTop:2}}>días para la OPE</div>
+      {/* Header: greeting + date + streak */}
+      <div style={{marginBottom:24}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:12}}>
+          <div>
+            <h1 style={{fontSize:24,fontWeight:700,margin:'0 0 4px',color:T.text,letterSpacing:-0.5}}>Sesión de estudio</h1>
+            <p style={{color:T.dim,margin:0,fontSize:13}}>{new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long',year:'numeric'})} · {totalA>0?`${totalA} preg. · ${acc}% aciertos`:'Empieza tu primera sesión'}</p>
           </div>
-        )}
+          <div style={{display:'flex',gap:12,alignItems:'center'}}>
+            {streak>0&&<div style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:12,padding:'10px 18px',textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:T.green,lineHeight:1}}>{streak}</div><div style={{fontSize:10,color:T.dim,marginTop:2}}>días racha</div></div>}
+            {daysLeft!==null&&<div style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:12,padding:'10px 18px',textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:daysLeft<30?T.red:daysLeft<90?T.amber:T.blue,lineHeight:1}}>{daysLeft}</div><div style={{fontSize:10,color:T.dim,marginTop:2}}>días OPE</div></div>}
+          </div>
+        </div>
       </div>
 
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:12,marginBottom:24}}>
-        {kpis.map(k=><div key={k.label} onClick={()=>setTab(k.tab)} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:'16px',cursor:'pointer',boxShadow:sh.sm,transition:'all 0.15s'}} onMouseEnter={e=>{e.currentTarget.style.borderColor=k.color;e.currentTarget.style.boxShadow=sh.md;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.boxShadow=sh.sm;}}>
-          <div style={{width:32,height:32,borderRadius:8,background:k.bg,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,marginBottom:10}}>{k.icon}</div>
-          <div style={{fontSize:22,fontWeight:700,color:k.color,lineHeight:1}}>{k.value}</div>
-          <div style={{fontSize:12,color:T.muted,marginTop:4}}>{k.label}</div>
-        </div>)}
+      {/* 3 key metrics */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:20}}>
+        <Card style={{padding:'16px',textAlign:'center'}}>
+          <div style={{fontSize:28,fontWeight:700,color:T.green,lineHeight:1}}>{dominated}</div>
+          <div style={{fontSize:11,color:T.dim,marginTop:4}}>Temas dominados</div>
+          <PBar pct={dominated/ALL_TOPICS.length*100} color={T.green} height={3}/>
+        </Card>
+        <Card style={{padding:'16px',textAlign:'center'}}>
+          <div style={{fontSize:28,fontWeight:700,color:dueQs.length>0?T.amber:T.dim,lineHeight:1}}>{dueQs.length}</div>
+          <div style={{fontSize:11,color:T.dim,marginTop:4}}>Repasos hoy</div>
+        </Card>
+        <Card style={{padding:'16px',textAlign:'center'}}>
+          <div style={{fontSize:28,fontWeight:700,color:globalMastery>=70?T.green:globalMastery>=40?T.amber:T.dim,lineHeight:1}}>{globalMastery}%</div>
+          <div style={{fontSize:11,color:T.dim,marginTop:4}}>Dominio global</div>
+        </Card>
       </div>
 
-      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:28}}>
-        <Btn onClick={()=>setTab('simulacro')} variant="orange">⚡ Simulacro examen</Btn>
-        <Btn onClick={()=>setTab('test')} disabled={testQs.length===0}>🧪 Test rápido</Btn>
+      {/* Quick actions */}
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:20}}>
+        <Btn onClick={()=>setTab('simulacro')} variant="orange">⚡ Simulacro</Btn>
+        <Btn onClick={()=>setTab('test')} disabled={testQs.length===0}>🧪 Test</Btn>
         <Btn onClick={()=>setTab('flashcard')} disabled={dueQs.length===0} variant="teal">🃏 Repasar {dueQs.length>0?`(${dueQs.length})`:''}</Btn>
-        <Btn onClick={()=>setTab('planificador')} variant="ghost">📅 Planificador</Btn>
       </div>
 
-      {/* Repasos pendientes hoy + Learning progress */}
+      {/* Repasos urgentes */}
       {(()=>{
         const today=new Date().toISOString().slice(0,10);
         const pending=[];
@@ -1211,41 +1159,39 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
           const ls=getLearningStatus(data);
           if(ls.status!=='sinEmpezar') learningTopics.push({topic,ls});
         });
-        const hasContent=pending.length>0||learningTopics.length>0;
-        if(!hasContent)return null;
         return(
-          <Card style={{padding:'18px 22px',marginBottom:20,borderLeft:`3px solid ${T.purple}`}}>
-            <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.purple,borderRadius:2,display:'block'}}/>🧠 Aprendizaje interactivo</div>
-            {pending.length>0&&(
-              <div style={{marginBottom:learningTopics.length?12:0}}>
-                <div style={{fontSize:11,fontWeight:700,color:T.purple,marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Repasos pendientes hoy</div>
-                <div style={{display:'flex',flexDirection:'column',gap:4}}>
-                  {pending.map((p,i)=>(
-                    <div key={i} onClick={()=>setTopicView&&setTopicView(p.topic)} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',background:T.purpleS,borderRadius:8,border:`1px solid ${T.border}`,cursor:'pointer',transition:'all 0.15s'}} onMouseEnter={e=>{e.currentTarget.style.borderColor=T.purple;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;}}>
-                      <span style={{background:T.purple+'20',color:T.purple,padding:'2px 8px',borderRadius:20,fontSize:10,fontWeight:600,flexShrink:0}}>{p.label}</span>
-                      <span style={{fontSize:11,color:T.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.topic}</span>
-                      <span style={{fontSize:11,color:T.purple,fontWeight:600}}>Repasar →</span>
-                    </div>
-                  ))}
-                </div>
+          <>
+          {pending.length>0&&(
+            <Card style={{padding:'16px 20px',marginBottom:16,borderLeft:`2px solid ${T.red}`}}>
+              <div style={{fontSize:13,fontWeight:700,color:T.red,marginBottom:10}}>Repasos urgentes</div>
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                {pending.map((p,i)=>(
+                  <div key={i} onClick={()=>setTopicView&&setTopicView(p.topic)} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:T.redS,borderRadius:8,border:`0.5px solid ${T.border}`,cursor:'pointer'}}>
+                    <span style={{fontSize:10,color:T.red,fontWeight:700,flexShrink:0}}>{p.label}</span>
+                    <span style={{fontSize:12,color:T.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.topic}</span>
+                    <span style={{fontSize:11,color:T.red,fontWeight:600}}>→</span>
+                  </div>
+                ))}
               </div>
-            )}
-            {learningTopics.length>0&&(
-              <div>
-                <div style={{fontSize:11,fontWeight:700,color:T.muted,marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Progreso por tema</div>
-                <div style={{display:'flex',flexDirection:'column',gap:4}}>
-                  {learningTopics.map(({topic:tp,ls},i)=>(
-                    <div key={i} onClick={()=>setTopicView&&setTopicView(tp)} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 12px',borderRadius:6,cursor:'pointer',border:`1px solid ${T.border}`,background:T.card}} onMouseEnter={e=>{e.currentTarget.style.borderColor=ls.color;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;}}>
-                      <span style={{width:8,height:8,borderRadius:'50%',background:ls.color,flexShrink:0}}/>
-                      <span style={{fontSize:11,color:T.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{tp}</span>
-                      <span style={{fontSize:10,color:T.muted}}>{ls.generated}/{ls.total} sec.</span>
-                      <span style={{fontSize:11,fontWeight:700,color:ls.color}}>{ls.mastery}%</span>
-                    </div>
-                  ))}
-                </div>
+            </Card>
+          )}
+          {/* Continuar estudiando */}
+          {learningTopics.length>0&&(
+            <Card style={{padding:'16px 20px',marginBottom:16}}>
+              <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:10}}>Continuar estudiando</div>
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                {learningTopics.sort((a,b)=>a.ls.mastery-b.ls.mastery).map(({topic:tp,ls},i)=>(
+                  <div key={i} onClick={()=>setTopicView&&setTopicView(tp)} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',borderRadius:8,cursor:'pointer',border:`0.5px solid ${T.border}`,background:T.card}}>
+                    <span style={{width:8,height:8,borderRadius:'50%',background:ls.color,flexShrink:0}}/>
+                    <span style={{fontSize:12,color:T.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{tp}</span>
+                    <div style={{width:60}}><PBar pct={ls.mastery} color={ls.color} height={3}/></div>
+                    <span style={{fontSize:11,fontWeight:700,color:ls.color,minWidth:30,textAlign:'right'}}>{ls.mastery}%</span>
+                  </div>
+                ))}
               </div>
-            )}
-          </Card>
+            </Card>
+          )}
+          </>
         );
       })()}
       {sessions.length>0&&(
@@ -1358,7 +1304,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
       <div style={{background:T.border,borderRadius:4,height:4,margin:'0 0 16px'}}><div style={{background:`linear-gradient(90deg,${T.green},${T.teal})`,width:`${pctS}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>
       <div style={{display:'flex',gap:8,marginBottom:20,flexWrap:'wrap'}}>
         <div style={{background:T.blueS,border:`1px solid ${T.border2}`,borderRadius:7,padding:'5px 12px',fontSize:12,color:T.blueText}}>📘 <strong>Tietz</strong> Textbook of Laboratory Medicine (2022)</div>
-        <div style={{background:'#fef9c3',border:'1px solid #fde047',borderRadius:7,padding:'5px 12px',fontSize:12,color:T.amberText}}>📙 <strong>Henry</strong> El Laboratorio en el Diagnóstico Clínico (2022)</div>
+        <div style={{background:'#1a1500',border:'1px solid #3a2a00',borderRadius:7,padding:'5px 12px',fontSize:12,color:T.amberText}}>📙 <strong>Henry</strong> El Laboratorio en el Diagnóstico Clínico (2022)</div>
       </div>
 
       <div style={{display:'flex',flexDirection:'column',borderRadius:14,overflow:'hidden',border:`1px solid ${T.border}`,boxShadow:sh.sm}}>
@@ -1427,7 +1373,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                                 }
                               };inp.click();
                             }} disabled={splittingKey===pKey}
-                              style={{background:splittingKey===pKey?T.amberS:hasPdfs?T.greenS:T.blueS,border:`1px solid ${splittingKey===pKey?T.amber:hasPdfs?'#86efac':T.border2}`,borderRadius:20,padding:'3px 10px',fontSize:10,cursor:splittingKey===pKey?'wait':'pointer',color:splittingKey===pKey?T.amberText:hasPdfs?T.greenText:T.blueText,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>
+                              style={{background:splittingKey===pKey?T.amberS:hasPdfs?T.greenS:T.blueS,border:`1px solid ${splittingKey===pKey?T.amber:hasPdfs?'#1a3a1a':T.border2}`,borderRadius:20,padding:'3px 10px',fontSize:10,cursor:splittingKey===pKey?'wait':'pointer',color:splittingKey===pKey?T.amberText:hasPdfs?T.greenText:T.blueText,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>
                               {splittingKey===pKey?'⏳…':hasPdfs?`📄 ${files.length}`:'+ PDF'}
                             </button>
                             {ls&&ls.status!=='sinEmpezar'&&(
@@ -1442,15 +1388,15 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                             {files.map(f=>{
                               const isViewingThis=openPdf&&openPdf.topic===t&&openPdf.fileId===f.id;
                               return(
-                                <div key={f.id} style={{display:'flex',alignItems:'center',gap:0,background:isViewingThis?T.green:T.greenS,borderRadius:6,overflow:'hidden',border:`1px solid ${isViewingThis?T.greenDk:'#86efac'}`}}>
+                                <div key={f.id} style={{display:'flex',alignItems:'center',gap:0,background:isViewingThis?T.green:T.greenS,borderRadius:6,overflow:'hidden',border:`1px solid ${isViewingThis?T.greenDk:'#1a3a1a'}`}}>
                                   <button onClick={()=>setOpenPdf(isViewingThis?null:{topic:t,fileId:f.id,name:f.name})}
                                     style={{background:'none',border:'none',cursor:'pointer',padding:'3px 8px',display:'flex',alignItems:'center',gap:4}}>
                                     <span style={{fontSize:10,color:isViewingThis?'#fff':T.greenText,fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                                       {isViewingThis?'▼':'📄'} {f.name}
                                     </span>
-                                    {f.pages&&<span style={{fontSize:9,color:isViewingThis?'#ffffffaa':T.muted}}>pp.{f.pages}</span>}
+                                    {f.pages&&<span style={{fontSize:9,color:isViewingThis?'#ffffff88':T.muted}}>pp.{f.pages}</span>}
                                   </button>
-                                  <button onClick={()=>deletePdfForTopic(t,f.id)} style={{background:'none',border:'none',borderLeft:`1px solid ${isViewingThis?T.greenDk:'#86efac'}`,cursor:'pointer',color:isViewingThis?'#fff':T.dim,fontSize:12,padding:'3px 6px',lineHeight:1}}>×</button>
+                                  <button onClick={()=>deletePdfForTopic(t,f.id)} style={{background:'none',border:'none',borderLeft:`1px solid ${isViewingThis?T.greenDk:'#1a3a1a'}`,cursor:'pointer',color:isViewingThis?'#fff':T.dim,fontSize:12,padding:'3px 6px',lineHeight:1}}>×</button>
                                 </div>
                               );
                             })}
@@ -1459,7 +1405,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                         {hasRefs&&(
                           <div style={{paddingLeft:17,marginTop:4,display:'flex',gap:5,flexWrap:'wrap'}}>
                             <span style={{fontSize:10,color:T.blueText,background:T.blueS,border:`1px solid ${T.border2}`,padding:'1px 7px',borderRadius:20,fontWeight:600}}>📘 Tietz {refs.tietz}</span>
-                            <span style={{fontSize:10,color:T.amberText,background:'#fef9c3',border:'1px solid #fde047',padding:'1px 7px',borderRadius:20,fontWeight:600}}>📙 Henry {refs.henry}</span>
+                            <span style={{fontSize:10,color:T.amberText,background:'#1a1500',border:'1px solid #3a2a00',padding:'1px 7px',borderRadius:20,fontWeight:600}}>📙 Henry {refs.henry}</span>
                           </div>
                         )}
                         {/* Texto oficial DOCM */}
@@ -1469,7 +1415,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                               <summary style={{fontSize:10,color:T.muted,cursor:'pointer',fontWeight:600,userSelect:'none',listStyle:'none',display:'flex',alignItems:'center',gap:4}}>
                                 <span style={{fontSize:9,color:T.dim}}>▶</span> Ver temario oficial DOCM
                               </summary>
-                              <div style={{marginTop:6,background:'#fffef5',border:'1px solid #fde047',borderRadius:7,padding:'8px 12px',fontSize:11,color:T.text,lineHeight:1.7}}>
+                              <div style={{marginTop:6,background:'#1a1800',border:'1px solid #3a2a00',borderRadius:7,padding:'8px 12px',fontSize:11,color:T.text,lineHeight:1.7}}>
                                 <span style={{fontSize:9,fontWeight:700,color:T.amberText,display:'block',marginBottom:4,letterSpacing:0.5,textTransform:'uppercase'}}>Tema {num} — Texto oficial DOCM 9/04/2025</span>
                                 {txt}
                               </div>
@@ -1499,7 +1445,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                     <textarea defaultValue={notes[s.id]||''} onBlur={e=>setNote(s.id,e.target.value)}
                       placeholder="Notas, esquemas o conceptos clave..."
                       style={{width:'100%',minHeight:60,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'8px 10px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:10}}/>
-                    <button onClick={()=>setTab('banco')} style={{background:s.color,color:'#fff',border:'none',borderRadius:8,padding:'7px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>✨ Generar preguntas de este bloque →</button>
+                    <button onClick={()=>setTab('banco')} style={{background:s.color,color:'#000',border:'none',borderRadius:8,padding:'7px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>✨ Generar preguntas de este bloque →</button>
                   </div>
                 </div>
               )}
@@ -1629,7 +1575,7 @@ function EstudioTab({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMe
 
               {/* PDF source selector */}
               {attachedFiles.length>0&&!manualPdf&&(
-                <div style={{background:T.greenS,border:'1px solid #86efac',borderLeft:`3px solid ${T.green}`,borderRadius:8,padding:'10px 14px',marginBottom:10}}>
+                <div style={{background:T.greenS,border:'1px solid #1a3a1a',borderLeft:`3px solid ${T.green}`,borderRadius:8,padding:'10px 14px',marginBottom:10}}>
                   <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
                     <span style={{fontSize:12,color:T.greenText,fontWeight:600}}>📗 PDFs adjuntos — selecciona la fuente</span>
                     <div style={{display:'flex',gap:5}}>
@@ -1640,7 +1586,7 @@ function EstudioTab({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMe
                   {attachedFiles.map(f=>{
                     const sel=selectedPdfIds.has(f.id);
                     return(
-                      <label key={f.id} style={{display:'flex',alignItems:'center',gap:7,background:sel?'#bbf7d0':T.card,borderRadius:5,padding:'4px 8px',marginBottom:3,cursor:'pointer',border:`1px solid ${sel?'#86efac':T.border}`}}>
+                      <label key={f.id} style={{display:'flex',alignItems:'center',gap:7,background:sel?'#0f2a18':T.card,borderRadius:5,padding:'4px 8px',marginBottom:3,cursor:'pointer',border:`1px solid ${sel?'#1a3a1a':T.border}`}}>
                         <input type="checkbox" checked={sel} onChange={()=>togglePdfId(f.id)} style={{accentColor:T.green,flexShrink:0}}/>
                         <span style={{fontSize:11,flex:1,color:sel?T.greenText:T.muted,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:sel?600:400}}>📄 {f.name}</span>
                         {f.pages&&<span style={{fontSize:9,color:T.dim,background:T.surface,padding:'1px 5px',borderRadius:8}}>pp.{f.pages}</span>}
@@ -1652,7 +1598,7 @@ function EstudioTab({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMe
                 </div>
               )}
               {manualPdf&&(
-                <div style={{background:T.blueS,border:'1px solid #93c5fd',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'9px 14px',marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                <div style={{background:T.blueS,border:'1px solid #1a2a3a',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'9px 14px',marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
                   <div style={{display:'flex',alignItems:'center',gap:8}}><span>📄</span><div><div style={{fontSize:12,color:T.blue,fontWeight:600}}>{manualPdf.name}</div><div style={{fontSize:10,color:T.muted}}>PDF manual</div></div></div>
                   <button onClick={()=>setManualPdf(null)} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:18}}>×</button>
                 </div>
@@ -1667,7 +1613,7 @@ function EstudioTab({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMe
               <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
                 {studyNotes[selectedTopic]
                   ?<button onClick={()=>generateStudy(selectedTopic)} disabled={generating} style={{background:T.card,border:`1px solid ${T.border2}`,borderRadius:7,padding:'6px 14px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>{generating?'⏳ Regenerando…':'🔄 Regenerar apuntes'}</button>
-                  :<button onClick={()=>generateStudy(selectedTopic)} disabled={generating} style={{background:hasPdfSource?T.green:T.teal,color:'#fff',border:'none',borderRadius:7,padding:'8px 18px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:FONT,boxShadow:sh.sm}}>{generating?'⏳ Generando…':hasPdfSource?'📄 Generar desde PDF':'📖 Generar con IA'}</button>
+                  :<button onClick={()=>generateStudy(selectedTopic)} disabled={generating} style={{background:hasPdfSource?T.green:T.teal,color:'#000',border:'none',borderRadius:7,padding:'8px 18px',fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:FONT,boxShadow:sh.sm}}>{generating?'⏳ Generando…':hasPdfSource?'📄 Generar desde PDF':'📖 Generar con IA'}</button>
                 }
                 {genMsg&&<span style={{fontSize:12,color:genMsg.startsWith('❌')?T.red:T.muted,alignSelf:'center'}}>{genMsg}</span>}
               </div>
@@ -1693,11 +1639,11 @@ function EstudioTab({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMe
 function StudyPanel({data,topic,date,onRegenerate,isGenerating}){
   if(!data)return null;
   const sectionColors={
-    'Valores de referencia':{bg:'#eff6ff',border:'#93c5fd',title:'#1d4ed8',icon:'🔢'},
-    'Conceptos clave':{bg:T.greenS,border:'#86efac',title:T.greenText,icon:'💡'},
+    'Valores de referencia':{bg:'#eff6ff',border:'#1a2a3a',title:'#1d4ed8',icon:'🔢'},
+    'Conceptos clave':{bg:T.greenS,border:'#1a3a1a',title:T.greenText,icon:'💡'},
     'Mecanismos fisiopatológicos':{bg:'#faf5ff',border:'#d8b4fe',title:'#7c3aed',icon:'⚙️'},
-    'Clasificaciones y criterios diagnósticos':{bg:T.amberS,border:'#fde68a',title:T.amberText,icon:'📋'},
-    'Técnicas analíticas de laboratorio':{bg:'#f0fdf4',border:'#bbf7d0',title:'#166534',icon:'🔬'},
+    'Clasificaciones y criterios diagnósticos':{bg:T.amberS,border:'#3a2a00',title:T.amberText,icon:'📋'},
+    'Técnicas analíticas de laboratorio':{bg:'#f0fdf4',border:'#0f2a18',title:'#166534',icon:'🔬'},
     'Perlas para el examen':{bg:'#fff7ed',border:'#fed7aa',title:'#c2410c',icon:'💎'},
   };
   return(
@@ -1827,7 +1773,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
       {activeTab==='temario'&&(
         <div>
           {officialText&&(
-            <Card style={{padding:'18px 22px',marginBottom:16,borderLeft:`3px solid #fde047`}}>
+            <Card style={{padding:'18px 22px',marginBottom:16,borderLeft:`3px solid #3a2a00`}}>
               <div style={{fontSize:10,fontWeight:700,color:T.amberText,marginBottom:8,letterSpacing:0.5,textTransform:'uppercase'}}>Tema {topicNum} — Texto oficial DOCM 9/04/2025</div>
               <div style={{fontSize:13,color:T.text,lineHeight:1.8}}>{officialText}</div>
             </Card>
@@ -1868,7 +1814,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
             <Card style={{padding:'14px 18px',flex:1,minWidth:280}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
                 <div style={{fontSize:12,fontWeight:700,color:T.amberText}}>📙 Henry {hasRefs?refs.henry:''}</div>
-                <button onClick={()=>uploadPdf('henry')} style={{fontSize:10,background:'#fef9c3',border:'1px solid #fde047',borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.amberText,fontWeight:600,fontFamily:FONT}}>
+                <button onClick={()=>uploadPdf('henry')} style={{fontSize:10,background:'#1a1500',border:'1px solid #3a2a00',borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.amberText,fontWeight:600,fontFamily:FONT}}>
                   {henryFilesReal.length?'+ Añadir':'Subir PDF'}
                 </button>
               </div>
@@ -2460,7 +2406,7 @@ function QuizPhase({questions,title,progress,onSaveProgress,color}){
           <button onClick={()=>setCurrent(Math.max(0,current-1))} disabled={current===0}
             style={{background:'none',border:`1px solid ${T.border}`,borderRadius:6,padding:'6px 14px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>← Anterior</button>
           {current===total-1&&answered>=total?(
-            <button onClick={finish} style={{background:color||T.blue,color:'#fff',border:'none',borderRadius:6,padding:'6px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>Ver resultado</button>
+            <button onClick={finish} style={{background:color||T.blue,color:'#000',border:'none',borderRadius:6,padding:'6px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>Ver resultado</button>
           ):(
             <button onClick={()=>setCurrent(Math.min(total-1,current+1))}
               style={{background:'none',border:`1px solid ${T.border}`,borderRadius:6,padding:'6px 14px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>Siguiente →</button>
@@ -2502,7 +2448,7 @@ function GuidedReadingPhase({sections}){
                   </div>
                 )}
                 {sec.checkQuestion&&(
-                  <div style={{background:T.amberS,border:`1px solid #fde68a`,borderRadius:8,padding:'12px 14px'}}>
+                  <div style={{background:T.amberS,border:`1px solid #3a2a00`,borderRadius:8,padding:'12px 14px'}}>
                     <div style={{fontSize:11,fontWeight:700,color:T.amberText,marginBottom:4}}>❓ Pregunta de comprensión</div>
                     <div style={{fontSize:12,color:T.text,lineHeight:1.6,marginBottom:6}}>{sec.checkQuestion.question}</div>
                     {showAnswers[i]
@@ -2654,7 +2600,7 @@ function SpacedRepetitionPhase({schedule,topic,learning,saveLearningData}){
             <Card key={label} style={{padding:'14px 18px',borderLeft:`3px solid ${isCompleted?T.green:isDue?T.purple:T.border}`}}>
               <div style={{display:'flex',alignItems:'center',gap:12}}>
                 <button onClick={()=>toggleCompleted(label)}
-                  style={{width:28,height:28,borderRadius:'50%',background:isCompleted?T.green:T.card,border:`2px solid ${isCompleted?T.green:isDue?T.purple:T.border}`,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#fff',flexShrink:0}}>
+                  style={{width:28,height:28,borderRadius:'50%',background:isCompleted?T.green:T.card,border:`2px solid ${isCompleted?T.green:isDue?T.purple:T.border}`,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#000',flexShrink:0}}>
                   {isCompleted?'✓':''}
                 </button>
                 <div style={{flex:1}}>
@@ -2769,7 +2715,7 @@ function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
         <div style={{display:'flex',alignItems:'center',gap:10}}>
           <span style={{fontSize:13,color:T.muted,fontWeight:500}}>Pregunta {idx+1}/{session.length}</span>
-          {cfg.timer>0&&<span style={{background:timeLeft<=10?T.redS:T.blueS,color:timeLeft<=10?T.red:T.blue,border:`1px solid ${timeLeft<=10?'#fca5a5':'#93c5fd'}`,padding:'3px 10px',borderRadius:6,fontWeight:700,fontSize:13,transition:'all 0.3s'}}>⏱ {timeLeft}s</span>}
+          {cfg.timer>0&&<span style={{background:timeLeft<=10?T.redS:T.blueS,color:timeLeft<=10?T.red:T.blue,border:`1px solid ${timeLeft<=10?'#3a1a1a':'#1a2a3a'}`,padding:'3px 10px',borderRadius:6,fontWeight:700,fontSize:13,transition:'all 0.3s'}}>⏱ {timeLeft}s</span>}
         </div>
         <button onClick={()=>toggleMark(q.id)} style={{background:'none',border:'none',cursor:'pointer',fontSize:18,color:marked.has(q.id)?T.amber:T.dim}}>{marked.has(q.id)?'🔖':'🏷️'}</button>
       </div>
@@ -2779,8 +2725,8 @@ function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
       <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
         {q.options.map((opt,i)=>{
           let bg=T.surface,border=T.border,color=T.text,bl='3px solid transparent';
-          if(revealed){if(i===q.correct){bg=T.greenS;border='#86efac';color=T.greenText;bl=`3px solid ${T.green}`;}else if(i===selected&&i!==q.correct){bg=T.redS;border='#fca5a5';color=T.redText;bl=`3px solid ${T.red}`;}}
-          else if(selected===i){bg=T.blueS;border='#93c5fd';color=T.blueText;bl=`3px solid ${T.blue}`;}
+          if(revealed){if(i===q.correct){bg=T.greenS;border='#1a3a1a';color=T.greenText;bl=`3px solid ${T.green}`;}else if(i===selected&&i!==q.correct){bg=T.redS;border='#3a1a1a';color=T.redText;bl=`3px solid ${T.red}`;}}
+          else if(selected===i){bg=T.blueS;border='#1a2a3a';color=T.blueText;bl=`3px solid ${T.blue}`;}
           return <button key={i} onClick={()=>!revealed&&handleReveal(i,session,idx)} disabled={revealed} style={{display:'flex',alignItems:'flex-start',gap:12,padding:'12px 16px',background:bg,border:`1px solid ${border}`,borderLeft:bl,borderRadius:8,cursor:revealed?'default':'pointer',color,textAlign:'left',fontSize:13,lineHeight:1.5,fontFamily:FONT,transition:'all 0.15s',boxShadow:sh.sm}}>
             <span style={{fontWeight:700,minWidth:20,color:revealed&&i===q.correct?T.green:T.dim}}>{OPT[i]}</span>
             <span style={{flex:1}}>{opt}</span>
@@ -2789,7 +2735,7 @@ function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
           </button>;
         })}
       </div>
-      {revealed&&q.explanation&&<div style={{background:T.blueS,border:'1px solid #93c5fd',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'12px 16px',marginBottom:16,fontSize:13,color:T.blueText,lineHeight:1.6}}><strong>💡 </strong>{q.explanation}</div>}
+      {revealed&&q.explanation&&<div style={{background:T.blueS,border:'1px solid #1a2a3a',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'12px 16px',marginBottom:16,fontSize:13,color:T.blueText,lineHeight:1.6}}><strong>💡 </strong>{q.explanation}</div>}
       {revealed&&<Btn onClick={()=>{setAnswers(prev=>[...prev,{selected,correct:q.correct}]);if(idx+1>=session.length)setPhase('results');else{setIdx(i=>i+1);setSelected(null);setRevealed(false);}}}>{idx+1>=session.length?'Ver resultados →':'Siguiente →'}</Btn>}
     </div>
   );
@@ -2899,7 +2845,7 @@ function Simulacro({testQs,recordAnswer,addSession}){
           <div><div style={{fontSize:28,fontWeight:700,color:T.red}}>{results.wrong}</div><div style={{fontSize:12,color:T.muted}}>Erróneas</div></div>
           <div><div style={{fontSize:28,fontWeight:700,color:T.dim}}>{results.blank}</div><div style={{fontSize:12,color:T.muted}}>En blanco</div></div>
         </div>
-        <div style={{background:results.pct>=70?T.greenS:results.pct>=50?T.amberS:T.redS,border:`1px solid ${results.pct>=70?'#86efac':results.pct>=50?'#fde68a':'#fca5a5'}`,borderRadius:8,padding:'10px 16px',display:'inline-block',marginBottom:16}}>
+        <div style={{background:results.pct>=70?T.greenS:results.pct>=50?T.amberS:T.redS,border:`1px solid ${results.pct>=70?'#1a3a1a':results.pct>=50?'#3a2a00':'#3a1a1a'}`,borderRadius:8,padding:'10px 16px',display:'inline-block',marginBottom:16}}>
           <span style={{fontSize:14,fontWeight:600,color:results.pct>=70?T.greenText:results.pct>=50?T.amberText:T.redText}}>
             Puntuación: <strong>{results.score.toFixed(2)}</strong> / {results.maxScore} puntos
           </span>
@@ -3088,7 +3034,7 @@ function FlashcardMode({fcQs,dueQs,sr,marked,toggleMark,recordAnswer,addSession}
         <div style={{marginTop:20}}>
           <div style={{fontSize:12,color:T.muted,textAlign:'center',marginBottom:14}}>¿Cómo ha ido? El sistema ajusta el próximo repaso automáticamente.</div>
           <div style={{display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap'}}>
-            {[{q:0,l:'De nuevo',c:T.red,sub:'<1d',bg:T.redS,b:'#fca5a5'},{q:2,l:'Difícil',c:T.amber,sub:'~1d',bg:T.amberS,b:'#fde68a'},{q:4,l:'Bien',c:T.blue,sub:`~${srInfo.interval||1}d`,bg:T.blueS,b:'#93c5fd'},{q:5,l:'Fácil',c:T.green,sub:'más días',bg:T.greenS,b:'#86efac'}].map(r=>(
+            {[{q:0,l:'De nuevo',c:T.red,sub:'<1d',bg:T.redS,b:'#3a1a1a'},{q:2,l:'Difícil',c:T.amber,sub:'~1d',bg:T.amberS,b:'#3a2a00'},{q:4,l:'Bien',c:T.blue,sub:`~${srInfo.interval||1}d`,bg:T.blueS,b:'#1a2a3a'},{q:5,l:'Fácil',c:T.green,sub:'más días',bg:T.greenS,b:'#1a3a1a'}].map(r=>(
               <button key={r.q} onClick={()=>rate(r.q)} style={{background:r.bg,color:r.c,border:`1px solid ${r.b}`,borderRadius:8,padding:'10px 20px',cursor:'pointer',fontWeight:600,fontSize:13,display:'flex',flexDirection:'column',alignItems:'center',gap:3,fontFamily:FONT,boxShadow:sh.sm}}>
                 {r.l}<span style={{fontSize:10,opacity:0.7}}>{r.sub}</span>
               </button>
@@ -3256,7 +3202,7 @@ Responde ÚNICAMENTE con array JSON válido sin texto previo ni backticks:
         </div>
       )}
 
-      {msg&&<div style={{marginTop:12,fontSize:13,color:msg.startsWith('❌')?T.red:msg.startsWith('✅')?T.green:T.muted,padding:'8px 12px',background:msg.startsWith('❌')?T.redS:msg.startsWith('✅')?T.greenS:T.card,borderRadius:8,border:`1px solid ${msg.startsWith('❌')?'#fca5a5':msg.startsWith('✅')?'#86efac':T.border}`}}>{msg}</div>}
+      {msg&&<div style={{marginTop:12,fontSize:13,color:msg.startsWith('❌')?T.red:msg.startsWith('✅')?T.green:T.muted,padding:'8px 12px',background:msg.startsWith('❌')?T.redS:msg.startsWith('✅')?T.greenS:T.card,borderRadius:8,border:`1px solid ${msg.startsWith('❌')?'#3a1a1a':msg.startsWith('✅')?'#1a3a1a':T.border}`}}>{msg}</div>}
 
       {preview&&(
         <div style={{marginTop:20}}>
@@ -3543,7 +3489,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
             <div style={{display:'flex',flexDirection:'column',gap:5,marginBottom:16,maxHeight:220,overflowY:'auto',paddingRight:4}}>
               {currentSectionTopics.map(t=>{
                 const hasPdfAttached=topicsWithPdf.has(t);
-                return <label key={t} style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer',padding:'7px 10px',borderRadius:7,background:aiTopic===t?T.blueS:'transparent',border:`1px solid ${aiTopic===t?T.blue:hasPdfAttached?'#86efac':T.border}`}}>
+                return <label key={t} style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer',padding:'7px 10px',borderRadius:7,background:aiTopic===t?T.blueS:'transparent',border:`1px solid ${aiTopic===t?T.blue:hasPdfAttached?'#1a3a1a':T.border}`}}>
                   <input type="radio" checked={aiTopic===t} onChange={()=>setAiTopic(t)} style={{marginTop:3,flexShrink:0,accentColor:T.blue}}/>
                   <span style={{fontSize:13,color:aiTopic===t?T.blue:T.text,lineHeight:1.4,fontWeight:aiTopic===t?500:400,flex:1}}>{t}</span>
                   {hasPdfAttached&&<span title={`${pdfMeta[topicPdfKey(t)]?.length||0} PDF(s) adjuntos`} style={{fontSize:10,background:T.greenS,color:T.greenText,padding:'1px 6px',borderRadius:10,fontWeight:700,flexShrink:0}}>📄 {pdfMeta[topicPdfKey(t)]?.length||0}</span>}
@@ -3557,7 +3503,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
           {/* PDF source: adjunto automático o manual */}
           <Lbl>{selSection?'4.':'3.'} Fuente de conocimiento (PDF del capítulo)</Lbl>
           {usingAttachedPdf&&(
-            <div style={{background:T.greenS,border:'1px solid #86efac',borderLeft:`3px solid ${T.green}`,borderRadius:8,padding:'10px 14px',marginBottom:10}}>
+            <div style={{background:T.greenS,border:'1px solid #1a3a1a',borderLeft:`3px solid ${T.green}`,borderRadius:8,padding:'10px 14px',marginBottom:10}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:6}}>
                   <span style={{fontSize:16}}>📗</span>
@@ -3572,20 +3518,20 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
                 const sel=selectedPdfIds.has(f.id);
                 const mb=(f.size/1024/1024).toFixed(1);
                 return(
-                  <label key={f.id} style={{display:'flex',alignItems:'center',gap:8,background:sel?'#bbf7d0':T.card,borderRadius:6,padding:'5px 8px',marginBottom:3,cursor:'pointer',border:`1px solid ${sel?'#86efac':T.border}`,transition:'all 0.15s'}}>
+                  <label key={f.id} style={{display:'flex',alignItems:'center',gap:8,background:sel?'#0f2a18':T.card,borderRadius:6,padding:'5px 8px',marginBottom:3,cursor:'pointer',border:`1px solid ${sel?'#1a3a1a':T.border}`,transition:'all 0.15s'}}>
                     <input type="checkbox" checked={sel} onChange={()=>togglePdfId(f.id)} style={{accentColor:T.green,flexShrink:0}}/>
                     <span style={{fontSize:11,color:sel?T.greenText:T.muted,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:sel?600:400}}>📄 {f.name}</span>
                     <span style={{fontSize:10,color:T.dim,flexShrink:0}}>{mb} MB</span>
                   </label>
                 );
               })}
-              {selectedFiles.length===0&&<div style={{fontSize:11,color:T.amber,marginTop:4,padding:'4px 8px',background:'#fef9c3',borderRadius:5}}>⚠️ Ningún PDF seleccionado — se generará sin fuente del libro</div>}
+              {selectedFiles.length===0&&<div style={{fontSize:11,color:T.amber,marginTop:4,padding:'4px 8px',background:'#1a1500',borderRadius:5}}>⚠️ Ningún PDF seleccionado — se generará sin fuente del libro</div>}
               {selectedFiles.length>0&&<div style={{fontSize:11,color:T.greenText,marginTop:6,fontWeight:600}}>{selectedFiles.length} PDF{selectedFiles.length>1?'s':''} · {selectedFiles.reduce((a,f)=>a+f.size,0)>200000000?<span style={{color:T.red}}>⚠️ Puede superar el límite</span>:`${(selectedFiles.reduce((a,f)=>a+f.size,0)/1024/1024).toFixed(1)} MB total`}</div>}
               <button onClick={()=>fileRef.current?.click()} style={{marginTop:6,fontSize:10,background:'none',border:`1px solid ${T.border2}`,borderRadius:5,padding:'3px 9px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>+ Añadir otro PDF</button>
             </div>
           )}
           {pdfFile&&(
-            <div style={{background:T.blueS,border:'1px solid #93c5fd',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'10px 14px',marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div style={{background:T.blueS,border:'1px solid #1a2a3a',borderLeft:`3px solid ${T.blue}`,borderRadius:8,padding:'10px 14px',marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>📄</span><div><div style={{fontSize:13,color:T.blue,fontWeight:600}}>{pdfName}</div><div style={{fontSize:11,color:T.muted}}>PDF subido manualmente (anula el adjunto del tema)</div></div></div>
               <button onClick={removePdf} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
             </div>
@@ -3640,7 +3586,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
           <Btn onClick={generateAI} disabled={aiLoading} variant="teal">
             {aiLoading?'⏳ Generando...':effectivePdfLabel?`📄 Generar desde ${effectivePdfLabel}`:'✨ Generar con IA (Tietz/Henry)'}
           </Btn>
-          {aiMsg&&<div style={{marginTop:12,padding:'10px 14px',borderRadius:8,fontSize:13,lineHeight:1.5,background:aiMsg.startsWith('✅')?T.greenS:aiMsg.startsWith('❌')?T.redS:T.card,color:aiMsg.startsWith('✅')?T.greenText:aiMsg.startsWith('❌')?T.redText:T.muted,border:`1px solid ${aiMsg.startsWith('✅')?'#86efac':aiMsg.startsWith('❌')?'#fca5a5':T.border}`,borderLeft:`3px solid ${aiMsg.startsWith('✅')?T.green:aiMsg.startsWith('❌')?T.red:T.border2}`}}>{aiMsg}</div>}
+          {aiMsg&&<div style={{marginTop:12,padding:'10px 14px',borderRadius:8,fontSize:13,lineHeight:1.5,background:aiMsg.startsWith('✅')?T.greenS:aiMsg.startsWith('❌')?T.redS:T.card,color:aiMsg.startsWith('✅')?T.greenText:aiMsg.startsWith('❌')?T.redText:T.muted,border:`1px solid ${aiMsg.startsWith('✅')?'#1a3a1a':aiMsg.startsWith('❌')?'#3a1a1a':T.border}`,borderLeft:`3px solid ${aiMsg.startsWith('✅')?T.green:aiMsg.startsWith('❌')?T.red:T.border2}`}}>{aiMsg}</div>}
         </div>
       )}
 
@@ -3654,7 +3600,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
               <option value="all">Test + Flashcards</option><option value="test">Solo test</option><option value="flashcard">Solo flashcards</option>
             </select>
             <span style={{color:T.dim,fontSize:12,marginLeft:'auto'}}>{filtered.length} mostradas</span>
-            {qs.length>0&&<><button onClick={exportJSON} style={{background:T.blueS,color:T.blue,border:'1px solid #93c5fd',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>⬇️ Exportar JSON</button><button onClick={async()=>{if(confirm(`¿Borrar TODAS las ${qs.length} preguntas?`)){await idbClearQs();setQs([]);}}} style={{background:T.redS,color:T.red,border:'1px solid #fca5a5',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontFamily:FONT}}>🗑 Borrar todo</button></>}
+            {qs.length>0&&<><button onClick={exportJSON} style={{background:T.blueS,color:T.blue,border:'1px solid #1a2a3a',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>⬇️ Exportar JSON</button><button onClick={async()=>{if(confirm(`¿Borrar TODAS las ${qs.length} preguntas?`)){await idbClearQs();setQs([]);}}} style={{background:T.redS,color:T.red,border:'1px solid #3a1a1a',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontFamily:FONT}}>🗑 Borrar todo</button></>}
           </div>
           {filtered.length===0?<Card style={{padding:'50px',textAlign:'center'}}><div style={{fontSize:36,marginBottom:8}}>📭</div><div style={{color:T.dim}}>{qs.length===0?'Banco vacío. Genera preguntas con IA.':'Sin preguntas para este filtro.'}</div></Card>:<div style={{display:'flex',flexDirection:'column',gap:8}}>
             {filtered.map(q=><Card key={q.id} style={{padding:'10px 14px',display:'flex',gap:12,borderLeft:`3px solid ${q.type==='test'?T.blue:T.teal}`}}>
@@ -3731,7 +3677,7 @@ function Planificador({stats,examDate,setExamDate,goToBank}){
             {!examDate&&<p style={{color:T.muted,fontSize:12,marginTop:6,marginBottom:0}}>Introduce la fecha del examen para ver cuánto tiempo queda y planificar mejor.</p>}
           </div>
           {daysLeft!==null&&(
-            <div style={{textAlign:'center',background:daysLeft<30?T.redS:daysLeft<90?T.amberS:T.blueS,border:`1px solid ${daysLeft<30?'#fca5a5':daysLeft<90?'#fde68a':'#93c5fd'}`,borderRadius:12,padding:'16px 24px'}}>
+            <div style={{textAlign:'center',background:daysLeft<30?T.redS:daysLeft<90?T.amberS:T.blueS,border:`1px solid ${daysLeft<30?'#3a1a1a':daysLeft<90?'#3a2a00':'#1a2a3a'}`,borderRadius:12,padding:'16px 24px'}}>
               <div style={{fontSize:48,fontWeight:800,color:daysLeft<30?T.red:daysLeft<90?T.amber:T.blue,lineHeight:1,letterSpacing:-2}}>{daysLeft}</div>
               <div style={{fontSize:12,color:T.muted,marginTop:4}}>días para la OPE</div>
               {daysLeft>0&&<div style={{fontSize:11,color:T.dim,marginTop:2}}>~{Math.round(daysLeft/7)} semanas</div>}
