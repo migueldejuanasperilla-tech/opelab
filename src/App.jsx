@@ -2355,6 +2355,8 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   const [genError,setGenError]=useState('');
   const [extracting,setExtracting]=useState(false);
   const [extractMsg,setExtractMsg]=useState('');
+  const [dragIdx,setDragIdx]=useState(null);
+  const [dragOverIdx,setDragOverIdx]=useState(null);
 
   // Ensure learning data structure
   const data=learning||{sections:[],spacedRepetition:null};
@@ -2420,6 +2422,20 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   const removeSection=async(idx)=>{
     const updated={...data,sections:sections.filter((_,i)=>i!==idx)};
     await save(updated);if(openSec===idx)setOpenSec(null);
+  };
+
+  const reorderSections=(fromIdx,toIdx)=>{
+    if(fromIdx===toIdx)return;
+    const arr=[...sections];
+    const [moved]=arr.splice(fromIdx,1);
+    arr.splice(toIdx,0,moved);
+    save({...data,sections:arr});
+    // Adjust openSec to follow the moved section
+    if(openSec===fromIdx)setOpenSec(toIdx);
+    else if(openSec!=null){
+      if(fromIdx<openSec&&toIdx>=openSec)setOpenSec(openSec-1);
+      else if(fromIdx>openSec&&toIdx<=openSec)setOpenSec(openSec+1);
+    }
   };
 
   const updateSectionText=(idx,text)=>{
@@ -2657,10 +2673,16 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
           const curPhase=activePhase[idx]||0;
 
           return(
-            <Card key={sec.id||idx} style={{overflow:'hidden',border:isGen?`1px solid ${T.purple}`:undefined}}>
+            <Card key={sec.id||idx} style={{overflow:'hidden',border:isGen?`1px solid ${T.purple}`:dragOverIdx===idx?`1px solid ${T.green}`:undefined,opacity:dragIdx===idx?0.4:1,transition:'opacity 0.15s, border-color 0.15s'}}
+              draggable onDragStart={e=>{setDragIdx(idx);e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(idx));}}
+              onDragEnd={()=>{setDragIdx(null);setDragOverIdx(null);}}
+              onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move';if(dragIdx!==null&&dragIdx!==idx)setDragOverIdx(idx);}}
+              onDragLeave={()=>setDragOverIdx(prev=>prev===idx?null:prev)}
+              onDrop={e=>{e.preventDefault();const from=parseInt(e.dataTransfer.getData('text/plain'));if(!isNaN(from))reorderSections(from,idx);setDragIdx(null);setDragOverIdx(null);}}>
               {/* Section header */}
               <div onClick={()=>setOpenSec(isOpen?null:idx)}
                 style={{padding:'12px 16px',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isOpen?(hasGen?T.purpleS:T.card):T.surface}}>
+                <span style={{cursor:'grab',color:T.dim,fontSize:12,flexShrink:0,padding:'0 2px',userSelect:'none'}} title="Arrastra para reordenar">⠿</span>
                 <span style={{width:10,height:10,borderRadius:'50%',background:scoreColor,flexShrink:0,border:score===null?`2px solid ${T.border}`:'none'}}/>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,fontWeight:600,color:T.text}}>{sec.title}</div>
