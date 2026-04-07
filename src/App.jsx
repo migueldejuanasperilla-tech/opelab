@@ -59,14 +59,15 @@ function repairJSON(str){
 }
 
 // ── IndexedDB — PDFs y preguntas (sin límite de tamaño) ───────────────────────
-const IDB_NAME='opelab_pdfs', IDB_STORE='pdfs', IDB_QS_STORE='questions';
+const IDB_NAME='opelab_pdfs', IDB_STORE='pdfs', IDB_QS_STORE='questions', IDB_LEARN_STORE='learning';
 function idbOpen(){
   return new Promise((res,rej)=>{
-    const r=indexedDB.open(IDB_NAME,2); // version 2 adds questions store
+    const r=indexedDB.open(IDB_NAME,3); // version 3 adds learning store
     r.onupgradeneeded=e=>{
       const db=e.target.result;
       if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
       if(!db.objectStoreNames.contains(IDB_QS_STORE)) db.createObjectStore(IDB_QS_STORE);
+      if(!db.objectStoreNames.contains(IDB_LEARN_STORE)) db.createObjectStore(IDB_LEARN_STORE);
     };
     r.onsuccess=e=>res(e.target.result);
     r.onerror=rej;
@@ -81,6 +82,11 @@ async function idbSaveQ(q){const db=await idbOpen();return new Promise((res,rej)
 async function idbDelQ(id){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_QS_STORE,'readwrite');tx.objectStore(IDB_QS_STORE).delete(id);tx.oncomplete=res;tx.onerror=rej;});}
 async function idbLoadAllQs(){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_QS_STORE,'readonly');const r=tx.objectStore(IDB_QS_STORE).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=rej;});}
 async function idbClearQs(){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_QS_STORE,'readwrite');tx.objectStore(IDB_QS_STORE).clear();tx.oncomplete=res;tx.onerror=rej;});}
+// Learning store — aprendizaje interactivo por tema
+async function idbSaveLearning(topic,data){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readwrite');tx.objectStore(IDB_LEARN_STORE).put(data,topic);tx.oncomplete=res;tx.onerror=rej;});}
+async function idbLoadLearning(topic){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readonly');const r=tx.objectStore(IDB_LEARN_STORE).get(topic);r.onsuccess=()=>res(r.result||null);r.onerror=rej;});}
+async function idbLoadAllLearning(){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readonly');const store=tx.objectStore(IDB_LEARN_STORE);const keys=store.getAllKeys();const vals=store.getAll();tx.oncomplete=()=>{const m={};keys.result.forEach((k,i)=>{if(vals.result[i])m[k]=vals.result[i];});res(m);};tx.onerror=rej;});}
+async function idbDeleteLearning(topic){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readwrite');tx.objectStore(IDB_LEARN_STORE).delete(topic);tx.oncomplete=res;tx.onerror=rej;});}
 // Clave por tema (para el mapa de metadata)
 const topicPdfKey=t=>'pdf_'+t.replace(/[^a-zA-Z0-9]/g,'').slice(0,40);
 // Clave por archivo individual en IndexedDB
@@ -512,6 +518,8 @@ export default function App(){
   const [apiKey,setApiKeyState]=useState('');
   const [studyNotes,setStudyNotesState]=useState({});
   const [loaded,setLoaded]=useState(false);
+  const [topicView,setTopicView]=useState(null);
+  const [learningData,setLearningData]=useState({});
 
   useEffect(()=>{
     (async()=>{
@@ -540,15 +548,22 @@ export default function App(){
         }
       }
 
+      // Load learning data from IndexedDB
+      const ld=await idbLoadAllLearning();
+
       setQs(q);setSr(s);setStats(st);setMarked(new Set(mk));setErrSet(new Set(er));
       setSessions(sess);setExamDateState(ed);setNotesState(nt);setTopicNotesState(tn);setPdfMetaState(pm);
-      setApiKeyState(ak);setStudyNotesState(sn);setLoaded(true);
+      setApiKeyState(ak);setStudyNotesState(sn);setLearningData(ld);setLoaded(true);
     })();
   },[]);
 
   const saveApiKey=useCallback(k=>{setApiKeyState(k);save('olab_api_key',k);},[]);
   const saveStudyNote=useCallback((topic,content)=>{
     setStudyNotesState(prev=>{const n={...prev,[topic]:{content,date:new Date().toISOString()}};save('olab_study_notes',n);return n;});
+  },[]);
+  const saveLearningData=useCallback(async(topic,data)=>{
+    if(data){await idbSaveLearning(topic,data);setLearningData(prev=>({...prev,[topic]:data}));}
+    else{await idbDeleteLearning(topic);setLearningData(prev=>{const n={...prev};delete n[topic];return n;});}
   },[]);
 
   // saveQs — persiste en IndexedDB. Acepta el array completo nuevo.
@@ -690,10 +705,16 @@ export default function App(){
       </div>
 
       <div style={{padding:'32px 40px'}}>
-        {normalizedTab==='panel'   &&<PanelTab shared={shared} examDate={examDate} sessions={sessions} stats={stats} setExamDate={setExamDate} goToBank={goToBank} setTab={setTab} errSet={errSet} dueQs={dueQs}/>}
-        {normalizedTab==='temario' &&<TemarioConEstudio setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} studyPreselect={studyPreselect} onStudyPreselect={()=>setStudyPreselect(null)} goToStudy={t=>{setStudyPreselect(t);setTab('temario');}} topicNotes={topicNotes} saveTopicNote={saveTopicNote}/>}
-        {normalizedTab==='practica'&&<PracticaTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs}/>}
-        {normalizedTab==='banco'   &&<BankManager {...shared} preselect={bankPreselect} onPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} apiKey={apiKey}/>}
+        {topicView?(
+          <TopicPage topic={topicView} onBack={()=>setTopicView(null)} stats={stats} qs={qs} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} topicNotes={topicNotes} saveTopicNote={saveTopicNote} learningData={learningData} saveLearningData={saveLearningData} sr={sr} recordAnswer={recordAnswer} goToBank={goToBank} setTab={setTab}/>
+        ):(
+          <>
+            {normalizedTab==='panel'   &&<PanelTab shared={shared} examDate={examDate} sessions={sessions} stats={stats} setExamDate={setExamDate} goToBank={goToBank} setTab={setTab} errSet={errSet} dueQs={dueQs} learningData={learningData} setTopicView={setTopicView}/>}
+            {normalizedTab==='temario' &&<TemarioConEstudio setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} studyPreselect={studyPreselect} onStudyPreselect={()=>setStudyPreselect(null)} goToStudy={t=>{setStudyPreselect(t);setTab('temario');}} topicNotes={topicNotes} saveTopicNote={saveTopicNote} setTopicView={setTopicView}/>}
+            {normalizedTab==='practica'&&<PracticaTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs}/>}
+            {normalizedTab==='banco'   &&<BankManager {...shared} preselect={bankPreselect} onPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} apiKey={apiKey}/>}
+          </>
+        )}
       </div>
     </div>
   );
@@ -759,7 +780,7 @@ function Ajustes({apiKey,onSave}){
 }
 
 // ── PanelTab — Dashboard + Stats + Planificador ───────────────────────────────
-function PanelTab({shared,examDate,sessions,stats,setExamDate,goToBank,setTab,errSet,dueQs}){
+function PanelTab({shared,examDate,sessions,stats,setExamDate,goToBank,setTab,errSet,dueQs,learningData,setTopicView}){
   const [subTab,setSubTab]=useState('dashboard');
   const tabs=[{id:'dashboard',label:'Inicio'},{id:'stats',label:'Estadísticas'},{id:'planificador',label:'Planificador'}];
   return(
@@ -767,7 +788,7 @@ function PanelTab({shared,examDate,sessions,stats,setExamDate,goToBank,setTab,er
       <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
         {tabs.map(t=><button key={t.id} onClick={()=>setSubTab(t.id)} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab===t.id?600:400,color:subTab===t.id?T.blue:T.muted,borderBottom:`2px solid ${subTab===t.id?T.blue:'transparent'}`,fontFamily:FONT}}>{t.label}</button>)}
       </div>
-      {subTab==='dashboard'   &&<Dashboard {...shared} examDate={examDate} sessions={sessions}/>}
+      {subTab==='dashboard'   &&<Dashboard {...shared} examDate={examDate} sessions={sessions} learningData={learningData} setTopicView={setTopicView}/>}
       {subTab==='stats'       &&<StatsView {...shared} sessions={sessions}/>}
       {subTab==='planificador'&&<Planificador stats={stats} examDate={examDate} setExamDate={setExamDate} goToBank={goToBank}/>}
     </div>
@@ -775,7 +796,7 @@ function PanelTab({shared,examDate,sessions,stats,setExamDate,goToBank,setTab,er
 }
 
 // ── TemarioConEstudio — Temario + visor de apuntes integrado ──────────────────
-function TemarioConEstudio({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,studyPreselect,onStudyPreselect,goToStudy,topicNotes,saveTopicNote}){
+function TemarioConEstudio({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,studyPreselect,onStudyPreselect,goToStudy,topicNotes,saveTopicNote,setTopicView}){
   const [subTab,setSubTab]=useState(studyPreselect?'estudio':'temario');
   useEffect(()=>{if(studyPreselect){setSubTab('estudio');}},[studyPreselect]);
   const totalNotes=Object.keys(studyNotes).length;
@@ -787,7 +808,7 @@ function TemarioConEstudio({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopi
           📖 Apuntes {totalNotes>0&&<span style={{fontSize:10,background:T.tealS,color:T.teal,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{totalNotes}</span>}
         </button>
       </div>
-      {subTab==='temario'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setSubTab('estudio');goToStudy(t);}} topicNotes={topicNotes} saveTopicNote={saveTopicNote}/>}
+      {subTab==='temario'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setSubTab('estudio');goToStudy(t);}} topicNotes={topicNotes} saveTopicNote={saveTopicNote} setTopicView={setTopicView}/>}
       {subTab==='estudio'&&<EstudioTab studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} preselect={studyPreselect} onPreselect={onStudyPreselect} pdfMeta={pdfMeta}/>}
     </div>
   );
@@ -1044,7 +1065,7 @@ function Sel({value,onChange,children,style:st}){return <select value={value} on
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
-function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,sessions}){
+function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,sessions,learningData,setTopicView}){
   const totalA=Object.values(stats).reduce((a,b)=>a+b.t,0);
   const totalC=Object.values(stats).reduce((a,b)=>a+b.c,0);
   const acc=totalA?Math.round(totalC/totalA*100):0;
@@ -1091,6 +1112,33 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
         <Btn onClick={()=>setTab('planificador')} variant="ghost">📅 Planificador</Btn>
       </div>
 
+      {/* Repasos pendientes hoy */}
+      {(()=>{
+        const today=new Date().toISOString().slice(0,10);
+        const pending=[];
+        Object.entries(learningData||{}).forEach(([topic,data])=>{
+          if(!data?.spacedRepetition?.reviews)return;
+          Object.entries(data.spacedRepetition.reviews).forEach(([label,rev])=>{
+            if(rev.date<=today&&!rev.completed)pending.push({topic,label,date:rev.date});
+          });
+        });
+        if(!pending.length)return null;
+        return(
+          <Card style={{padding:'18px 22px',marginBottom:20,borderLeft:`3px solid ${T.purple}`}}>
+            <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.purple,borderRadius:2,display:'block'}}/>🧠 Repasos pendientes hoy</div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {pending.map((p,i)=>(
+                <div key={i} onClick={()=>setTopicView&&setTopicView(p.topic)} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:T.purpleS,borderRadius:8,border:`1px solid ${T.border}`,cursor:'pointer',transition:'all 0.15s'}} onMouseEnter={e=>{e.currentTarget.style.borderColor=T.purple;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;}}>
+                  <span style={{background:T.purple+'20',color:T.purple,padding:'2px 8px',borderRadius:20,fontSize:11,fontWeight:600,flexShrink:0}}>{p.label}</span>
+                  <span style={{fontSize:12,color:T.text,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.topic}</span>
+                  <span style={{fontSize:11,color:T.dim}}>{fmtDate(p.date)}</span>
+                  <span style={{fontSize:11,color:T.purple,fontWeight:600}}>Repasar →</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        );
+      })()}
       {sessions.length>0&&(
         <Card style={{padding:'18px 22px',marginBottom:20}}>
           <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.blue,borderRadius:2,display:'block'}}/>Últimas sesiones</div>
@@ -1131,7 +1179,7 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
 // ═══════════════════════════════════════════════════════════════════════════
 // TEMARIO — con notas por sección
 // ═══════════════════════════════════════════════════════════════════════════
-function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,goToStudy,topicNotes,saveTopicNote}){
+function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,goToStudy,topicNotes,saveTopicNote,setTopicView}){
   const [open,setOpen]=useState(null);
   const [openNote,setOpenNote]=useState(null);
   const [editingNote,setEditingNote]=useState(null);
@@ -1222,7 +1270,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                       <div key={t} style={{borderTop:ti>0?`1px solid ${T.border}`:'none',padding:'10px 20px 10px 44px'}}>
                         <div style={{display:'flex',alignItems:'center',gap:10}}>
                           <span style={{width:7,height:7,borderRadius:'50%',background:STATUS_COLORS[st],flexShrink:0}}/>
-                          <span style={{fontSize:13,color:T.text,flex:1,lineHeight:1.4,fontWeight:500}}>{t}</span>
+                          <span onClick={(e)=>{e.stopPropagation();setTopicView(t);}} style={{fontSize:13,color:T.text,flex:1,lineHeight:1.4,fontWeight:500,cursor:'pointer',transition:'color 0.15s'}} onMouseEnter={e=>{e.currentTarget.style.color=T.blue;e.currentTarget.style.textDecoration='underline';}} onMouseLeave={e=>{e.currentTarget.style.color=T.text;e.currentTarget.style.textDecoration='none';}}>{t}</span>
                           <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
                             {tpct!==null?(
                               <>
@@ -1571,6 +1619,595 @@ function StudyPanel({data,topic,date,onRegenerate,isGenerating}){
         <button onClick={onRegenerate} disabled={isGenerating} style={{fontSize:11,background:'none',border:`1px solid ${T.border2}`,borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>
           {isGenerating?'⏳ Regenerando…':'🔄 Regenerar'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TOPIC PAGE — Vista dedicada de un tema con 4 tabs
+// ═══════════════════════════════════════════════════════════════════════════
+function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,topicNotes,saveTopicNote,learningData,saveLearningData,sr,recordAnswer,goToBank,setTab}){
+  const [activeTab,setActiveTab]=useState('temario');
+  const refs=TOPIC_REFS[topic];
+  const hasRefs=refs&&refs.tietz!=='—';
+  const topicNum=parseInt(topic.match(/^T(\d+)/)?.[1]);
+  const officialText=topicNum&&TOPIC_OFFICIAL[topicNum];
+  const pKey=topicPdfKey(topic);
+  const files=pdfMeta[pKey]||[];
+  const topicQs=qs.filter(q=>q.topic===topic);
+  const topicStats=stats[topic];
+  const status=getStatus(topic,stats);
+  const learning=learningData[topic];
+  const section=SECTIONS.find(s=>s.topics.includes(topic));
+
+  const tabs=[
+    {id:'temario',label:'Temario',icon:'📋',color:T.blue},
+    {id:'apuntes',label:'Apuntes',icon:'📖',color:T.teal},
+    {id:'aprendizaje',label:'Aprendizaje',icon:'🧠',color:T.purple},
+    {id:'banco',label:'Banco',icon:'🧪',color:T.orange},
+  ];
+
+  return(
+    <div>
+      <div style={{marginBottom:20}}>
+        <button onClick={onBack} style={{background:'none',border:'none',cursor:'pointer',color:T.muted,fontSize:13,fontFamily:FONT,display:'flex',alignItems:'center',gap:4,padding:0,marginBottom:12}}>← Volver al temario</button>
+        <div style={{display:'flex',alignItems:'flex-start',gap:14}}>
+          <div style={{width:42,height:42,borderRadius:10,background:section?.colorS||T.blueS,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>{section?.emoji||'📚'}</div>
+          <div style={{flex:1}}>
+            <h2 style={{fontSize:20,fontWeight:700,margin:'0 0 6px',color:T.text,letterSpacing:-0.3,lineHeight:1.3}}>{topic}</h2>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+              <span style={{fontSize:11,color:STATUS_COLORS[status],background:STATUS_BG[status],padding:'2px 8px',borderRadius:10,fontWeight:600}}>{STATUS_LABELS[status]}</span>
+              {topicStats&&<span style={{fontSize:11,color:T.muted}}>{topicStats.c}/{topicStats.t} ({Math.round(topicStats.c/topicStats.t*100)}%)</span>}
+              {topicQs.length>0&&<span style={{fontSize:11,color:T.blue,background:T.blueS,padding:'2px 8px',borderRadius:10,fontWeight:600}}>{topicQs.length} preg.</span>}
+              {files.length>0&&<span style={{fontSize:11,color:T.greenText,background:T.greenS,padding:'2px 8px',borderRadius:10,fontWeight:600}}>📄 {files.length} PDFs</span>}
+              {learning&&<span style={{fontSize:11,color:T.purpleText,background:T.purpleS,padding:'2px 8px',borderRadius:10,fontWeight:600}}>🧠 Aprendizaje</span>}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
+        {tabs.map(t=>(
+          <button key={t.id} onClick={()=>setActiveTab(t.id)} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:activeTab===t.id?600:400,color:activeTab===t.id?t.color:T.muted,borderBottom:`2px solid ${activeTab===t.id?t.color:'transparent'}`,fontFamily:FONT}}>{t.icon} {t.label}</button>
+        ))}
+      </div>
+
+      {activeTab==='temario'&&(
+        <div>
+          {officialText&&(
+            <Card style={{padding:'18px 22px',marginBottom:16,borderLeft:`3px solid #fde047`}}>
+              <div style={{fontSize:10,fontWeight:700,color:T.amberText,marginBottom:8,letterSpacing:0.5,textTransform:'uppercase'}}>Tema {topicNum} — Texto oficial DOCM 9/04/2025</div>
+              <div style={{fontSize:13,color:T.text,lineHeight:1.8}}>{officialText}</div>
+            </Card>
+          )}
+          {hasRefs&&(
+            <Card style={{padding:'16px 22px',marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>Referencias bibliográficas</div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <div style={{background:T.blueS,border:`1px solid ${T.border2}`,borderRadius:8,padding:'8px 14px',flex:1,minWidth:200}}>
+                  <div style={{fontSize:11,fontWeight:700,color:T.blueText,marginBottom:2}}>📘 Tietz {refs.tietz}</div>
+                  {refs.tietzD&&<div style={{fontSize:11,color:T.muted}}>{refs.tietzD}</div>}
+                </div>
+                <div style={{background:'#fef9c3',border:'1px solid #fde047',borderRadius:8,padding:'8px 14px',flex:1,minWidth:200}}>
+                  <div style={{fontSize:11,fontWeight:700,color:T.amberText,marginBottom:2}}>📙 Henry {refs.henry}</div>
+                  {refs.henryD&&<div style={{fontSize:11,color:T.muted}}>{refs.henryD}</div>}
+                </div>
+              </div>
+            </Card>
+          )}
+          {files.length>0&&(
+            <Card style={{padding:'16px 22px',marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>📄 PDFs adjuntos ({files.length})</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                {files.map(f=>(
+                  <div key={f.id} style={{background:T.greenS,border:'1px solid #86efac',borderRadius:6,padding:'6px 10px',fontSize:11,color:T.greenText,fontWeight:600}}>
+                    📄 {f.name} {f.pages&&<span style={{color:T.muted,fontWeight:400}}>pp.{f.pages}</span>}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+          <Card style={{padding:'16px 22px'}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:8}}>📝 Mis apuntes</div>
+            <textarea defaultValue={topicNotes[topic]||''} onBlur={e=>saveTopicNote(topic,e.target.value)} placeholder="Escribe tus apuntes personales sobre este tema..."
+              style={{width:'100%',minHeight:100,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 12px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box'}}/>
+          </Card>
+        </div>
+      )}
+
+      {activeTab==='apuntes'&&(
+        <div>
+          {studyNotes[topic]?(
+            <StudyPanel data={studyNotes[topic].content} topic={topic} date={studyNotes[topic].date} onRegenerate={()=>{}} isGenerating={false}/>
+          ):(
+            <Card style={{padding:'50px',textAlign:'center'}}>
+              <div style={{fontSize:40,marginBottom:12}}>📖</div>
+              <div style={{fontSize:14,color:T.text,fontWeight:600,marginBottom:6}}>No hay apuntes generados</div>
+              <div style={{fontSize:12,color:T.muted}}>Ve a la pestaña "Apuntes" del Temario para generar apuntes con IA</div>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {activeTab==='aprendizaje'&&<AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData}/>}
+
+      {activeTab==='banco'&&(
+        <div>
+          {topicQs.length>0?(
+            <div>
+              <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12}}>{topicQs.length} preguntas de este tema</div>
+              {topicQs.slice(0,20).map((q,i)=>(
+                <Card key={q.id} style={{padding:'12px 16px',marginBottom:8}}>
+                  <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
+                    <span style={{fontSize:10,color:T.muted,background:T.card,padding:'2px 6px',borderRadius:4,fontWeight:600,flexShrink:0}}>#{i+1}</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,color:T.text,lineHeight:1.5,marginBottom:6}}>{q.question||q.front}</div>
+                      {q.type==='test'&&q.options&&(
+                        <div style={{display:'flex',flexDirection:'column',gap:3}}>
+                          {q.options.map((o,j)=>(
+                            <div key={j} style={{fontSize:11,color:j===q.correct?T.green:T.muted,fontWeight:j===q.correct?600:400,paddingLeft:8}}>{o}</div>
+                          ))}
+                        </div>
+                      )}
+                      {q.type==='flashcard'&&<div style={{fontSize:11,color:T.teal,background:T.tealS,padding:'4px 8px',borderRadius:6,marginTop:4}}>{q.back}</div>}
+                    </div>
+                  </div>
+                </Card>
+              ))}
+              {topicQs.length>20&&<div style={{fontSize:12,color:T.muted,textAlign:'center',padding:12}}>...y {topicQs.length-20} preguntas más</div>}
+            </div>
+          ):(
+            <Card style={{padding:'50px',textAlign:'center'}}>
+              <div style={{fontSize:40,marginBottom:12}}>🧪</div>
+              <div style={{fontSize:14,color:T.text,fontWeight:600,marginBottom:6}}>Sin preguntas para este tema</div>
+              <div style={{fontSize:12,color:T.muted,marginBottom:16}}>Ve al Banco de preguntas para generar preguntas de este tema</div>
+              <Btn onClick={()=>{onBack();setTab('banco');}} variant="primary">✨ Generar preguntas</Btn>
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// APRENDIZAJE TAB — Sistema de aprendizaje interactivo por fases
+// ═══════════════════════════════════════════════════════════════════════════
+function AprendizajeTab({topic,learning,saveLearningData}){
+  const [chapterText,setChapterText]=useState('');
+  const [generating,setGenerating]=useState(false);
+  const [genPhase,setGenPhase]=useState('');
+  const [genError,setGenError]=useState('');
+  const [activePhase,setActivePhase]=useState(0);
+
+  const callClaude=async(prompt)=>{
+    const res=await fetch('/api/anthropic',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:prompt}]})
+    });
+    if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
+    const data=await res.json();
+    const text=(data.content||[]).map(c=>c.text||'').join('').trim();
+    return text.replace(/```json|```/g,'').trim();
+  };
+
+  const generateLearning=async()=>{
+    if(!chapterText.trim()){setGenError('Pega el texto del capítulo primero.');return;}
+    setGenerating(true);setGenError('');
+    const ctx=`Tema: "${topic}"\n\nTEXTO DEL CAPÍTULO:\n${chapterText.slice(0,50000)}`;
+    const sys='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
+
+    try{
+      // Phase 1: Pre-test (18 questions)
+      setGenPhase('Generando pre-test (1/4)...');
+      const p1=await callClaude(`${sys}\n\n${ctx}\n\nGenera exactamente 18 preguntas tipo test de opción múltiple para un PRE-TEST (evaluar conocimientos previos antes de estudiar). Mezcla 6 fáciles, 6 medias y 6 difíciles.\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}\n\n- "correct" = índice 0-3 de la opción correcta\n- 18 preguntas exactas\n- Las opciones deben incluir la letra (A, B, C, D)\n- Explicación breve de por qué la opción es correcta`);
+      const preTest=JSON.parse(repairJSON(p1));
+
+      // Phase 2: Guided reading
+      setGenPhase('Generando lectura guiada (2/4)...');
+      const p2=await callClaude(`${sys}\n\n${ctx}\n\nDivide el texto en secciones lógicas de lectura guiada (5-8 secciones). Para cada sección proporciona un resumen, puntos clave destacados y una pregunta de comprensión con su respuesta.\n\nJSON:\n{"sections":[{"title":"Título de la sección","summary":"Resumen de 3-5 frases con los conceptos principales","keyPoints":["punto clave 1","punto clave 2","punto clave 3"],"checkQuestion":{"question":"Pregunta de comprensión","answer":"Respuesta completa"}}]}`);
+      const guidedReading=JSON.parse(repairJSON(p2));
+
+      // Phase 3: Flashcards + Clinical cases
+      setGenPhase('Generando flashcards y casos clínicos (3/4)...');
+      const p3=await callClaude(`${sys}\n\n${ctx}\n\nGenera:\n1. Exactamente 15 flashcards con datos concretos e importantes (valores de referencia, mecanismos, clasificaciones, criterios diagnósticos)\n2. Exactamente 3 casos clínicos con presentación realista de paciente, pregunta tipo test y discusión detallada\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta o concepto clave","back":"Respuesta concisa con datos concretos"}],"clinicalCases":[{"id":"cc1","presentation":"Paciente de X años que acude por... Analítica: ...","question":"¿Cuál es el diagnóstico más probable?","options":["A) Opción 1","B) Opción 2","C) Opción 3","D) Opción 4"],"correct":0,"discussion":"Discusión detallada del caso y por qué la respuesta correcta es..."}]}`);
+      const fcData=JSON.parse(repairJSON(p3));
+
+      // Phase 4: Post-test (10 questions)
+      setGenPhase('Generando post-test (4/4)...');
+      const p4=await callClaude(`${sys}\n\n${ctx}\n\nGenera exactamente 10 preguntas tipo test de dificultad ALTA para un POST-TEST (evaluar comprensión profunda tras estudiar). Enfócate en aplicación clínica, diagnóstico diferencial, interpretación de resultados analíticos y correlación clínico-patológica.\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"..."}]}\n\n- 10 preguntas exactas, nivel alto\n- Preguntas de aplicación, no de memoria`);
+      const postTest=JSON.parse(repairJSON(p4));
+
+      // Compute spaced repetition dates
+      const now=new Date();
+      const addDays=(d,n)=>{const r=new Date(d);r.setDate(r.getDate()+n);return r.toISOString().slice(0,10);};
+      const startDate=now.toISOString().slice(0,10);
+
+      const result={
+        topic,
+        generatedAt:now.toISOString(),
+        chapterTextPreview:chapterText.slice(0,300),
+        phases:{
+          preTest:preTest.questions||preTest,
+          guidedReading:guidedReading.sections||guidedReading,
+          flashcards:fcData.flashcards||[],
+          clinicalCases:fcData.clinicalCases||[],
+          postTest:postTest.questions||postTest,
+        },
+        spacedRepetition:{
+          startDate,
+          reviews:{
+            'D+1':{date:addDays(now,1),completed:false},
+            'D+3':{date:addDays(now,3),completed:false},
+            'D+7':{date:addDays(now,7),completed:false},
+            'D+14':{date:addDays(now,14),completed:false},
+            'D+30':{date:addDays(now,30),completed:false},
+          }
+        },
+        progress:{preTest:null,postTest:null}
+      };
+
+      await saveLearningData(topic,result);
+      setGenPhase('');setChapterText('');
+    }catch(e){
+      setGenError(`Error: ${e.message}`);
+    }
+    setGenerating(false);
+  };
+
+  if(!learning) return(
+    <Card style={{padding:'24px'}}>
+      <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:4}}>🧠 Aprendizaje interactivo</div>
+      <div style={{fontSize:12,color:T.muted,marginBottom:16,lineHeight:1.6}}>Pega el texto de un capítulo del libro (Tietz o Henry) y se generarán 6 fases de aprendizaje: pre-test, lectura guiada, flashcards, casos clínicos, post-test y plan de repaso espaciado.</div>
+      <textarea value={chapterText} onChange={e=>setChapterText(e.target.value)} placeholder="Pega aquí el texto completo del capítulo..."
+        style={{width:'100%',minHeight:200,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:12}}/>
+      <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <button onClick={generateLearning} disabled={generating||!chapterText.trim()}
+          style={{background:generating?T.amberS:T.purple,color:generating?T.amberText:'#fff',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:600,cursor:generating?'wait':'pointer',fontFamily:FONT,boxShadow:sh.sm}}>
+          {generating?`⏳ ${genPhase}`:'🧠 Generar aprendizaje interactivo'}
+        </button>
+        {chapterText.trim()&&!generating&&<span style={{fontSize:11,color:T.muted}}>{chapterText.trim().split(/\s+/).length} palabras</span>}
+        {genError&&<span style={{fontSize:12,color:T.red}}>{genError}</span>}
+      </div>
+    </Card>
+  );
+
+  // Has learning data — show phases
+  const phases=[
+    {id:'preTest',label:'Pre-Test',icon:'📝',desc:'18 preguntas para evaluar conocimientos previos',color:T.blue},
+    {id:'guidedReading',label:'Lectura Guiada',icon:'📖',desc:'Estudio por secciones con conceptos clave',color:T.teal},
+    {id:'flashcards',label:'Flashcards',icon:'🃏',desc:'15 tarjetas de memorización activa',color:T.green},
+    {id:'clinicalCases',label:'Casos Clínicos',icon:'🏥',desc:'3 casos de aplicación práctica',color:T.orange},
+    {id:'postTest',label:'Post-Test',icon:'✅',desc:'10 preguntas de evaluación final',color:T.red},
+    {id:'spacedRepetition',label:'Plan de Repaso',icon:'📅',desc:'Repaso espaciado D+1, D+3, D+7, D+14, D+30',color:T.purple},
+  ];
+
+  return(
+    <div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+        <div>
+          <div style={{fontSize:15,fontWeight:700,color:T.text}}>🧠 Aprendizaje interactivo</div>
+          <div style={{fontSize:11,color:T.muted}}>Generado el {fmtDate(learning.generatedAt)}</div>
+        </div>
+        <button onClick={async()=>{await saveLearningData(topic,null);}} style={{fontSize:11,background:'none',border:`1px solid ${T.border2}`,borderRadius:6,padding:'4px 12px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>🗑 Regenerar</button>
+      </div>
+
+      {/* Phase navigation */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:8,marginBottom:20}}>
+        {phases.map((p,i)=>{
+          const isActive=activePhase===i;
+          return(
+            <div key={p.id} onClick={()=>setActivePhase(i)}
+              style={{background:isActive?p.color+'15':T.surface,border:`1px solid ${isActive?p.color:T.border}`,borderRadius:10,padding:'12px',cursor:'pointer',transition:'all 0.15s'}}>
+              <div style={{fontSize:18,marginBottom:4}}>{p.icon}</div>
+              <div style={{fontSize:12,fontWeight:600,color:isActive?p.color:T.text}}>{p.label}</div>
+              <div style={{fontSize:10,color:T.muted,lineHeight:1.4,marginTop:2}}>{p.desc}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Phase content */}
+      {activePhase===0&&<QuizPhase questions={learning.phases.preTest} title="Pre-Test" progress={learning.progress?.preTest} onSaveProgress={async(p)=>{const u={...learning,progress:{...learning.progress,preTest:p}};await saveLearningData(topic,u);}} color={T.blue}/>}
+      {activePhase===1&&<GuidedReadingPhase sections={learning.phases.guidedReading}/>}
+      {activePhase===2&&<FlashcardsPhase cards={learning.phases.flashcards}/>}
+      {activePhase===3&&<ClinicalCasesPhase cases={learning.phases.clinicalCases}/>}
+      {activePhase===4&&(
+        <div>
+          <QuizPhase questions={learning.phases.postTest} title="Post-Test" progress={learning.progress?.postTest} onSaveProgress={async(p)=>{const u={...learning,progress:{...learning.progress,postTest:p}};await saveLearningData(topic,u);}} color={T.red}/>
+          {learning.progress?.preTest?.completed&&learning.progress?.postTest?.completed&&(
+            <Card style={{padding:'18px 22px',marginTop:16,borderLeft:`3px solid ${T.green}`}}>
+              <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:8}}>📊 Comparación Pre-Test vs Post-Test</div>
+              <div style={{display:'flex',gap:20,alignItems:'center'}}>
+                <div><div style={{fontSize:22,fontWeight:700,color:T.blue}}>{learning.progress.preTest.score}%</div><div style={{fontSize:11,color:T.muted}}>Pre-Test</div></div>
+                <div style={{fontSize:22,color:T.dim}}>→</div>
+                <div><div style={{fontSize:22,fontWeight:700,color:T.green}}>{learning.progress.postTest.score}%</div><div style={{fontSize:11,color:T.muted}}>Post-Test</div></div>
+                <div><div style={{fontSize:22,fontWeight:700,color:learning.progress.postTest.score>learning.progress.preTest.score?T.green:T.red}}>
+                  {learning.progress.postTest.score>learning.progress.preTest.score?'+':''}{learning.progress.postTest.score-learning.progress.preTest.score}%
+                </div><div style={{fontSize:11,color:T.muted}}>Mejora</div></div>
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
+      {activePhase===5&&<SpacedRepetitionPhase schedule={learning.spacedRepetition} topic={topic} learning={learning} saveLearningData={saveLearningData}/>}
+    </div>
+  );
+}
+
+// ── Quiz Phase (Pre-Test / Post-Test) ───────────────────────────────────────
+function QuizPhase({questions,title,progress,onSaveProgress,color}){
+  const [current,setCurrent]=useState(0);
+  const [answers,setAnswers]=useState(progress?.answers||{});
+  const [showResult,setShowResult]=useState(!!progress?.completed);
+  const [revealed,setRevealed]=useState({});
+
+  if(!Array.isArray(questions)||questions.length===0) return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay preguntas disponibles.</div>;
+
+  const total=questions.length;
+  const answered=Object.keys(answers).length;
+  const correct=Object.entries(answers).filter(([i,a])=>a===questions[parseInt(i)]?.correct).length;
+
+  const finish=()=>{
+    const score=Math.round(correct/total*100);
+    setShowResult(true);
+    onSaveProgress?.({answers,completed:true,score,correct,total});
+  };
+
+  if(showResult) return(
+    <Card style={{padding:'24px',textAlign:'center'}}>
+      <div style={{fontSize:48,marginBottom:12}}>{correct/total>=0.7?'🎉':correct/total>=0.5?'💪':'📚'}</div>
+      <div style={{fontSize:22,fontWeight:700,color:correct/total>=0.7?T.green:correct/total>=0.5?T.amber:T.red}}>{Math.round(correct/total*100)}%</div>
+      <div style={{fontSize:14,color:T.text,marginBottom:8}}>{correct} de {total} correctas</div>
+      <div style={{fontSize:12,color:T.muted,marginBottom:16}}>{title}</div>
+      <button onClick={()=>{setAnswers({});setShowResult(false);setCurrent(0);setRevealed({});onSaveProgress?.(null);}} style={{background:T.card,border:`1px solid ${T.border2}`,borderRadius:7,padding:'8px 18px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>🔄 Repetir</button>
+    </Card>
+  );
+
+  const q=questions[current];
+  if(!q)return null;
+  const isRevealed=revealed[current];
+
+  return(
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+        <span style={{fontSize:13,fontWeight:600,color:T.text}}>{title} — Pregunta {current+1}/{total}</span>
+        <span style={{fontSize:12,color:T.muted}}>{answered}/{total} respondidas</span>
+      </div>
+      <PBar pct={answered/total*100} color={color||T.blue}/>
+      <Card style={{padding:'20px',marginTop:12}}>
+        <div style={{fontSize:13,color:T.text,lineHeight:1.7,marginBottom:16,fontWeight:500}}>{q.question}</div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {(q.options||[]).map((opt,j)=>{
+            const isSelected=answers[current]===j;
+            const isCorrect=j===q.correct;
+            const showFb=isRevealed;
+            let bg=T.card,border=T.border,col=T.text;
+            if(showFb&&isCorrect){bg=T.greenS;border=T.green;col=T.greenText;}
+            else if(showFb&&isSelected&&!isCorrect){bg=T.redS;border=T.red;col=T.redText;}
+            else if(isSelected){bg=T.blueS;border=T.blue;col=T.blueText;}
+            return(
+              <button key={j} onClick={()=>{if(!isRevealed){setAnswers(prev=>({...prev,[current]:j}));setRevealed(prev=>({...prev,[current]:true}));}}}
+                disabled={isRevealed} style={{background:bg,border:`1px solid ${border}`,borderRadius:8,padding:'10px 14px',fontSize:12,textAlign:'left',cursor:isRevealed?'default':'pointer',color:col,fontFamily:FONT,transition:'all 0.15s'}}>
+                {opt}
+              </button>
+            );
+          })}
+        </div>
+        {isRevealed&&q.explanation&&(
+          <div style={{marginTop:12,padding:'10px 14px',background:T.blueS,borderRadius:8,fontSize:12,color:T.blueText,lineHeight:1.6,borderLeft:`3px solid ${T.blue}`}}>
+            💡 {q.explanation}
+          </div>
+        )}
+        <div style={{display:'flex',justifyContent:'space-between',marginTop:16}}>
+          <button onClick={()=>setCurrent(Math.max(0,current-1))} disabled={current===0}
+            style={{background:'none',border:`1px solid ${T.border}`,borderRadius:6,padding:'6px 14px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>← Anterior</button>
+          {current===total-1&&answered>=total?(
+            <button onClick={finish} style={{background:color||T.blue,color:'#fff',border:'none',borderRadius:6,padding:'6px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>Ver resultado</button>
+          ):(
+            <button onClick={()=>setCurrent(Math.min(total-1,current+1))}
+              style={{background:'none',border:`1px solid ${T.border}`,borderRadius:6,padding:'6px 14px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>Siguiente →</button>
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── Guided Reading Phase ────────────────────────────────────────────────────
+function GuidedReadingPhase({sections}){
+  const [openSection,setOpenSection]=useState(0);
+  const [showAnswers,setShowAnswers]=useState({});
+
+  if(!Array.isArray(sections)||sections.length===0) return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay secciones disponibles.</div>;
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:10}}>
+      {sections.map((sec,i)=>{
+        const isOpen=openSection===i;
+        return(
+          <Card key={i} style={{overflow:'hidden'}}>
+            <div onClick={()=>setOpenSection(isOpen?-1:i)}
+              style={{padding:'14px 18px',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isOpen?T.tealS:T.surface}}>
+              <span style={{width:28,height:28,borderRadius:8,background:isOpen?T.teal:T.border,color:isOpen?'#fff':T.muted,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,flexShrink:0}}>{i+1}</span>
+              <span style={{fontSize:13,fontWeight:600,color:T.text,flex:1}}>{sec.title}</span>
+              <span style={{color:T.dim,fontSize:16,transform:isOpen?'rotate(90deg)':'none',transition:'transform 0.2s'}}>›</span>
+            </div>
+            {isOpen&&(
+              <div style={{padding:'16px 18px',borderTop:`1px solid ${T.border}`}}>
+                <div style={{fontSize:12,color:T.text,lineHeight:1.8,marginBottom:14}}>{sec.summary}</div>
+                {sec.keyPoints&&sec.keyPoints.length>0&&(
+                  <div style={{marginBottom:14}}>
+                    <div style={{fontSize:11,fontWeight:700,color:T.teal,marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Puntos clave</div>
+                    <ul style={{margin:0,paddingLeft:18,display:'flex',flexDirection:'column',gap:4}}>
+                      {sec.keyPoints.map((p,j)=><li key={j} style={{fontSize:12,color:T.text,lineHeight:1.6}}>{p}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {sec.checkQuestion&&(
+                  <div style={{background:T.amberS,border:`1px solid #fde68a`,borderRadius:8,padding:'12px 14px'}}>
+                    <div style={{fontSize:11,fontWeight:700,color:T.amberText,marginBottom:4}}>❓ Pregunta de comprensión</div>
+                    <div style={{fontSize:12,color:T.text,lineHeight:1.6,marginBottom:6}}>{sec.checkQuestion.question}</div>
+                    {showAnswers[i]
+                      ?<div style={{fontSize:12,color:T.greenText,background:T.greenS,padding:'8px 10px',borderRadius:6,lineHeight:1.6}}>✅ {sec.checkQuestion.answer}</div>
+                      :<button onClick={()=>setShowAnswers(prev=>({...prev,[i]:true}))} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,padding:'5px 12px',fontSize:11,cursor:'pointer',color:T.muted,fontFamily:FONT}}>Mostrar respuesta</button>
+                    }
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Flashcards Phase ────────────────────────────────────────────────────────
+function FlashcardsPhase({cards}){
+  const [current,setCurrent]=useState(0);
+  const [flipped,setFlipped]=useState(false);
+  const [known,setKnown]=useState(new Set());
+
+  if(!Array.isArray(cards)||cards.length===0) return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay flashcards disponibles.</div>;
+
+  const card=cards[current];
+
+  return(
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+        <span style={{fontSize:13,fontWeight:600,color:T.text}}>🃏 Flashcards — {current+1}/{cards.length}</span>
+        <span style={{fontSize:12,color:T.green,fontWeight:600}}>{known.size} dominadas · {cards.length-known.size} restantes</span>
+      </div>
+      <PBar pct={known.size/cards.length*100} color={T.green}/>
+      <div onClick={()=>setFlipped(!flipped)}
+        style={{background:flipped?T.tealS:T.surface,border:`1px solid ${flipped?T.teal:T.border}`,borderRadius:14,padding:'40px 30px',marginTop:14,cursor:'pointer',textAlign:'center',minHeight:160,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:sh.md,transition:'all 0.2s'}}>
+        <div style={{fontSize:10,color:T.muted,marginBottom:8,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>{flipped?'Respuesta':'Pregunta'} — clic para girar</div>
+        <div style={{fontSize:15,color:flipped?T.tealText:T.text,fontWeight:600,lineHeight:1.6,maxWidth:500}}>{flipped?(card.back||'—'):(card.front||'—')}</div>
+      </div>
+      <div style={{display:'flex',justifyContent:'center',gap:10,marginTop:16}}>
+        <button onClick={()=>{setCurrent(Math.max(0,current-1));setFlipped(false);}} disabled={current===0}
+          style={{background:'none',border:`1px solid ${T.border}`,borderRadius:8,padding:'8px 16px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>← Anterior</button>
+        <button onClick={()=>{setKnown(prev=>{const n=new Set(prev);n.has(current)?n.delete(current):n.add(current);return n;});}}
+          style={{background:known.has(current)?T.greenS:T.card,border:`1px solid ${known.has(current)?T.green:T.border}`,borderRadius:8,padding:'8px 16px',fontSize:12,cursor:'pointer',color:known.has(current)?T.green:T.muted,fontWeight:600,fontFamily:FONT}}>
+          {known.has(current)?'✅ Dominada':'Marcar dominada'}
+        </button>
+        <button onClick={()=>{setCurrent(Math.min(cards.length-1,current+1));setFlipped(false);}} disabled={current===cards.length-1}
+          style={{background:'none',border:`1px solid ${T.border}`,borderRadius:8,padding:'8px 16px',fontSize:12,cursor:current===cards.length-1?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>Siguiente →</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Clinical Cases Phase ────────────────────────────────────────────────────
+function ClinicalCasesPhase({cases}){
+  const [currentCase,setCurrentCase]=useState(0);
+  const [selectedOpt,setSelectedOpt]=useState({});
+  const [revealed,setRevealed]=useState({});
+
+  if(!Array.isArray(cases)||cases.length===0) return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay casos clínicos disponibles.</div>;
+
+  const c=cases[currentCase];
+  const isRevealed=revealed[currentCase];
+
+  return(
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+        <span style={{fontSize:13,fontWeight:600,color:T.text}}>🏥 Caso Clínico {currentCase+1}/{cases.length}</span>
+        <div style={{display:'flex',gap:4}}>
+          {cases.map((_,i)=>(
+            <button key={i} onClick={()=>setCurrentCase(i)}
+              style={{width:28,height:28,borderRadius:'50%',background:currentCase===i?T.orange:T.card,border:`1px solid ${currentCase===i?T.orange:T.border}`,color:currentCase===i?'#fff':T.muted,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>{i+1}</button>
+          ))}
+        </div>
+      </div>
+
+      <Card style={{padding:'20px',borderLeft:`3px solid ${T.orange}`}}>
+        <div style={{fontSize:10,fontWeight:700,color:T.orange,marginBottom:8,textTransform:'uppercase',letterSpacing:0.5}}>Presentación clínica</div>
+        <div style={{fontSize:13,color:T.text,lineHeight:1.8,marginBottom:16}}>{c.presentation}</div>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>{c.question}</div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {(c.options||[]).map((opt,j)=>{
+            const isSelected=selectedOpt[currentCase]===j;
+            const isCorrect=j===c.correct;
+            let bg=T.card,border=T.border,col=T.text;
+            if(isRevealed&&isCorrect){bg=T.greenS;border=T.green;col=T.greenText;}
+            else if(isRevealed&&isSelected&&!isCorrect){bg=T.redS;border=T.red;col=T.redText;}
+            else if(isSelected){bg=T.orangeS;border=T.orange;col=T.orangeText;}
+            return(
+              <button key={j} onClick={()=>{if(!isRevealed){setSelectedOpt(prev=>({...prev,[currentCase]:j}));setRevealed(prev=>({...prev,[currentCase]:true}));}}}
+                disabled={isRevealed} style={{background:bg,border:`1px solid ${border}`,borderRadius:8,padding:'10px 14px',fontSize:12,textAlign:'left',cursor:isRevealed?'default':'pointer',color:col,fontFamily:FONT}}>
+                {opt}
+              </button>
+            );
+          })}
+        </div>
+        {isRevealed&&c.discussion&&(
+          <div style={{marginTop:14,padding:'12px 14px',background:T.blueS,borderRadius:8,fontSize:12,color:T.blueText,lineHeight:1.7,borderLeft:`3px solid ${T.blue}`}}>
+            💡 <strong>Discusión:</strong> {c.discussion}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ── Spaced Repetition Phase ─────────────────────────────────────────────────
+function SpacedRepetitionPhase({schedule,topic,learning,saveLearningData}){
+  if(!schedule)return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay plan de repaso.</div>;
+
+  const today=new Date().toISOString().slice(0,10);
+
+  const toggleCompleted=async(label)=>{
+    const updated={
+      ...learning,
+      spacedRepetition:{
+        ...learning.spacedRepetition,
+        reviews:{
+          ...learning.spacedRepetition.reviews,
+          [label]:{...learning.spacedRepetition.reviews[label],completed:!learning.spacedRepetition.reviews[label].completed}
+        }
+      }
+    };
+    await saveLearningData(topic,updated);
+  };
+
+  const reviewEntries=Object.entries(schedule.reviews||{}).sort((a,b)=>a[1].date.localeCompare(b[1].date));
+  const completed=reviewEntries.filter(([,r])=>r.completed).length;
+
+  return(
+    <div>
+      <Card style={{padding:'20px',marginBottom:16}}>
+        <div style={{fontSize:14,fontWeight:700,color:T.text,marginBottom:6}}>📅 Plan de Repaso Espaciado</div>
+        <div style={{fontSize:12,color:T.muted,marginBottom:8}}>Inicio: {fmtDate(schedule.startDate)} · {completed}/{reviewEntries.length} completados</div>
+        <PBar pct={reviewEntries.length?completed/reviewEntries.length*100:0} color={T.purple}/>
+      </Card>
+
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {reviewEntries.map(([label,rev])=>{
+          const isPast=rev.date<=today;
+          const isDue=isPast&&!rev.completed;
+          const isCompleted=rev.completed;
+          return(
+            <Card key={label} style={{padding:'14px 18px',borderLeft:`3px solid ${isCompleted?T.green:isDue?T.purple:T.border}`}}>
+              <div style={{display:'flex',alignItems:'center',gap:12}}>
+                <button onClick={()=>toggleCompleted(label)}
+                  style={{width:28,height:28,borderRadius:'50%',background:isCompleted?T.green:T.card,border:`2px solid ${isCompleted?T.green:isDue?T.purple:T.border}`,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#fff',flexShrink:0}}>
+                  {isCompleted?'✓':''}
+                </button>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:600,color:isCompleted?T.green:isDue?T.purple:T.text}}>{label}</div>
+                  <div style={{fontSize:11,color:T.muted}}>{fmtDate(rev.date)}</div>
+                </div>
+                {isDue&&<span style={{fontSize:11,color:T.purple,fontWeight:600,background:T.purpleS,padding:'3px 10px',borderRadius:20}}>⏰ Pendiente</span>}
+                {isCompleted&&<span style={{fontSize:11,color:T.green,fontWeight:600}}>✅ Completado</span>}
+                {!isPast&&!isCompleted&&<span style={{fontSize:11,color:T.dim}}>Próximamente</span>}
+              </div>
+            </Card>
+          );
+        })}
       </div>
     </div>
   );
