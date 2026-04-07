@@ -496,6 +496,30 @@ const STATUS_COLORS={sinEmpezar:T.dim,necesitaTrabajo:T.red,enProgreso:T.amber,d
 const STATUS_BG={sinEmpezar:T.card,necesitaTrabajo:T.redS,enProgreso:T.amberS,dominado:T.greenS};
 const STATUS_ORDER={sinEmpezar:0,necesitaTrabajo:1,enProgreso:2,dominado:3};
 
+// ── Mastery levels ──────────────────────────────────────────────────────────
+function getMasteryLevel(score){
+  if(score==null||score<=20) return {name:'Sin explorar',color:T.dim,emoji:'⬜'};
+  if(score<=40) return {name:'Iniciado',color:'#9ca3af',emoji:'🔘'};
+  if(score<=60) return {name:'Aprendiz',color:T.amber,emoji:'🟡'};
+  if(score<=75) return {name:'Competente',color:T.blue,emoji:'🔵'};
+  if(score<=85) return {name:'Avanzado',color:T.teal,emoji:'🟢'};
+  if(score<=95) return {name:'Experto',color:T.green,emoji:'💚'};
+  return {name:'Maestro',color:'#fbbf24',emoji:'👑'};
+}
+// Streak data: {current, max, lastDate}
+function loadStreak(){return load('olab_streak',{current:0,max:0,lastDate:null});}
+function saveStreak(s){save('olab_streak',s);return s;}
+function updateStreak(){
+  const s=loadStreak();
+  const today=new Date().toISOString().slice(0,10);
+  if(s.lastDate===today)return s; // already counted today
+  const yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);
+  const yStr=yesterday.toISOString().slice(0,10);
+  let current=s.lastDate===yStr?s.current+1:1;
+  const max=Math.max(s.max||0,current);
+  return saveStreak({current,max,lastDate:today});
+}
+
 // ── Learning status helpers ─────────────────────────────────────────────────
 // Score for a single unit (section or subsection): postTest 40% + flashcards 30% + clinical 30%
 // External test data also contributes to the score
@@ -563,6 +587,10 @@ export default function App(){
   const [loaded,setLoaded]=useState(false);
   const [topicView,setTopicView]=useState(null);
   const [learningData,setLearningData]=useState({});
+  const [reviewDismissed,setReviewDismissed]=useState(false);
+  const [activeReview,setActiveReview]=useState(null);
+  const [streakData,setStreakData]=useState({current:0,max:0,lastDate:null});
+  const [levelUpMsg,setLevelUpMsg]=useState(null); // {topic, oldLevel, newLevel} for celebration
 
   useEffect(()=>{
     (async()=>{
@@ -596,7 +624,7 @@ export default function App(){
 
       setQs(q);setSr(s);setStats(st);setMarked(new Set(mk));setErrSet(new Set(er));
       setSessions(sess);setExamDateState(ed);setNotesState(nt);setTopicNotesState(tn);setPdfMetaState(pm);
-      setApiKeyState(ak);setStudyNotesState(sn);setLearningData(ld);setLoaded(true);
+      setApiKeyState(ak);setStudyNotesState(sn);setLearningData(ld);setStreakData(loadStreak());setLoaded(true);
     })();
   },[]);
 
@@ -605,8 +633,19 @@ export default function App(){
     setStudyNotesState(prev=>{const n={...prev,[topic]:{content,date:new Date().toISOString()}};save('olab_study_notes',n);return n;});
   },[]);
   const saveLearningData=useCallback(async(topic,data)=>{
-    if(data){await idbSaveLearning(topic,data);setLearningData(prev=>({...prev,[topic]:data}));}
-    else{await idbDeleteLearning(topic);setLearningData(prev=>{const n={...prev};delete n[topic];return n;});}
+    if(data){
+      await idbSaveLearning(topic,data);
+      // Check for level-up before updating state
+      setLearningData(prev=>{
+        const oldLd=prev[topic];
+        const oldMastery=oldLd?getLearningStatus(oldLd).mastery:0;
+        const newMastery=getLearningStatus(data).mastery;
+        const oldLvl=getMasteryLevel(oldMastery);const newLvl=getMasteryLevel(newMastery);
+        if(newLvl.name!==oldLvl.name&&newMastery>oldMastery){setLevelUpMsg({topic:topic.split('.').slice(0,1).join('.'),oldLevel:oldLvl.name,newLevel:newLvl.name,emoji:newLvl.emoji});setTimeout(()=>setLevelUpMsg(null),4000);}
+        return{...prev,[topic]:data};
+      });
+      setStreakData(updateStreak());
+    }else{await idbDeleteLearning(topic);setLearningData(prev=>{const n={...prev};delete n[topic];return n;});}
   },[]);
 
   // saveQs — persiste en IndexedDB. Acepta el array completo nuevo.
@@ -660,6 +699,7 @@ export default function App(){
   const recordAnswer=useCallback(async(qid,topic,correct,quality,questionMeta)=>{
     // Update topic stats (feeds getStatus traffic light)
     setStats(prev=>{const ns={...prev};if(!ns[topic])ns[topic]={c:0,t:0};ns[topic]={c:ns[topic].c+(correct?1:0),t:ns[topic].t+1};save('olab_stats',ns);return ns;});
+    setStreakData(updateStreak());
     setSr(prev=>{const nsr={...prev,[qid]:sm2Update(prev[qid],quality)};save('olab_sr',nsr);return nsr;});
     setErrSet(prev=>{const ne=new Set(prev);correct?ne.delete(qid):ne.add(qid);save('olab_er',[...ne]);return ne;});
     // Cross-update learning mastery if question has section metadata
@@ -707,16 +747,121 @@ export default function App(){
   const dueQs=fcQs.filter(q=>isDue(sr[q.id]));
   const shared={qs,testQs,fcQs,dueQs,sr,stats,marked,errSet,recordAnswer,toggleMark,saveQs,setTab,addSession};
 
+  // ── Review gate: check for pending reviews before showing main app ────────
+  const todayKey='olab_review_'+new Date().toISOString().slice(0,10);
+  const reviewAlreadyDone=reviewDismissed||load(todayKey,false);
+
+  // Collect all pending reviews with their mastery scores
+  const pendingReviews=[];
+  if(!reviewAlreadyDone){
+    const today=new Date().toISOString().slice(0,10);
+    Object.entries(learningData||{}).forEach(([topic,data])=>{
+      if(!data?.spacedRepetition?.reviews)return;
+      Object.entries(data.spacedRepetition.reviews).forEach(([label,rev])=>{
+        if(rev.date<=today&&!rev.completed){
+          const ls=getLearningStatus(data);
+          // Find section with lowest score for this topic
+          const sectionScores=(data.sections||[]).map((s,i)=>({idx:i,title:s.title,score:calcSectionScore(s),sec:s})).filter(s=>s.score!==null);
+          const worstSection=sectionScores.sort((a,b)=>a.score-b.score)[0]||null;
+          pendingReviews.push({topic,label,date:rev.date,mastery:ls.mastery,color:ls.color,status:ls.status,worstSection,data});
+        }
+      });
+    });
+    // Sort: red first, then amber, then green
+    pendingReviews.sort((a,b)=>(a.mastery<60?0:a.mastery<80?1:2)-(b.mastery<60?0:b.mastery<80?1:2));
+  }
+  const hasRedReviews=pendingReviews.some(r=>r.mastery<60);
+  const hasPendingReviews=pendingReviews.length>0;
+
+  // Mark review day as done
+  const markReviewDone=()=>{save(todayKey,true);setReviewDismissed(true);setActiveReview(null);};
+
+  // Build condensed review items for a topic
+  const startReview=(reviewItem)=>{
+    const{topic,worstSection,data}=reviewItem;
+    if(!worstSection?.sec?.generated)return markReviewDone();
+    const gen=worstSection.sec.generated;
+    const items=[];
+    // 5 random post-test questions
+    const postQs=shuffle(gen.phases?.postTest||[]).slice(0,5);
+    if(postQs.length)items.push({type:'quiz',title:`Repaso: ${worstSection.title}`,questions:postQs,topic,secIdx:worstSection.idx});
+    // Failed flashcards (ones not dominated) — up to 5
+    const allFc=gen.phases?.flashcards||[];
+    const dominated=gen.progress?.flashcardsDominated||0;
+    if(dominated<allFc.length){const fcToReview=shuffle(allFc).slice(0,Math.min(5,allFc.length-dominated));items.push({type:'flashcards',title:'Flashcards para repasar',cards:fcToReview,topic,secIdx:worstSection.idx});}
+    // Clinical case if mastery < 70%
+    if(worstSection.score<70&&(gen.phases?.clinicalCases||[]).length>0){items.push({type:'clinical',title:'Caso clínico de refuerzo',cases:[gen.phases.clinicalCases[0]],topic,secIdx:worstSection.idx});}
+    if(!items.length)return markReviewDone();
+    setActiveReview({items,currentItem:0,topic,secIdx:worstSection.idx,reviewLabel:reviewItem.label,results:[]});
+  };
+
+  // ── Active review session ─────────────────────────────────────────────────
+  if(activeReview) return(
+    <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14}}>
+      <div style={{maxWidth:700,margin:'0 auto',padding:'32px 24px'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
+          <div>
+            <div style={{fontSize:10,color:T.dim,fontWeight:700,textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Repaso del día · {activeReview.reviewLabel}</div>
+            <div style={{fontSize:16,fontWeight:700,color:T.text}}>{activeReview.topic.split('.').slice(0,1).join('.')}.</div>
+          </div>
+          <div style={{fontSize:12,color:T.dim}}>Parte {activeReview.currentItem+1} de {activeReview.items.length}</div>
+        </div>
+        <PBar pct={(activeReview.currentItem/activeReview.items.length)*100} color={T.green} height={3}/>
+        <div style={{marginTop:20}}>
+          <ReviewPhase
+            item={activeReview.items[activeReview.currentItem]}
+            onComplete={(result)=>{
+              const newResults=[...activeReview.results,result];
+              const nextItem=activeReview.currentItem+1;
+              if(nextItem>=activeReview.items.length){
+                // Review complete — recalculate mastery and mark spaced repetition as done
+                const ld=learningData[activeReview.topic];
+                if(ld){
+                  const updatedLd={...ld,spacedRepetition:{...ld.spacedRepetition,reviews:{...ld.spacedRepetition.reviews,[activeReview.reviewLabel]:{...ld.spacedRepetition.reviews[activeReview.reviewLabel],completed:true}}}};
+                  // Update section progress with review results
+                  if(result.quizScore!=null&&updatedLd.sections?.[activeReview.secIdx]?.generated){
+                    const sec=updatedLd.sections[activeReview.secIdx];
+                    const ext=sec.generated.progress?.externalTests||{c:0,t:0};
+                    const totalCorrect=newResults.reduce((a,r)=>a+(r.correct||0),0);
+                    const totalQ=newResults.reduce((a,r)=>a+(r.total||0),0);
+                    if(totalQ>0){
+                      const newExt={c:ext.c+totalCorrect,t:ext.t+totalQ};
+                      updatedLd.sections[activeReview.secIdx]={...sec,generated:{...sec.generated,progress:{...sec.generated.progress,externalTests:newExt}}};
+                    }
+                  }
+                  saveLearningData(activeReview.topic,updatedLd);
+                }
+                markReviewDone();
+              }else{
+                setActiveReview(prev=>({...prev,currentItem:nextItem,results:newResults}));
+              }
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── Review gate screen ────────────────────────────────────────────────────
+  if(hasPendingReviews&&!reviewAlreadyDone) return(
+    <ReviewGateScreen
+      pendingReviews={pendingReviews}
+      hasRedReviews={hasRedReviews}
+      onStartReview={startReview}
+      onSkip={markReviewDone}
+    />
+  );
+
   const navItems=[
     {id:'panel',label:'Panel'},
-    {id:'conocimiento',label:'Conocimiento'},
+    {id:'estudio',label:'Estudio'},
     {id:'test',label:'Test'},
   ];
 
   // Normalize legacy tab names
   const normalizedTab=
     tab==='dashboard'||tab==='stats'||tab==='planificador'?'panel':
-    tab==='temario'||tab==='estudio'?'conocimiento':
+    tab==='temario'||tab==='estudio'?'estudio':
     tab==='test'||tab==='simulacro'||tab==='flashcard'||tab==='practica'||tab==='banco'?'test':
     tab==='ajustes'?'ajustes':tab;
 
@@ -764,13 +909,30 @@ export default function App(){
         </div>
       </div>
 
+      {/* Level-up celebration overlay */}
+      {levelUpMsg&&(
+        <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.7)',backdropFilter:'blur(4px)'}} onClick={()=>setLevelUpMsg(null)}>
+          <div style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:16,padding:'40px 48px',textAlign:'center',maxWidth:400}}>
+            <div style={{fontSize:56,marginBottom:12}}>{levelUpMsg.emoji}</div>
+            <div style={{fontSize:20,fontWeight:700,color:T.text,marginBottom:4}}>¡Nivel alcanzado!</div>
+            <div style={{fontSize:14,color:T.muted,marginBottom:12}}>{levelUpMsg.topic}</div>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:12,marginBottom:16}}>
+              <span style={{fontSize:12,color:T.dim}}>{levelUpMsg.oldLevel}</span>
+              <span style={{color:T.green,fontSize:16}}>→</span>
+              <span style={{fontSize:14,fontWeight:700,color:T.green}}>{levelUpMsg.newLevel}</span>
+            </div>
+            <div style={{fontSize:12,color:T.dim}}>Toca para continuar</div>
+          </div>
+        </div>
+      )}
+
       <div style={{padding:'32px 40px'}}>
         {topicView?(
           <TopicPage topic={topicView} onBack={()=>setTopicView(null)} stats={stats} qs={qs} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} topicNotes={topicNotes} saveTopicNote={saveTopicNote} learningData={learningData} saveLearningData={saveLearningData} sr={sr} recordAnswer={recordAnswer} goToBank={goToBank} setTab={setTab}/>
         ):(
           <>
-            {normalizedTab==='panel'&&<Dashboard {...shared} examDate={examDate} sessions={sessions} learningData={learningData} setTopicView={setTopicView} setExamDate={setExamDate}/>}
-            {normalizedTab==='conocimiento'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setTopicView(t);}} topicNotes={topicNotes} saveTopicNote={saveTopicNote} setTopicView={setTopicView} learningData={learningData}/>}
+            {normalizedTab==='panel'&&<Dashboard {...shared} examDate={examDate} sessions={sessions} learningData={learningData} setTopicView={setTopicView} setExamDate={setExamDate} streakData={streakData}/>}
+            {normalizedTab==='estudio'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setTopicView(t);}} topicNotes={topicNotes} saveTopicNote={saveTopicNote} setTopicView={setTopicView} learningData={learningData}/>}
             {normalizedTab==='test'&&<TestTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs} bankPreselect={bankPreselect} onBankPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} stats={stats} learningData={learningData}/>}
           </>
         )}
@@ -836,6 +998,195 @@ function Ajustes({apiKey,onSave}){
       </div>
     </div>
   );
+}
+
+// ── ReviewGateScreen — Blocking review screen at startup ────────────────────
+function ReviewGateScreen({pendingReviews,hasRedReviews,onStartReview,onSkip}){
+  const [skipTimer,setSkipTimer]=useState(hasRedReviews?-1:10);
+  useEffect(()=>{
+    if(hasRedReviews||skipTimer<=0)return;
+    const t=setTimeout(()=>setSkipTimer(s=>s-1),1000);
+    return()=>clearTimeout(t);
+  },[skipTimer,hasRedReviews]);
+
+  return(
+    <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <div style={{maxWidth:520,width:'100%',padding:'0 24px'}}>
+        <div style={{textAlign:'center',marginBottom:32}}>
+          <div style={{width:56,height:56,borderRadius:14,background:hasRedReviews?T.redS:T.surface,border:`0.5px solid ${hasRedReviews?T.red:T.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,margin:'0 auto 16px'}}>{hasRedReviews?'🚨':'📋'}</div>
+          <h1 style={{fontSize:22,fontWeight:700,margin:'0 0 8px',color:T.text}}>Sesión de hoy</h1>
+          <p style={{color:T.dim,margin:0,fontSize:13,lineHeight:1.6}}>
+            {hasRedReviews
+              ?'Tienes repasos urgentes. Completarlos ahora evitará que olvides lo que ya has aprendido.'
+              :`${pendingReviews.length} repaso${pendingReviews.length>1?'s':''} pendiente${pendingReviews.length>1?'s':''}. Sesión rápida de 10-15 minutos.`}
+          </p>
+        </div>
+
+        <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:24}}>
+          {pendingReviews.map((r,i)=>{
+            const urgencyColor=r.mastery<60?T.red:r.mastery<80?T.amber:T.green;
+            return(
+              <Card key={i} style={{padding:'14px 18px',borderLeft:`2px solid ${urgencyColor}`,cursor:'pointer'}} onClick={()=>onStartReview(r)}>
+                <div style={{display:'flex',alignItems:'center',gap:12}}>
+                  <span style={{width:10,height:10,borderRadius:'50%',background:urgencyColor,flexShrink:0}}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,color:T.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.topic}</div>
+                    <div style={{fontSize:11,color:T.dim}}>{r.label} · {r.worstSection?r.worstSection.title:'—'}</div>
+                  </div>
+                  <div style={{textAlign:'right',flexShrink:0}}>
+                    <div style={{fontSize:16,fontWeight:700,color:urgencyColor}}>{r.mastery}%</div>
+                    <div style={{fontSize:9,color:T.dim}}>{r.mastery<60?'Urgente':r.mastery<80?'Refuerzo':'Mantenimiento'}</div>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+
+        <div style={{display:'flex',flexDirection:'column',gap:8,alignItems:'center'}}>
+          <button onClick={()=>onStartReview(pendingReviews[0])}
+            style={{width:'100%',background:T.green,color:'#000',border:'none',borderRadius:8,padding:'14px',fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>
+            Empezar sesión
+          </button>
+          {!hasRedReviews&&(
+            <button onClick={skipTimer<=0?onSkip:undefined} disabled={skipTimer>0}
+              style={{background:'transparent',border:`0.5px solid ${T.border}`,borderRadius:8,padding:'10px 20px',fontSize:12,color:skipTimer>0?T.dim:T.muted,cursor:skipTimer>0?'not-allowed':'pointer',fontFamily:FONT}}>
+              {skipTimer>0?`Saltar repasos (${skipTimer}s)`:'Saltar repasos'}
+            </button>
+          )}
+          {hasRedReviews&&<div style={{fontSize:11,color:T.red,textAlign:'center',lineHeight:1.5,marginTop:4}}>No puedes saltar repasos con dominio en rojo.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ReviewPhase — Condensed review experience ───────────────────────────────
+function ReviewPhase({item,onComplete}){
+  const [current,setCurrent]=useState(0);
+  const [answers,setAnswers]=useState({});
+  const [revealed,setRevealed]=useState({});
+  const [flipped,setFlipped]=useState(false);
+  const [fcKnown,setFcKnown]=useState(new Set());
+  const [done,setDone]=useState(false);
+
+  if(!item)return null;
+
+  // Quiz type (post-test questions)
+  if(item.type==='quiz'){
+    const qs=item.questions;
+    if(done){
+      const correct=Object.entries(answers).filter(([i,a])=>a===qs[parseInt(i)]?.correct).length;
+      const score=Math.round(correct/qs.length*100);
+      return(
+        <Card style={{padding:'24px',textAlign:'center'}}>
+          <div style={{fontSize:40,marginBottom:12}}>{score>=70?'✅':'📚'}</div>
+          <div style={{fontSize:22,fontWeight:700,color:score>=70?T.green:score>=50?T.amber:T.red}}>{score}%</div>
+          <div style={{fontSize:13,color:T.text,marginBottom:4}}>{correct} de {qs.length} correctas</div>
+          <div style={{fontSize:12,color:T.dim,marginBottom:16}}>{item.title}</div>
+          <button onClick={()=>onComplete({quizScore:score,correct,total:qs.length})} style={{background:T.green,color:'#000',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Continuar</button>
+        </Card>
+      );
+    }
+    const q=qs[current];if(!q)return null;
+    const isRevealed=revealed[current];
+    return(
+      <div>
+        <div style={{fontSize:12,fontWeight:600,color:T.dim,marginBottom:8}}>{item.title} — {current+1}/{qs.length}</div>
+        <Card style={{padding:'18px'}}>
+          <div style={{fontSize:13,color:T.text,lineHeight:1.7,marginBottom:14,fontWeight:500}}>{q.question}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {(q.options||[]).map((opt,j)=>{
+              const isSel=answers[current]===j;const isOk=j===q.correct;
+              let bg=T.card,bdr=T.border,col=T.text;
+              if(isRevealed&&isOk){bg=T.greenS;bdr=T.green;col=T.greenText;}
+              else if(isRevealed&&isSel&&!isOk){bg=T.redS;bdr=T.red;col=T.redText;}
+              else if(isSel){bg=T.blueS;bdr=T.blue;col=T.blueText;}
+              return <button key={j} onClick={()=>{if(!isRevealed){setAnswers(p=>({...p,[current]:j}));setRevealed(p=>({...p,[current]:true}));}}} disabled={isRevealed}
+                style={{background:bg,border:`0.5px solid ${bdr}`,borderRadius:8,padding:'10px 12px',fontSize:12,textAlign:'left',cursor:isRevealed?'default':'pointer',color:col,fontFamily:FONT}}>{opt}</button>;
+            })}
+          </div>
+          {isRevealed&&q.explanation&&<div style={{marginTop:10,padding:'8px 12px',background:T.blueS,borderRadius:8,fontSize:11,color:T.blueText,lineHeight:1.6,borderLeft:`2px solid ${T.blue}`}}>{q.explanation}</div>}
+          <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}>
+            {current<qs.length-1
+              ?<button onClick={()=>{setCurrent(c=>c+1);}} style={{background:'transparent',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'6px 16px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>Siguiente →</button>
+              :Object.keys(answers).length>=qs.length&&<button onClick={()=>setDone(true)} style={{background:T.green,color:'#000',border:'none',borderRadius:6,padding:'6px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Ver resultado</button>
+            }
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  // Flashcard type
+  if(item.type==='flashcards'){
+    const cards=item.cards;
+    if(current>=cards.length){
+      return(
+        <Card style={{padding:'24px',textAlign:'center'}}>
+          <div style={{fontSize:40,marginBottom:12}}>🃏</div>
+          <div style={{fontSize:16,fontWeight:700,color:T.text,marginBottom:4}}>{fcKnown.size} de {cards.length} dominadas</div>
+          <div style={{fontSize:12,color:T.dim,marginBottom:16}}>{item.title}</div>
+          <button onClick={()=>onComplete({flashcardsReviewed:cards.length,dominated:fcKnown.size})} style={{background:T.green,color:'#000',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Continuar</button>
+        </Card>
+      );
+    }
+    const card=cards[current];
+    return(
+      <div>
+        <div style={{fontSize:12,fontWeight:600,color:T.dim,marginBottom:8}}>{item.title} — {current+1}/{cards.length}</div>
+        <div onClick={()=>setFlipped(!flipped)} style={{background:flipped?T.tealS:T.surface,border:`0.5px solid ${flipped?T.teal:T.border}`,borderRadius:12,padding:'36px 24px',cursor:'pointer',textAlign:'center',minHeight:140,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}>
+          <div style={{fontSize:10,color:T.dim,marginBottom:8,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>{flipped?'Respuesta':'Pregunta'}</div>
+          <div style={{fontSize:14,color:flipped?T.tealText:T.text,fontWeight:600,lineHeight:1.6,maxWidth:450}}>{flipped?(card.back||'—'):(card.front||'—')}</div>
+        </div>
+        <div style={{display:'flex',justifyContent:'center',gap:8,marginTop:14}}>
+          <button onClick={()=>{setFcKnown(p=>{const n=new Set(p);n.add(current);return n;});setCurrent(c=>c+1);setFlipped(false);}} style={{background:T.greenS,border:`0.5px solid ${T.green}`,borderRadius:8,padding:'8px 18px',fontSize:12,cursor:'pointer',color:T.greenText,fontWeight:600,fontFamily:FONT}}>✓ La sé</button>
+          <button onClick={()=>{setCurrent(c=>c+1);setFlipped(false);}} style={{background:T.redS,border:`0.5px solid ${T.red}`,borderRadius:8,padding:'8px 18px',fontSize:12,cursor:'pointer',color:T.redText,fontWeight:600,fontFamily:FONT}}>✗ Repasar</button>
+        </div>
+      </div>
+    );
+  }
+
+  // Clinical case type
+  if(item.type==='clinical'){
+    const c=item.cases[0];if(!c)return null;
+    const isRev=revealed[0];
+    if(done){
+      const correct=answers[0]===c.correct;
+      return(
+        <Card style={{padding:'24px',textAlign:'center'}}>
+          <div style={{fontSize:40,marginBottom:12}}>{correct?'✅':'📚'}</div>
+          <div style={{fontSize:16,fontWeight:700,color:correct?T.green:T.red,marginBottom:16}}>{correct?'Correcto':'Incorrecto'}</div>
+          {c.discussion&&<div style={{fontSize:12,color:T.muted,lineHeight:1.6,marginBottom:16,textAlign:'left',background:T.surface,borderRadius:8,padding:'12px',border:`0.5px solid ${T.border}`}}>{c.discussion}</div>}
+          <button onClick={()=>onComplete({clinicalCorrect:correct?1:0,total:1,correct:correct?1:0})} style={{background:T.green,color:'#000',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Continuar</button>
+        </Card>
+      );
+    }
+    return(
+      <div>
+        <div style={{fontSize:12,fontWeight:600,color:T.dim,marginBottom:8}}>{item.title}</div>
+        <Card style={{padding:'18px',borderLeft:`2px solid ${T.orange}`}}>
+          <div style={{fontSize:10,fontWeight:700,color:T.orange,marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Caso clínico</div>
+          <div style={{fontSize:13,color:T.text,lineHeight:1.8,marginBottom:14}}>{c.presentation}</div>
+          <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>{c.question}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {(c.options||[]).map((opt,j)=>{
+              const isSel=answers[0]===j;const isOk=j===c.correct;
+              let bg=T.card,bdr=T.border,col=T.text;
+              if(isRev&&isOk){bg=T.greenS;bdr=T.green;col=T.greenText;}
+              else if(isRev&&isSel&&!isOk){bg=T.redS;bdr=T.red;col=T.redText;}
+              else if(isSel){bg=T.orangeS;bdr=T.orange;col=T.orangeText;}
+              return <button key={j} onClick={()=>{if(!isRev){setAnswers({0:j});setRevealed({0:true});}}} disabled={isRev}
+                style={{background:bg,border:`0.5px solid ${bdr}`,borderRadius:8,padding:'10px 12px',fontSize:12,textAlign:'left',cursor:isRev?'default':'pointer',color:col,fontFamily:FONT}}>{opt}</button>;
+            })}
+          </div>
+          {isRev&&<div style={{display:'flex',justifyContent:'flex-end',marginTop:12}}><button onClick={()=>setDone(true)} style={{background:T.green,color:'#000',border:'none',borderRadius:6,padding:'6px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Ver resultado</button></div>}
+        </Card>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // ── TestTab — Test OPE + Simulacro + Flashcards + Banco (3-tab architecture) ─
@@ -1091,31 +1442,38 @@ function Sel({value,onChange,children,style:st}){return <select value={value} on
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
-function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,sessions,learningData,setTopicView,setExamDate}){
+function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,sessions,learningData,setTopicView,setExamDate,streakData}){
   const totalA=Object.values(stats).reduce((a,b)=>a+b.t,0);
   const totalC=Object.values(stats).reduce((a,b)=>a+b.c,0);
   const acc=totalA?Math.round(totalC/totalA*100):0;
   const studied=ALL_TOPICS.filter(t=>stats[t]?.t>0).length;
   const dominated=ALL_TOPICS.filter(t=>getStatus(t,stats)==='dominado').length;
   const daysLeft=examDate?Math.max(0,Math.ceil((new Date(examDate).setHours(23,59,59)-Date.now())/86400000)):null;
-  // Streak: count consecutive days with sessions
-  const streak=(()=>{let d=0;const today=new Date();for(let i=0;i<30;i++){const day=new Date(today);day.setDate(day.getDate()-i);const ds=day.toISOString().slice(0,10);if(sessions.some(s=>s.date?.slice(0,10)===ds))d++;else if(i>0)break;}return d;})();
-  // Global mastery from learning data
+  const streak=streakData?.current||0;
+  const streakMax=streakData?.max||0;
+  const streakHito=streak>=100?'🏆 100 días':streak>=30?'🔥 30 días':streak>=7?'⭐ 7 días':null;
   const allLS=Object.values(learningData||{}).map(getLearningStatus).filter(ls=>ls.status!=='sinEmpezar');
   const globalMastery=allLS.length?Math.round(allLS.reduce((a,ls)=>a+ls.mastery,0)/allLS.length):0;
+  // Find best topic
+  const bestTopic=allLS.length?Object.entries(learningData||{}).map(([t,d])=>({t,m:getLearningStatus(d).mastery})).filter(x=>x.m>0).sort((a,b)=>b.m-a.m)[0]:null;
 
   return(
     <div>
-      {/* Header: greeting + date + streak */}
+      {/* Header + streak */}
       <div style={{marginBottom:24}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:12}}>
           <div>
             <h1 style={{fontSize:24,fontWeight:700,margin:'0 0 4px',color:T.text,letterSpacing:-0.5}}>Sesión de estudio</h1>
             <p style={{color:T.dim,margin:0,fontSize:13}}>{new Date().toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long',year:'numeric'})} · {totalA>0?`${totalA} preg. · ${acc}% aciertos`:'Empieza tu primera sesión'}</p>
           </div>
-          <div style={{display:'flex',gap:12,alignItems:'center'}}>
-            {streak>0&&<div style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:12,padding:'10px 18px',textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:T.green,lineHeight:1}}>{streak}</div><div style={{fontSize:10,color:T.dim,marginTop:2}}>días racha</div></div>}
-            {daysLeft!==null&&<div style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:12,padding:'10px 18px',textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:daysLeft<30?T.red:daysLeft<90?T.amber:T.blue,lineHeight:1}}>{daysLeft}</div><div style={{fontSize:10,color:T.dim,marginTop:2}}>días OPE</div></div>}
+          <div style={{display:'flex',gap:10,alignItems:'center'}}>
+            {/* Streak — highlighted */}
+            <div style={{background:streak>0?T.surface:T.bg,border:`0.5px solid ${streak>0?T.green+'40':T.border}`,borderRadius:12,padding:'12px 20px',textAlign:'center',minWidth:80}}>
+              <div style={{fontSize:32,fontWeight:700,color:streak>0?T.green:T.dim,lineHeight:1}}>🔥 {streak}</div>
+              <div style={{fontSize:10,color:T.dim,marginTop:3}}>{streak===1?'día racha':'días racha'}</div>
+              {streakHito&&<div style={{fontSize:9,color:T.amber,fontWeight:700,marginTop:2}}>{streakHito}</div>}
+            </div>
+            {daysLeft!==null&&<div style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:12,padding:'12px 18px',textAlign:'center'}}><div style={{fontSize:28,fontWeight:700,color:daysLeft<30?T.red:daysLeft<90?T.amber:T.blue,lineHeight:1}}>{daysLeft}</div><div style={{fontSize:10,color:T.dim,marginTop:2}}>días OPE</div></div>}
           </div>
         </div>
       </div>
@@ -1125,7 +1483,7 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
         <Card style={{padding:'16px',textAlign:'center'}}>
           <div style={{fontSize:28,fontWeight:700,color:T.green,lineHeight:1}}>{dominated}</div>
           <div style={{fontSize:11,color:T.dim,marginTop:4}}>Temas dominados</div>
-          <PBar pct={dominated/ALL_TOPICS.length*100} color={T.green} height={3}/>
+          <div style={{marginTop:6}}><PBar pct={dominated/ALL_TOPICS.length*100} color={T.green} height={3}/></div>
         </Card>
         <Card style={{padding:'16px',textAlign:'center'}}>
           <div style={{fontSize:28,fontWeight:700,color:dueQs.length>0?T.amber:T.dim,lineHeight:1}}>{dueQs.length}</div>
@@ -1134,6 +1492,7 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
         <Card style={{padding:'16px',textAlign:'center'}}>
           <div style={{fontSize:28,fontWeight:700,color:globalMastery>=70?T.green:globalMastery>=40?T.amber:T.dim,lineHeight:1}}>{globalMastery}%</div>
           <div style={{fontSize:11,color:T.dim,marginTop:4}}>Dominio global</div>
+          <div style={{fontSize:9,color:getMasteryLevel(globalMastery).color,fontWeight:700,marginTop:2}}>{getMasteryLevel(globalMastery).emoji} {getMasteryLevel(globalMastery).name}</div>
         </Card>
       </div>
 
@@ -1143,6 +1502,27 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
         <Btn onClick={()=>setTab('test')} disabled={testQs.length===0}>🧪 Test</Btn>
         <Btn onClick={()=>setTab('flashcard')} disabled={dueQs.length===0} variant="teal">🃏 Repasar {dueQs.length>0?`(${dueQs.length})`:''}</Btn>
       </div>
+
+      {/* Stats section */}
+      <Card style={{padding:'16px 20px',marginBottom:16}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:10}}>📊 Estadísticas</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(120px,1fr))',gap:8}}>
+          {[
+            {l:'Racha actual',v:streak,c:T.green,u:'días'},
+            {l:'Racha máxima',v:streakMax,c:T.amber,u:'días'},
+            {l:'Preguntas',v:totalA,c:T.blue,u:'respondidas'},
+            {l:'Sesiones',v:sessions.length,c:T.teal,u:'completadas'},
+            {l:'Temas vistos',v:`${studied}/60`,c:T.purple,u:''},
+            {l:'Mejor tema',v:bestTopic?bestTopic.m+'%':'—',c:T.green,u:bestTopic?bestTopic.t.split('.')[0]+'.':''},
+          ].map(s=>(
+            <div key={s.l} style={{padding:'8px',borderRadius:8,background:T.bg,border:`0.5px solid ${T.border}`}}>
+              <div style={{fontSize:18,fontWeight:700,color:s.c,lineHeight:1}}>{s.v}</div>
+              <div style={{fontSize:10,color:T.dim,marginTop:2}}>{s.l}</div>
+              {s.u&&<div style={{fontSize:9,color:T.dim}}>{s.u}</div>}
+            </div>
+          ))}
+        </div>
+      </Card>
 
       {/* Repasos urgentes */}
       {(()=>{
@@ -1376,11 +1756,11 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                               style={{background:splittingKey===pKey?T.amberS:hasPdfs?T.greenS:T.blueS,border:`1px solid ${splittingKey===pKey?T.amber:hasPdfs?'#1a3a1a':T.border2}`,borderRadius:20,padding:'3px 10px',fontSize:10,cursor:splittingKey===pKey?'wait':'pointer',color:splittingKey===pKey?T.amberText:hasPdfs?T.greenText:T.blueText,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>
                               {splittingKey===pKey?'⏳…':hasPdfs?`📄 ${files.length}`:'+ PDF'}
                             </button>
-                            {ls&&ls.status!=='sinEmpezar'&&(
-                              <span style={{background:ls.color+'18',border:`1px solid ${ls.color}`,borderRadius:20,padding:'3px 8px',fontSize:10,color:ls.color,fontWeight:700,fontFamily:FONT,whiteSpace:'nowrap'}}>
-                                🧠 {ls.label}
+                            {ls&&ls.status!=='sinEmpezar'&&(()=>{const lvl=getMasteryLevel(ls.mastery);return(
+                              <span style={{background:lvl.color+'18',border:`0.5px solid ${lvl.color}`,borderRadius:20,padding:'3px 8px',fontSize:10,color:lvl.color,fontWeight:700,fontFamily:FONT,whiteSpace:'nowrap'}}>
+                                {lvl.emoji} {lvl.name}
                               </span>
-                            )}
+                            );})()}
                           </div>
                         </div>
                         {hasPdfs&&(
@@ -1758,7 +2138,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
               {topicStats&&<span style={{fontSize:11,color:T.muted}}>{topicStats.c}/{topicStats.t} ({Math.round(topicStats.c/topicStats.t*100)}%)</span>}
               {topicQs.length>0&&<span style={{fontSize:11,color:T.blue,background:T.blueS,padding:'2px 8px',borderRadius:10,fontWeight:600}}>{topicQs.length} preg.</span>}
               {files.length>0&&<span style={{fontSize:11,color:T.greenText,background:T.greenS,padding:'2px 8px',borderRadius:10,fontWeight:600}}>📄 {files.length} PDFs</span>}
-              {ls&&ls.status!=='sinEmpezar'&&<span style={{fontSize:11,color:ls.color,background:ls.color+'18',padding:'2px 8px',borderRadius:10,fontWeight:600}}>🧠 {ls.label}</span>}
+              {ls&&ls.status!=='sinEmpezar'&&(()=>{const lvl=getMasteryLevel(ls.mastery);return <span style={{fontSize:11,color:lvl.color,background:lvl.color+'18',padding:'2px 8px',borderRadius:10,fontWeight:600}}>{lvl.emoji} {lvl.name} · {ls.mastery}%</span>;})()}
             </div>
           </div>
         </div>
