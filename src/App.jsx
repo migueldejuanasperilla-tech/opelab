@@ -1879,6 +1879,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
   const tabs=[
     {id:'temario',label:'Temario',icon:'📋',color:T.blue},
     {id:'aprendizaje',label:'Aprendizaje',icon:'🧠',color:T.purple},
+    {id:'apuntes',label:'Apuntes',icon:'📖',color:T.teal},
     {id:'preguntas',label:'Preguntas',icon:'🧪',color:T.orange},
   ];
   // Collect ALL questions for this topic: from question bank + from learning phases
@@ -2014,7 +2015,151 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
 
       {activeTab==='aprendizaje'&&<AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData} pdfMeta={pdfMeta}/>}
 
-      {activeTab==='preguntas'&&<TopicPreguntasTab topic={topic} allQuestions={allTopicQuestions} topicTag={topicNum?`T${topicNum}`:''} stats={stats} saveQs={saveQs} qs={qs} apiKey={apiKey}/>}
+      {activeTab==='apuntes'&&<TopicApuntesTab topic={topic} learning={learning} saveLearningData={saveLearningData}/>}
+
+      {activeTab==='preguntas'&&<TopicPreguntasTab topic={topic} allQuestions={allTopicQuestions} topicTag={topicNum?`T${topicNum}`:''} stats={stats} saveQs={saveQs} qs={qs} apiKey={apiKey} learning={learning}/>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// APUNTES TAB — apuntes auto-generados desde el contenido de Aprendizaje
+// ═══════════════════════════════════════════════════════════════════════════
+function TopicApuntesTab({topic,learning,saveLearningData}){
+  const [generating,setGenerating]=useState(false);
+  const [genMsg,setGenMsg]=useState('');
+  const [editIdx,setEditIdx]=useState(null);
+  const [editText,setEditText]=useState('');
+  const [openSec,setOpenSec]=useState(0);
+
+  const notes=learning?.notes||[];
+  const hasSections=(learning?.sections||[]).some(s=>s.generated);
+
+  // Collect all concepts from all sections/subsections
+  const collectSectionsData=()=>{
+    const result=[];
+    (learning?.sections||[]).forEach(sec=>{
+      const concepts=sec.generated?.conceptMap||[];
+      const subs=(sec.subsections||[]).flatMap(sub=>sub.generated?.conceptMap||[]);
+      if(concepts.length||subs.length) result.push({title:sec.title,concepts:[...concepts,...subs]});
+    });
+    return result;
+  };
+
+  const generateNotes=async()=>{
+    const sectionsData=collectSectionsData();
+    if(!sectionsData.length){setGenMsg('Genera aprendizaje en al menos una sección primero.');return;}
+    setGenerating(true);setGenMsg('Sintetizando apuntes de todas las secciones...');
+    try{
+      const res=await fetch('/api/anthropic',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:`Eres un experto en bioquímica clínica preparando apuntes de estudio para la oposición FEA Laboratorio Clínico (SESCAM 2025). IDIOMA: Todo en español. Responde SOLO con JSON válido.
+
+TEMA: "${topic}"
+
+A partir de los conceptos extraídos de cada sección, genera unos apuntes estructurados completos.
+
+SECCIONES Y CONCEPTOS:
+${JSON.stringify(sectionsData.slice(0,20))}
+
+JSON:
+{"notes":[{"section":"Título de la sección","content":"Texto estructurado con todos los conceptos clave, valores numéricos con unidades, mecanismos paso a paso, relaciones causales y perlas clínicas. Incluye TODOS los valores, clasificaciones y criterios diagnósticos extraídos."}]}
+
+Requisitos:
+- Una entrada por cada sección proporcionada, en el mismo orden
+- Incluir TODOS los conceptos, valores y mecanismos
+- Valores numéricos siempre con unidades
+- Mecanismos descritos paso a paso
+- Perlas clínicas destacadas
+- Lenguaje técnico de especialista FEA
+- Mínimo 200 palabras por sección`}]})
+      });
+      if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      const data=await res.json();
+      const text=(data.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
+      const parsed=JSON.parse(repairJSON(text));
+      const generatedNotes=(parsed.notes||parsed).map(n=>({section:n.section||'Sin título',content:n.content||'',generatedAt:new Date().toISOString()}));
+      await saveLearningData(topic,{...learning,notes:generatedNotes});
+      setGenMsg('');
+    }catch(e){setGenMsg(`Error: ${e.message}`);}
+    setGenerating(false);
+  };
+
+  const saveEdit=(idx)=>{
+    const updNotes=notes.map((n,i)=>i===idx?{...n,content:editText,editedAt:new Date().toISOString()}:n);
+    saveLearningData(topic,{...learning,notes:updNotes});
+    setEditIdx(null);
+  };
+
+  const exportPdf=()=>{
+    const content=notes.map(n=>`\n${'═'.repeat(60)}\n${n.section}\n${'═'.repeat(60)}\n\n${n.content}\n`).join('\n');
+    const full=`APUNTES: ${topic}\nGenerado: ${new Date().toLocaleDateString('es-ES')}\n${content}`;
+    const blob=new Blob([full],{type:'text/plain;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=`apuntes_${topic.split('.')[0]}.txt`;a.click();URL.revokeObjectURL(url);
+  };
+
+  if(!notes.length) return(
+    <Card style={{padding:'24px'}}>
+      <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:6}}>📖 Apuntes del tema</div>
+      <div style={{fontSize:12,color:T.dim,marginBottom:16,lineHeight:1.6}}>
+        {hasSections
+          ?'Genera apuntes automáticamente a partir de toda la información extraída en las secciones de Aprendizaje.'
+          :'Primero genera el aprendizaje en al menos una sección. Los apuntes se sintetizan a partir de los conceptos extraídos.'}
+      </div>
+      <button onClick={generateNotes} disabled={generating||!hasSections}
+        style={{background:generating?T.surface:(!hasSections?T.surface:T.teal),color:generating?T.dim:(!hasSections?T.dim:'#000'),border:`0.5px solid ${generating||!hasSections?T.border:T.teal}`,borderRadius:8,padding:'10px 22px',fontSize:13,fontWeight:700,cursor:generating||!hasSections?'not-allowed':'pointer',fontFamily:FONT}}>
+        {generating?'⏳ Generando apuntes...':'📖 Generar apuntes del tema'}
+      </button>
+      {genMsg&&<div style={{marginTop:10,fontSize:12,color:genMsg.startsWith('Error')?T.red:T.muted}}>{genMsg}</div>}
+    </Card>
+  );
+
+  return(
+    <div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+        <div>
+          <div style={{fontSize:15,fontWeight:700,color:T.text}}>📖 Apuntes del tema</div>
+          <div style={{fontSize:11,color:T.dim}}>{notes.length} secciones · Generado el {fmtDate(notes[0]?.generatedAt)}</div>
+        </div>
+        <div style={{display:'flex',gap:6}}>
+          <button onClick={exportPdf} style={{fontSize:11,background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 12px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>📥 Exportar</button>
+          <button onClick={generateNotes} disabled={generating} style={{fontSize:11,background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 12px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>{generating?'⏳...':'🔄 Regenerar'}</button>
+        </div>
+      </div>
+
+      {/* Section navigation */}
+      <div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap'}}>
+        {notes.map((n,i)=>(
+          <button key={i} onClick={()=>setOpenSec(i)} style={{padding:'4px 10px',fontSize:10,fontWeight:openSec===i?700:500,color:openSec===i?T.teal:T.muted,background:openSec===i?T.tealS:T.surface,border:`0.5px solid ${openSec===i?T.teal:T.border}`,borderRadius:6,cursor:'pointer',fontFamily:FONT}}>
+            {n.section}
+          </button>
+        ))}
+      </div>
+
+      {/* Active section content */}
+      {notes.map((n,i)=>{
+        if(i!==openSec)return null;
+        const isEditing=editIdx===i;
+        return(
+          <Card key={i} style={{padding:'18px 22px'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+              <div style={{fontSize:14,fontWeight:700,color:T.text}}>{n.section}</div>
+              <button onClick={()=>{if(isEditing){saveEdit(i);}else{setEditIdx(i);setEditText(n.content);}}}
+                style={{fontSize:10,background:isEditing?T.teal:T.surface,color:isEditing?'#000':T.muted,border:`0.5px solid ${isEditing?T.teal:T.border}`,borderRadius:6,padding:'3px 10px',cursor:'pointer',fontFamily:FONT,fontWeight:600}}>
+                {isEditing?'💾 Guardar':'✏️ Editar'}
+              </button>
+            </div>
+            {isEditing?(
+              <textarea value={editText} onChange={e=>setEditText(e.target.value)}
+                style={{width:'100%',minHeight:300,background:T.bg,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'12px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.8}}/>
+            ):(
+              <div style={{fontSize:13,color:T.text,lineHeight:1.9,whiteSpace:'pre-wrap'}}>{n.content}</div>
+            )}
+            {n.editedAt&&<div style={{fontSize:10,color:T.dim,marginTop:8}}>Editado el {fmtDate(n.editedAt)}</div>}
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -2022,7 +2167,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
 // ═══════════════════════════════════════════════════════════════════════════
 // PREGUNTAS TAB — todas las preguntas del tema con metadatos y generación
 // ═══════════════════════════════════════════════════════════════════════════
-function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey}){
+function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,learning}){
   const [filter,setFilter]=useState({section:'',type:'',difficulty:''});
   const [generating,setGenerating]=useState(false);
   const [genMsg,setGenMsg]=useState('');
@@ -2042,24 +2187,37 @@ function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey})
   // Get user stats for each question
   const getQStats=(qid)=>{const s=stats[topic];return s?{pct:s.t?Math.round(s.c/s.t*100):0}:null;};
 
+  // Build context from notes or learning concepts
+  const sourceContext=useMemo(()=>{
+    // Prefer notes if available
+    if(learning?.notes?.length) return learning.notes.map(n=>`SECCIÓN: ${n.section}\n${n.content}`).join('\n\n').slice(0,15000);
+    // Fallback: concepts from learning sections
+    const concepts=[];
+    (learning?.sections||[]).forEach(sec=>{
+      (sec.generated?.conceptMap||[]).forEach(c=>concepts.push(`[${sec.title}] ${c.t}: ${c.d}`));
+      (sec.subsections||[]).forEach(sub=>(sub.generated?.conceptMap||[]).forEach(c=>concepts.push(`[${sec.title}>${sub.title}] ${c.t}: ${c.d}`)));
+    });
+    return concepts.length?concepts.join('\n').slice(0,15000):'';
+  },[learning]);
+
   // Generate 20 additional questions
   const generateMore=async()=>{
     setGenerating(true);setGenMsg('Generando 20 preguntas adicionales...');
     try{
       const SYS='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). IDIOMA: Toda tu respuesta debe estar en español. Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
+      const ctxBlock=sourceContext?`\n\nCONTENIDO DEL TEMA (apuntes estructurados):\n${sourceContext}`:'';
       const res=await fetch('/api/anthropic',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:`${SYS}\n\nGenera exactamente 20 preguntas tipo test sobre el tema "${topic}" para la oposición FEA Laboratorio Clínico SESCAM 2025.\n\nMezcla niveles de dificultad y tipos (concepto, mecanismo, valor, clínico, aplicación).\n\nJSON:\n{"questions":[{"id":"new1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta","tema":"${topicTag}","seccion":"General","fase":"extra","fechaGeneracion":"${new Date().toISOString().slice(0,10)}"}]}\n\n- 20 preguntas exactas\n- Las opciones incluyen la letra (A, B, C, D)\n- Nivel de oposición FEA`}]})
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:`${SYS}\n\nGenera exactamente 20 preguntas tipo test sobre el tema "${topic}" para la oposición FEA Laboratorio Clínico SESCAM 2025.${ctxBlock}\n\nMezcla niveles de dificultad y tipos (concepto, mecanismo, valor, clínico, aplicación). Las preguntas deben estar basadas en el contenido proporcionado.\n\nJSON:\n{"questions":[{"id":"new1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta","tema":"${topicTag}","seccion":"General","fase":"extra","fechaGeneracion":"${new Date().toISOString().slice(0,10)}"}]}\n\n- 20 preguntas exactas\n- Las opciones incluyen la letra (A, B, C, D)\n- Nivel de oposición FEA`}]})
       });
       if(!res.ok)throw new Error(`HTTP ${res.status}`);
       const data=await res.json();
       const text=(data.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
       const parsed=JSON.parse(repairJSON(text));
       const newQs=(parsed.questions||parsed).map(q=>({...q,id:uid(),type:'test',topic,tema:topicTag,fase:'extra',fechaGeneracion:new Date().toISOString().slice(0,10)}));
-      // Add to global question bank
       const updated=[...qs,...newQs];
       await saveQs(updated);
-      setGenMsg(`✓ ${newQs.length} preguntas añadidas`);
+      setGenMsg(`✓ ${newQs.length} preguntas añadidas${sourceContext?' (basadas en apuntes)':''}`);
       setTimeout(()=>setGenMsg(''),3000);
     }catch(e){setGenMsg(`Error: ${e.message}`);}
     setGenerating(false);
@@ -2390,6 +2548,9 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
         </div>
         {sections.length>0&&<PBar pct={ls.coverage} color={ls.color}/>}
         {sections.length===0&&<div style={{fontSize:12,color:T.muted,lineHeight:1.6}}>Añade secciones del tema y pega el texto de cada una. Cada sección genera sus propias 6 fases de aprendizaje.</div>}
+        {sections.some(s=>s.generated)&&!data.notes?.length&&(
+          <div style={{marginTop:8,fontSize:11,color:T.teal}}>Genera apuntes del tema desde la pestaña Apuntes para sintetizar todo el contenido.</div>
+        )}
       </Card>
 
       {/* Section accordions */}
