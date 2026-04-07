@@ -1276,7 +1276,7 @@ function RadioGroup({options,value,onChange}){
   </div>;
 }
 function PBar({pct,color,height=4}){const c=color||(pct>=70?T.green:pct>=50?T.amber:T.red);return <div style={{background:'#1e1e1e',borderRadius:4,height}}><div style={{background:c,width:`${Math.min(pct,100)}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>;}
-function Card({children,style:st}){return <div style={{background:T.surface,borderRadius:12,border:`0.5px solid ${T.border}`,...st}}>{children}</div>;}
+function Card({children,style:st,...rest}){return <div style={{background:T.surface,borderRadius:12,border:`0.5px solid ${T.border}`,...st}} {...rest}>{children}</div>;}
 function Sel({value,onChange,children,style:st}){return <select value={value} onChange={e=>onChange(e.target.value)} style={{width:'100%',background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',marginBottom:14,fontFamily:FONT,boxShadow:sh.sm,...st}}>{children}</select>;}
 
 // ═══════════════════════════════════════════════════════════════════════════
