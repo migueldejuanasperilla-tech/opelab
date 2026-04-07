@@ -430,59 +430,6 @@ const TOPIC_OFFICIAL={
   59:`Estudio de las enfermedades autoinmunes sistémicas. Fisiopatología. Características clínicas y bioquímicas para el diagnóstico y seguimiento. Autoanticuerpos en enfermedades autoinmunes sistémicas: métodos de determinación, algoritmos diagnósticos y correlación clínico-patológica.`,
   60:`Inmunodeficiencias congénitas y adquiridas. Papel del laboratorio clínico en su estudio.`,
 };
-function buildStudyPrompt(topic, hasPdf=false){
-  const refs=TOPIC_REFS[topic];
-  const refsStr=refs&&refs.tietz!=='—'?`Capítulos de referencia: Tietz ${refs.tietz} · Henry ${refs.henry}.`:'';
-
-  const source=hasPdf
-    ?`Tienes delante el capítulo correspondiente del Tietz y/o Henry. Trabaja EXCLUSIVAMENTE con el contenido del documento adjunto — extrae los subapartados, párrafos y conceptos tal y como aparecen en el texto original. No añadas conocimiento externo.`
-    :`Actúa como si tuvieras delante los capítulos correspondientes del Tietz Textbook of Laboratory Medicine, 7ª ed. (Rifai et al., 2022) y del Henry El Laboratorio en el Diagnóstico Clínico, 23ª ed. (McPherson & Pincus, 2022). ${refsStr} Reproduce fielmente el nivel de detalle y rigor técnico de esos libros.`;
-
-  return `Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). Tu misión es analizar en profundidad el siguiente tema y generar un resumen de estudio altamente estructurado y conceptual:
-
-TEMA: "${topic}"
-
-FUENTE: ${source}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PROCESO DE ANÁLISIS — sigue estos pasos en orden
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-PASO 1 — IDENTIFICAR SUBAPARTADOS
-Identifica los subapartados o secciones naturales del capítulo (como aparecen en el libro o como los estructuraría un experto). Por ejemplo: Fisiología/Bioquímica, Métodos analíticos, Valores de referencia, Interpretación clínica, Patologías asociadas, Interferencias, Diagnóstico diferencial, etc. El número de subapartados debe reflejar la complejidad real del tema (mínimo 4, máximo 10).
-
-PASO 2 — EXTRAER CONCEPTOS DE CADA SUBAPARTADO
-Para cada subapartado, identifica TODOS los conceptos individuales relevantes que contiene. Un concepto es una unidad de información concreta: un mecanismo, un valor numérico, una clasificación, una técnica, una relación causa-efecto, una excepción, un dato clínico. No agrupes conceptos distintos en uno solo.
-
-PASO 3 — GENERAR EXPLICACIÓN DE CADA CONCEPTO
-Para cada concepto, genera una explicación propia que:
-• Empiece por el dato o idea central (el "qué")
-• Explique el mecanismo o razonamiento subyacente (el "por qué")
-• Indique la consecuencia clínica o analítica (el "para qué sirve saber esto")
-• Incluya el valor numérico exacto, nombre de proteína/enzima/gen, o criterio diagnóstico cuando exista
-• Tenga entre 2 y 4 frases — concisa pero completa
-• Use lenguaje técnico de especialista FEA, no divulgativo
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ESTÁNDARES DE CALIDAD INAMOVIBLES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ Cada explicación debe contener al menos un dato concreto (número, nombre técnico, gen, enzima, porcentaje, tiempo)
-✓ Nivel 8-9/10: datos que distinguen al opositor que estudió en profundidad del que solo repasó
-✓ Español médico correcto; nombres de enzimas y proteínas en español con acrónimo entre paréntesis
-✓ Mínimo 5 conceptos por subapartado
-✓ Las explicaciones deben ser originales — no copiar frases del libro, sino sintetizar y explicar
-✗ PROHIBIDO: frases genéricas ("es importante", "se debe considerar", "varía según el laboratorio")
-✗ PROHIBIDO: agrupar dos conceptos distintos en una sola explicación
-✗ PROHIBIDO: subapartados vacíos o con menos de 5 conceptos
-✗ PROHIBIDO: repetir el mismo concepto en distintos subapartados
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FORMATO DE RESPUESTA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Responde ÚNICAMENTE con el siguiente JSON válido, sin texto previo, sin texto posterior, sin bloques de código markdown, sin backticks. El JSON debe ser parseable directamente con JSON.parse():
-
-{"resumen":"Párrafo introductorio de 3-5 frases que contextualice el tema: qué estudia, qué parámetros analíticos incluye, cuál es su relevancia diagnóstica y qué patologías principales abarca.","subapartados":[{"titulo":"Nombre del subapartado tal como aparece en el libro o lo estructuraría un experto","conceptos":[{"nombre":"Nombre corto del concepto (5-8 palabras máx.)","explicacion":"Explicación completa del concepto: dato central + mecanismo + consecuencia clínica/analítica. Mínimo 2 frases, máximo 5. Incluye el valor numérico exacto o nombre técnico específico."}]}]}`;
-}
 const getStatus=(topic,stats)=>{
   const s=stats[topic];
   if(!s||s.t<4) return 'sinEmpezar';
@@ -928,11 +875,11 @@ export default function App(){
 
       <div style={{padding:'32px 40px'}}>
         {topicView?(
-          <TopicPage topic={topicView} onBack={()=>setTopicView(null)} stats={stats} qs={qs} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} topicNotes={topicNotes} saveTopicNote={saveTopicNote} learningData={learningData} saveLearningData={saveLearningData} sr={sr} recordAnswer={recordAnswer} goToBank={goToBank} setTab={setTab}/>
+          <TopicPage topic={topicView} onBack={()=>setTopicView(null)} stats={stats} qs={qs} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} apiKey={apiKey} learningData={learningData} saveLearningData={saveLearningData} sr={sr} recordAnswer={recordAnswer} goToBank={goToBank} setTab={setTab} saveQs={saveQs}/>
         ):(
           <>
             {normalizedTab==='panel'&&<Dashboard {...shared} examDate={examDate} sessions={sessions} learningData={learningData} setTopicView={setTopicView} setExamDate={setExamDate} streakData={streakData}/>}
-            {normalizedTab==='estudio'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setTopicView(t);}} topicNotes={topicNotes} saveTopicNote={saveTopicNote} setTopicView={setTopicView} learningData={learningData}/>}
+            {normalizedTab==='estudio'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} apiKey={apiKey} setTopicView={setTopicView} learningData={learningData}/>}
             {normalizedTab==='test'&&<TestTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs} bankPreselect={bankPreselect} onBankPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} stats={stats} learningData={learningData}/>}
           </>
         )}
@@ -1189,7 +1136,7 @@ function ReviewPhase({item,onComplete}){
   return null;
 }
 
-// ── TestTab — Test OPE + Simulacro + Flashcards + Banco (3-tab architecture) ─
+// ── TestTab — Test OPE + Simulacro + Flashcards + Preguntas ─────────────────
 function TestTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs,bankPreselect,onBankPreselect,pdfMeta,stats,learningData}){
   const [subTab,setSubTab]=useState('test');
   return(
@@ -1200,12 +1147,12 @@ function TestTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs,bankPr
         <button onClick={()=>setSubTab('flashcard')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='flashcard'?600:400,color:subTab==='flashcard'?T.teal:T.muted,borderBottom:`2px solid ${subTab==='flashcard'?T.teal:'transparent'}`,fontFamily:FONT}}>
           🃏 Flashcards {dueQs.length>0&&<span style={{fontSize:10,background:T.amberS,color:T.amber,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{dueQs.length}</span>}
         </button>
-        <button onClick={()=>setSubTab('banco')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='banco'?600:400,color:subTab==='banco'?T.purple:T.muted,borderBottom:`2px solid ${subTab==='banco'?T.purple:'transparent'}`,fontFamily:FONT}}>📦 Banco</button>
+        <button onClick={()=>setSubTab('preguntas')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='preguntas'?600:400,color:subTab==='preguntas'?T.purple:T.muted,borderBottom:`2px solid ${subTab==='preguntas'?T.purple:'transparent'}`,fontFamily:FONT}}>📦 Preguntas</button>
       </div>
       {subTab==='test'      &&<TestMode {...shared}/>}
       {subTab==='simulacro' &&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey}/>}
       {subTab==='flashcard' &&<FlashcardMode {...shared}/>}
-      {subTab==='banco'     &&<BankManager {...shared} preselect={bankPreselect} onPreselect={onBankPreselect} pdfMeta={pdfMeta} apiKey={apiKey}/>}
+      {subTab==='preguntas' &&<BankManager {...shared} preselect={bankPreselect} onPreselect={onBankPreselect} pdfMeta={pdfMeta} apiKey={apiKey}/>}
     </div>
   );
 }
@@ -1270,155 +1217,6 @@ function PdfViewer({topic,fileId,name,onClose}){
   );
 }
 
-// ── TopicNotesPanel ───────────────────────────────────────────────────────────
-function TopicNotesPanel({topic,value,onChange,onClose,editing,setEditing}){
-  const taRef=useRef(null);
-  const [saved,setSaved]=useState(false);
-  const wordCount=value.trim()?value.trim().split(/\s+/).length:0;
-  const lineCount=value?value.split('\n').length:0;
-
-  const handleChange=e=>{onChange(e.target.value);setSaved(false);};
-  const handleBlur=()=>{setSaved(true);setTimeout(()=>setSaved(false),2000);};
-
-  const insert=(before,after='',placeholder='texto')=>{
-    const ta=taRef.current;if(!ta)return;
-    const s=ta.selectionStart,e=ta.selectionEnd;
-    const sel=value.slice(s,e)||placeholder;
-    const next=value.slice(0,s)+before+sel+after+value.slice(e);
-    onChange(next);
-    setTimeout(()=>{ta.focus();ta.setSelectionRange(s+before.length,s+before.length+sel.length);},0);
-  };
-
-  const insertLine=(prefix)=>{
-    const ta=taRef.current;if(!ta)return;
-    const s=ta.selectionStart;
-    const lineStart=value.lastIndexOf('\n',s-1)+1;
-    const next=value.slice(0,lineStart)+prefix+value.slice(lineStart);
-    onChange(next);
-    setTimeout(()=>{ta.focus();ta.setSelectionRange(s+prefix.length,s+prefix.length);},0);
-  };
-
-  const renderLine=(line,i)=>{
-    if(!line.trim()) return <div key={i} style={{height:10}}/>;
-    if(line.startsWith('## ')) return <div key={i} style={{fontWeight:700,fontSize:16,color:T.text,margin:'16px 0 6px',borderBottom:`2px solid ${T.border}`,paddingBottom:4}}>{line.slice(3)}</div>;
-    if(line.startsWith('# ')) return <div key={i} style={{fontWeight:800,fontSize:19,color:T.text,margin:'20px 0 8px',letterSpacing:-0.5}}>{line.slice(2)}</div>;
-    if(line.startsWith('> ')) return <div key={i} style={{borderLeft:`3px solid ${T.teal}`,background:T.tealS,padding:'6px 12px',borderRadius:'0 6px 6px 0',fontSize:13,color:T.tealText,margin:'6px 0',lineHeight:1.6}}>{renderInline(line.slice(2))}</div>;
-    if(line.startsWith('! ')) return <div key={i} style={{borderLeft:`3px solid ${T.amber}`,background:T.amberS,padding:'6px 12px',borderRadius:'0 6px 6px 0',fontSize:13,color:T.amberText,margin:'6px 0',fontWeight:600,lineHeight:1.6}}>⚠️ {renderInline(line.slice(2))}</div>;
-    if(line.match(/^---+$/)) return <hr key={i} style={{border:'none',borderTop:`1px solid ${T.border}`,margin:'12px 0'}}/>;
-    if(line.match(/^(\s*[-•*]|\d+\.) /)){
-      const isNum=line.match(/^\d+\./);
-      const depth=(line.match(/^\s+/)||[''])[0].length;
-      const text=line.replace(/^\s*[-•*\d.]+\s*/,'');
-      return <div key={i} style={{display:'flex',gap:8,alignItems:'flex-start',marginBottom:4,paddingLeft:depth*12}}>
-        <span style={{color:isNum?T.blue:T.green,fontWeight:700,flexShrink:0,minWidth:16,marginTop:1,fontSize:isNum?12:16}}>{isNum?line.match(/^(\d+)/)[1]+'.':'·'}</span>
-        <span style={{fontSize:13,color:T.text,lineHeight:1.65}}>{renderInline(text)}</span>
-      </div>;
-    }
-    return <div key={i} style={{fontSize:13,color:T.text,lineHeight:1.75,marginBottom:2}}>{renderInline(line)}</div>;
-  };
-
-  const renderInline=(text)=>{
-    const parts=[];let remaining=text;let ki=0;
-    const re=/\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`/g;let m;let last=0;
-    while((m=re.exec(text))!==null){
-      if(m.index>last)parts.push(<span key={ki++}>{text.slice(last,m.index)}</span>);
-      if(m[1]) parts.push(<strong key={ki++} style={{color:T.text,fontWeight:700}}>{m[1]}</strong>);
-      else if(m[2]) parts.push(<em key={ki++} style={{color:T.muted}}>{m[2]}</em>);
-      else if(m[3]) parts.push(<code key={ki++} style={{background:T.blueS,color:T.blueText,padding:'1px 5px',borderRadius:4,fontSize:12,fontFamily:'DM Mono,monospace'}}>{m[3]}</code>);
-      last=m.index+m[0].length;
-    }
-    if(last<text.length)parts.push(<span key={ki++}>{text.slice(last)}</span>);
-    return parts.length?parts:text;
-  };
-
-  const TBtn=({onClick,title,children,active})=>(
-    <button onClick={onClick} title={title}
-      style={{background:active?T.tealS:'none',border:active?`1px solid ${T.teal}`:'1px solid transparent',borderRadius:5,padding:'3px 7px',cursor:'pointer',color:active?T.teal:T.muted,fontSize:12,fontFamily:FONT,fontWeight:600,lineHeight:1.4,transition:'all 0.1s'}}>
-      {children}
-    </button>
-  );
-
-  return(
-    <div style={{marginTop:10,marginLeft:17,borderRadius:12,border:`1px solid ${T.border}`,overflow:'hidden',boxShadow:sh.md,background:T.surface}}>
-      {/* Header */}
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:`linear-gradient(90deg,${T.tealS},${T.blueS})`,borderBottom:`1px solid ${T.border}`}}>
-        <div style={{display:'flex',alignItems:'center',gap:8}}>
-          <span style={{fontSize:14}}>📝</span>
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:T.tealText}}>{topic.split('.')[0]} — Mis apuntes</div>
-            <div style={{fontSize:10,color:T.muted}}>{wordCount} palabras · {lineCount} líneas {saved&&<span style={{color:T.green}}>· ✓ Guardado</span>}</div>
-          </div>
-        </div>
-        <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <button onClick={()=>setEditing(!editing)}
-            style={{background:editing?T.teal:T.surface,color:editing?'#fff':T.teal,border:`1px solid ${T.teal}`,borderRadius:8,padding:'4px 12px',fontSize:11,cursor:'pointer',fontFamily:FONT,fontWeight:700}}>
-            {editing?'👁 Vista previa':'✏️ Editar'}
-          </button>
-          <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:18,padding:'0 4px',lineHeight:1}}>×</button>
-        </div>
-      </div>
-
-      {/* Toolbar — only in edit mode */}
-      {editing&&(
-        <div style={{display:'flex',alignItems:'center',gap:2,padding:'6px 10px',background:T.card,borderBottom:`1px solid ${T.border}`,flexWrap:'wrap'}}>
-          <TBtn onClick={()=>insertLine('# ')} title="Título H1">H1</TBtn>
-          <TBtn onClick={()=>insertLine('## ')} title="Título H2">H2</TBtn>
-          <div style={{width:1,height:16,background:T.border,margin:'0 4px'}}/>
-          <TBtn onClick={()=>insert('**','**')} title="Negrita"><strong>B</strong></TBtn>
-          <TBtn onClick={()=>insert('*','*')} title="Cursiva"><em>I</em></TBtn>
-          <TBtn onClick={()=>insert('`','`')} title="Código">{'<>'}</TBtn>
-          <div style={{width:1,height:16,background:T.border,margin:'0 4px'}}/>
-          <TBtn onClick={()=>insertLine('- ')} title="Lista">• Lista</TBtn>
-          <TBtn onClick={()=>insertLine('1. ')} title="Lista numerada">1. Lista</TBtn>
-          <div style={{width:1,height:16,background:T.border,margin:'0 4px'}}/>
-          <TBtn onClick={()=>insertLine('> ')} title="Cita / destacado">💬 Cita</TBtn>
-          <TBtn onClick={()=>insertLine('! ')} title="Aviso / perla">⚠️ Perla</TBtn>
-          <div style={{width:1,height:16,background:T.border,margin:'0 4px'}}/>
-          <TBtn onClick={()=>onChange(value+'\n---\n')} title="Separador">―――</TBtn>
-          <div style={{flex:1}}/>
-          <span style={{fontSize:10,color:T.dim,fontStyle:'italic'}}>** negrita **  · * cursiva * · ` código `</span>
-        </div>
-      )}
-
-      {/* Body: edit or preview */}
-      {editing?(
-        <textarea
-          ref={taRef}
-          autoFocus
-          value={value}
-          onChange={handleChange}
-          onBlur={handleBlur}
-          placeholder={'# Título del tema\n\n## Valores de referencia\n- Glucosa basal: 70–100 mg/dL\n- HbA1c diagnóstico DM: ≥6.5%\n\n## Mecanismos clave\n**Resistencia insulínica** → hiperglucemia crónica\n\n> Perla: el péptido C distingue DM1 de DM2\n\n! La HbA1c no sirve en hemoglobinopatías\n\n## Técnicas analíticas\n1. Glucosa en plasma venoso (hexoquinasa)\n2. HbA1c por HPLC o inmunoturbidimetría'}
-          style={{width:'100%',minHeight:280,background:T.surface,color:T.text,border:'none',padding:'16px 18px',fontSize:13,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.8,tabSize:2}}
-        />
-      ):(
-        <div style={{padding:'18px 20px',minHeight:120,background:T.surface}}>
-          {value.trim()?(
-            <div>{value.split('\n').map((line,i)=>renderLine(line,i))}</div>
-          ):(
-            <div style={{textAlign:'center',padding:'32px 0',color:T.dim}}>
-              <div style={{fontSize:28,marginBottom:8}}>📝</div>
-              <div style={{fontSize:13,fontWeight:500,color:T.muted,marginBottom:4}}>Sin apuntes para este tema</div>
-              <div style={{fontSize:12,color:T.dim}}>Pulsa Editar para empezar</div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Footer */}
-      <div style={{padding:'8px 14px',background:T.card,borderTop:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-        <span style={{fontSize:10,color:T.dim}}>
-          Markdown: <code style={{background:T.blueS,color:T.blueText,padding:'0 4px',borderRadius:3,fontSize:9}}># H1</code>{' '}
-          <code style={{background:T.blueS,color:T.blueText,padding:'0 4px',borderRadius:3,fontSize:9}}>## H2</code>{' '}
-          <code style={{background:T.blueS,color:T.blueText,padding:'0 4px',borderRadius:3,fontSize:9}}>**negrita**</code>{' '}
-          <code style={{background:T.blueS,color:T.blueText,padding:'0 4px',borderRadius:3,fontSize:9}}>&gt; cita</code>{' '}
-          <code style={{background:T.amberS,color:T.amberText,padding:'0 4px',borderRadius:3,fontSize:9}}>! perla</code>
-        </span>
-        {value&&<button onClick={()=>{if(confirm('¿Borrar todos los apuntes de este tema?'))onChange('');}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:T.dim,fontFamily:FONT}}>🗑 Borrar</button>}
-      </div>
-    </div>
-  );
-}
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 function Chip({color,bg,children}){return <span style={{background:bg,color,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600}}>{children}</span>;}
@@ -1635,35 +1433,12 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
 // ═══════════════════════════════════════════════════════════════════════════
 // TEMARIO — con notas por sección
 // ═══════════════════════════════════════════════════════════════════════════
-function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,goToStudy,topicNotes,saveTopicNote,setTopicView,learningData}){
+function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,apiKey,setTopicView,learningData}){
   const [open,setOpen]=useState(null);
-  const [openNote,setOpenNote]=useState(null);
-  const [editingNote,setEditingNote]=useState(null);
   const [openPdf,setOpenPdf]=useState(null); // {topic, fileId, name}
   const [splittingKey,setSplittingKey]=useState(null);
-  const [generatingStudy,setGeneratingStudy]=useState(null);
-  const [studyMsg,setStudyMsg]=useState({});
   const studied=ALL_TOPICS.filter(t=>stats[t]?.t>0).length;
 
-  const generateStudy=async(topic)=>{
-    setGeneratingStudy(topic);setStudyMsg(prev=>({...prev,[topic]:'🤖 Generando apuntes...'}));
-    const prompt=buildStudyPrompt(topic,false);
-    try{
-      const res=await fetch('/api/anthropic',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:prompt}]})
-      });
-      if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
-      const data=await res.json();
-      const text=(data.content||[]).map(c=>c.text||'').join('').trim();
-      const cleaned=text.replace(/```json|```/g,'').trim();
-      const parsed=JSON.parse(repairJSON(cleaned));
-      saveStudyNote(topic,parsed);
-      setStudyMsg(prev=>({...prev,[topic]:''}));
-    }catch(e){setStudyMsg(prev=>({...prev,[topic]:`❌ ${e.message}`}));}
-    setGeneratingStudy(null);
-  };
   const pctS=Math.round(studied/ALL_TOPICS.length*100);
   const totalPdfs=Object.values(pdfMeta).reduce((a,arr)=>a+(Array.isArray(arr)?arr.length:0),0);
   const getCount=s=>qs.filter(q=>s.topics.includes(q.topic)).length;
@@ -1695,9 +1470,9 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
             const ts=stats[t];const tpct=ts?Math.round(ts.c/ts.t*100):null;
             const st=getStatus(t,stats);const refs=TOPIC_REFS[t];
             const pKey=topicPdfKey(t);const files=pdfMeta[pKey]||[];
-            const hasPdfs=files.length>0;const hasStudy=!!studyNotes[t];
+            const hasPdfs=files.length>0;
             const ls=learningData[t]?getLearningStatus(learningData[t]):null;
-            return{t,ts,tpct,st,refs,pKey,files,hasPdfs,hasStudy,ls};
+            return{t,ts,tpct,st,refs,pKey,files,hasPdfs,ls};
           });
 
           return(
@@ -1709,7 +1484,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                 <div style={{width:38,height:38,borderRadius:10,background:isOpen?T.surface:s.colorS,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>{s.emoji}</div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontWeight:700,fontSize:14,color:T.text}}>{s.name}</div>
-                  <div style={{fontSize:11,color:T.muted,marginTop:2}}>{tStr} · {s.temas.length} temas · {count} preg. en banco</div>
+                  <div style={{fontSize:11,color:T.muted,marginTop:2}}>{tStr} · {s.temas.length} temas · {count} preg.</div>
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
                   {acc!==null&&<span style={{fontWeight:700,fontSize:15,color:acc>=70?T.green:acc>=50?T.amber:T.red,minWidth:36,textAlign:'right'}}>{acc}%</span>}
@@ -1720,8 +1495,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
               {/* Expanded topics */}
               {isOpen&&(
                 <div style={{background:T.card,borderTop:`1px solid ${T.border}`}}>
-                  {topicsWithData.map(({t,tpct,st,refs,pKey,files,hasPdfs,hasStudy,ls},ti)=>{
-                    const isGenerating=generatingStudy===t;
+                  {topicsWithData.map(({t,tpct,st,refs,pKey,files,hasPdfs,ls},ti)=>{
                     const hasRefs=refs&&refs.tietz!=='—';
                     return(
                       <div key={t} style={{borderTop:ti>0?`1px solid ${T.border}`:'none',padding:'10px 20px 10px 44px'}}>
@@ -1739,10 +1513,6 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                             ):(
                               <span style={{fontSize:10,color:STATUS_COLORS[st],background:STATUS_BG[st],padding:'2px 8px',borderRadius:10,fontWeight:600,whiteSpace:'nowrap'}}>{STATUS_LABELS[st]}</span>
                             )}
-                            <button onClick={()=>hasStudy?goToStudy(t):generateStudy(t)} disabled={isGenerating}
-                              style={{background:isGenerating?T.amberS:hasStudy?T.tealS:T.purpleS,border:`1px solid ${isGenerating?T.amber:hasStudy?T.teal:T.purple}`,borderRadius:20,padding:'3px 10px',fontSize:10,cursor:isGenerating?'wait':'pointer',color:isGenerating?T.amberText:hasStudy?T.teal:T.purple,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>
-                              {isGenerating?'⏳…':hasStudy?'📖 Ver':'📖 Generar'}
-                            </button>
                             <button onClick={async()=>{
                               const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';inp.multiple=true;
                               inp.onchange=async e=>{
@@ -1802,20 +1572,10 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                             </details>
                           </div>
                         );})()}
-                        {studyMsg[t]&&<div style={{marginTop:5,fontSize:11,color:studyMsg[t].startsWith('❌')?T.red:T.muted,paddingLeft:17}}>{studyMsg[t]}</div>}
                         {/* PDF viewer inline */}
                         {openPdf&&openPdf.topic===t&&(
                           <PdfViewer key={openPdf.fileId} topic={t} fileId={openPdf.fileId} name={openPdf.name} onClose={()=>setOpenPdf(null)}/>
                         )}
-                        {/* Topic notes toggle */}
-                        <div style={{paddingLeft:17,marginTop:6}}>
-                          <button onClick={()=>setOpenNote(openNote===t?null:t)}
-                            style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:topicNotes[t]?T.teal:T.dim,fontFamily:FONT,padding:0,fontWeight:600,display:'flex',alignItems:'center',gap:4}}>
-                            {topicNotes[t]?'📝 Ver apuntes':'📝 Añadir apuntes'}
-                            {topicNotes[t]&&<span style={{background:T.tealS,color:T.tealText,fontSize:9,padding:'1px 5px',borderRadius:8,fontWeight:700}}>✓</span>}
-                          </button>
-                        </div>
-                        {openNote===t&&<TopicNotesPanel topic={t} value={topicNotes[t]||''} onChange={v=>saveTopicNote(t,v)} onClose={()=>{setOpenNote(null);setEditingNote(null);}} editing={editingNote===t} setEditing={v=>setEditingNote(v?t:null)}/>}
                       </div>
                     );
                   })}
@@ -1825,7 +1585,7 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                     <textarea defaultValue={notes[s.id]||''} onBlur={e=>setNote(s.id,e.target.value)}
                       placeholder="Notas, esquemas o conceptos clave..."
                       style={{width:'100%',minHeight:60,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'8px 10px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:10}}/>
-                    <button onClick={()=>setTab('banco')} style={{background:s.color,color:'#000',border:'none',borderRadius:8,padding:'7px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>✨ Generar preguntas de este bloque →</button>
+                    <button onClick={()=>setTab('test')} style={{background:s.color,color:'#000',border:'none',borderRadius:8,padding:'7px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>✨ Generar preguntas de este bloque →</button>
                   </div>
                 </div>
               )}
@@ -1837,10 +1597,8 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ESTUDIO TAB
-// ═══════════════════════════════════════════════════════════════════════════
-function EstudioTab({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMeta}){
+// EstudioTab & StudyPanel DELETED — all apuntes functionality removed
+function _EstudioTab_DELETED({studyNotes,saveStudyNote,apiKey,preselect,onPreselect,pdfMeta}){
   const [selectedTopic,setSelectedTopic]=useState(preselect||null);
   const [generating,setGenerating]=useState(false);
   const [genMsg,setGenMsg]=useState('');
@@ -2089,7 +1847,7 @@ function StudyPanel({data,topic,date,onRegenerate,isGenerating}){
 // ═══════════════════════════════════════════════════════════════════════════
 // TOPIC PAGE — Vista dedicada de un tema con 4 tabs
 // ═══════════════════════════════════════════════════════════════════════════
-function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,topicNotes,saveTopicNote,learningData,saveLearningData,sr,recordAnswer,goToBank,setTab}){
+function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTopic,apiKey,learningData,saveLearningData,sr,recordAnswer,goToBank,setTab,saveQs}){
   const [activeTab,setActiveTab]=useState('temario');
   const [viewingPdf,setViewingPdf]=useState(null); // {source, fileId, name}
   const refs=TOPIC_REFS[topic];
@@ -2120,10 +1878,36 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
 
   const tabs=[
     {id:'temario',label:'Temario',icon:'📋',color:T.blue},
-    {id:'apuntes',label:'Apuntes',icon:'📖',color:T.teal},
     {id:'aprendizaje',label:'Aprendizaje',icon:'🧠',color:T.purple},
-    {id:'banco',label:'Banco',icon:'🧪',color:T.orange},
+    {id:'preguntas',label:'Preguntas',icon:'🧪',color:T.orange},
   ];
+  // Collect ALL questions for this topic: from question bank + from learning phases
+  const allTopicQuestions=useMemo(()=>{
+    const fromBank=topicQs;
+    const fromLearning=[];
+    if(learning?.sections){
+      learning.sections.forEach(sec=>{
+        const gen=sec.generated;if(!gen)return;
+        (gen.phases?.preTest||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'pretest',_section:sec.title}));
+        (gen.phases?.postTest||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'posttest',_section:sec.title}));
+        (gen.phases?.flashcards||[]).forEach(q=>fromLearning.push({...q,type:'flashcard',topic,_source:'flashcard',_section:sec.title,question:q.front}));
+        (gen.phases?.clinicalCases||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'caso',_section:sec.title}));
+        // subsections
+        (sec.subsections||[]).forEach(sub=>{
+          const sg=sub.generated;if(!sg)return;
+          (sg.phases?.preTest||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'pretest',_section:`${sec.title} > ${sub.title}`}));
+          (sg.phases?.postTest||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'posttest',_section:`${sec.title} > ${sub.title}`}));
+          (sg.phases?.flashcards||[]).forEach(q=>fromLearning.push({...q,type:'flashcard',topic,_source:'flashcard',_section:`${sec.title} > ${sub.title}`,question:q.front}));
+          (sg.phases?.clinicalCases||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'caso',_section:`${sec.title} > ${sub.title}`}));
+        });
+      });
+    }
+    // Dedupe by id
+    const seen=new Set(fromBank.map(q=>q.id));
+    const merged=[...fromBank];
+    fromLearning.forEach(q=>{if(!seen.has(q.id)){seen.add(q.id);merged.push(q);}});
+    return merged;
+  },[topicQs,learning]);
 
   return(
     <div>
@@ -2225,64 +2009,127 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
             <PdfViewer topic={viewingPdf.topicKey} fileId={viewingPdf.fileId} name={viewingPdf.name} onClose={()=>setViewingPdf(null)}/>
           )}
 
-          {/* Topic notes */}
-          <Card style={{padding:'16px 22px',marginTop:viewingPdf?16:0}}>
-            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:8}}>📝 Mis apuntes</div>
-            <textarea defaultValue={topicNotes[topic]||''} onBlur={e=>saveTopicNote(topic,e.target.value)} placeholder="Escribe tus apuntes personales sobre este tema..."
-              style={{width:'100%',minHeight:100,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 12px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box'}}/>
-          </Card>
-        </div>
-      )}
-
-      {activeTab==='apuntes'&&(
-        <div>
-          {studyNotes[topic]?(
-            <StudyPanel data={studyNotes[topic].content} topic={topic} date={studyNotes[topic].date} onRegenerate={()=>{}} isGenerating={false}/>
-          ):(
-            <Card style={{padding:'50px',textAlign:'center'}}>
-              <div style={{fontSize:40,marginBottom:12}}>📖</div>
-              <div style={{fontSize:14,color:T.text,fontWeight:600,marginBottom:6}}>No hay apuntes generados</div>
-              <div style={{fontSize:12,color:T.muted}}>Ve a la pestaña "Apuntes" del Temario para generar apuntes con IA</div>
-            </Card>
-          )}
         </div>
       )}
 
       {activeTab==='aprendizaje'&&<AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData} pdfMeta={pdfMeta}/>}
 
-      {activeTab==='banco'&&(
-        <div>
-          {topicQs.length>0?(
-            <div>
-              <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12}}>{topicQs.length} preguntas de este tema</div>
-              {topicQs.slice(0,20).map((q,i)=>(
-                <Card key={q.id} style={{padding:'12px 16px',marginBottom:8}}>
-                  <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
-                    <span style={{fontSize:10,color:T.muted,background:T.card,padding:'2px 6px',borderRadius:4,fontWeight:600,flexShrink:0}}>#{i+1}</span>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:12,color:T.text,lineHeight:1.5,marginBottom:6}}>{q.question||q.front}</div>
-                      {q.type==='test'&&q.options&&(
-                        <div style={{display:'flex',flexDirection:'column',gap:3}}>
-                          {q.options.map((o,j)=>(
-                            <div key={j} style={{fontSize:11,color:j===q.correct?T.green:T.muted,fontWeight:j===q.correct?600:400,paddingLeft:8}}>{o}</div>
-                          ))}
-                        </div>
-                      )}
-                      {q.type==='flashcard'&&<div style={{fontSize:11,color:T.teal,background:T.tealS,padding:'4px 8px',borderRadius:6,marginTop:4}}>{q.back}</div>}
+      {activeTab==='preguntas'&&<TopicPreguntasTab topic={topic} allQuestions={allTopicQuestions} topicTag={topicNum?`T${topicNum}`:''} stats={stats} saveQs={saveQs} qs={qs} apiKey={apiKey}/>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PREGUNTAS TAB — todas las preguntas del tema con metadatos y generación
+// ═══════════════════════════════════════════════════════════════════════════
+function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey}){
+  const [filter,setFilter]=useState({section:'',type:'',difficulty:''});
+  const [generating,setGenerating]=useState(false);
+  const [genMsg,setGenMsg]=useState('');
+
+  // Group by section
+  const sections=[...new Set(allQuestions.map(q=>q.seccion||q._section||'General'))].sort();
+  const types=[...new Set(allQuestions.map(q=>q.tipo||q._source||q.type||'—'))];
+  const diffs=[...new Set(allQuestions.map(q=>q.dificultad||'—'))].filter(d=>d!=='—');
+
+  const filtered=allQuestions.filter(q=>{
+    if(filter.section&&(q.seccion||q._section||'General')!==filter.section)return false;
+    if(filter.type&&(q.tipo||q._source||q.type)!==filter.type)return false;
+    if(filter.difficulty&&(q.dificultad||'—')!==filter.difficulty)return false;
+    return true;
+  });
+
+  // Get user stats for each question
+  const getQStats=(qid)=>{const s=stats[topic];return s?{pct:s.t?Math.round(s.c/s.t*100):0}:null;};
+
+  // Generate 20 additional questions
+  const generateMore=async()=>{
+    setGenerating(true);setGenMsg('Generando 20 preguntas adicionales...');
+    try{
+      const SYS='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). IDIOMA: Toda tu respuesta debe estar en español. Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
+      const res=await fetch('/api/anthropic',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:`${SYS}\n\nGenera exactamente 20 preguntas tipo test sobre el tema "${topic}" para la oposición FEA Laboratorio Clínico SESCAM 2025.\n\nMezcla niveles de dificultad y tipos (concepto, mecanismo, valor, clínico, aplicación).\n\nJSON:\n{"questions":[{"id":"new1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta","tema":"${topicTag}","seccion":"General","fase":"extra","fechaGeneracion":"${new Date().toISOString().slice(0,10)}"}]}\n\n- 20 preguntas exactas\n- Las opciones incluyen la letra (A, B, C, D)\n- Nivel de oposición FEA`}]})
+      });
+      if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      const data=await res.json();
+      const text=(data.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
+      const parsed=JSON.parse(repairJSON(text));
+      const newQs=(parsed.questions||parsed).map(q=>({...q,id:uid(),type:'test',topic,tema:topicTag,fase:'extra',fechaGeneracion:new Date().toISOString().slice(0,10)}));
+      // Add to global question bank
+      const updated=[...qs,...newQs];
+      await saveQs(updated);
+      setGenMsg(`✓ ${newQs.length} preguntas añadidas`);
+      setTimeout(()=>setGenMsg(''),3000);
+    }catch(e){setGenMsg(`Error: ${e.message}`);}
+    setGenerating(false);
+  };
+
+  return(
+    <div>
+      {/* Header + filters */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,flexWrap:'wrap',gap:8}}>
+        <div style={{fontSize:14,fontWeight:700,color:T.text}}>{allQuestions.length} preguntas</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          <select value={filter.section} onChange={e=>setFilter(f=>({...f,section:e.target.value}))} style={{background:T.surface,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 8px',fontSize:11,fontFamily:FONT}}>
+            <option value="">Todas las secciones</option>
+            {sections.map(s=><option key={s} value={s}>{s}</option>)}
+          </select>
+          <select value={filter.type} onChange={e=>setFilter(f=>({...f,type:e.target.value}))} style={{background:T.surface,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 8px',fontSize:11,fontFamily:FONT}}>
+            <option value="">Todos los tipos</option>
+            {types.map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
+          {diffs.length>0&&<select value={filter.difficulty} onChange={e=>setFilter(f=>({...f,difficulty:e.target.value}))} style={{background:T.surface,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 8px',fontSize:11,fontFamily:FONT}}>
+            <option value="">Toda dificultad</option>
+            {diffs.map(d=><option key={d} value={d}>{d}</option>)}
+          </select>}
+        </div>
+      </div>
+
+      {/* Generate more button */}
+      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:16}}>
+        <button onClick={generateMore} disabled={generating}
+          style={{background:generating?T.surface:T.green,color:generating?T.dim:'#000',border:`0.5px solid ${generating?T.border:T.green}`,borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:generating?'wait':'pointer',fontFamily:FONT}}>
+          {generating?'⏳ Generando...':'+ Generar 20 preguntas más'}
+        </button>
+        {genMsg&&<span style={{fontSize:11,color:genMsg.startsWith('✓')?T.green:T.red}}>{genMsg}</span>}
+      </div>
+
+      {/* Question list grouped by section */}
+      {filtered.length===0?(
+        <Card style={{padding:'40px',textAlign:'center'}}>
+          <div style={{fontSize:36,marginBottom:10}}>🧪</div>
+          <div style={{fontSize:14,fontWeight:600,color:T.text,marginBottom:4}}>Sin preguntas</div>
+          <div style={{fontSize:12,color:T.dim}}>Genera preguntas en Aprendizaje o usa el botón de arriba</div>
+        </Card>
+      ):(
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {filtered.slice(0,50).map((q,i)=>(
+            <Card key={q.id||i} style={{padding:'10px 14px'}}>
+              <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
+                <span style={{fontSize:9,color:T.dim,background:T.bg,padding:'2px 5px',borderRadius:4,fontWeight:600,flexShrink:0,marginTop:2}}>#{i+1}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12,color:T.text,lineHeight:1.5,marginBottom:4}}>{q.question||q.front||q.presentation}</div>
+                  {q.type==='test'&&q.options&&(
+                    <div style={{display:'flex',flexDirection:'column',gap:2,marginBottom:4}}>
+                      {q.options.map((o,j)=>(
+                        <div key={j} style={{fontSize:11,color:j===q.correct?T.green:T.dim,fontWeight:j===q.correct?600:400,paddingLeft:6}}>{o}</div>
+                      ))}
                     </div>
+                  )}
+                  {q.type==='flashcard'&&q.back&&<div style={{fontSize:11,color:T.teal,background:T.tealS,padding:'3px 6px',borderRadius:4,marginBottom:4}}>{q.back}</div>}
+                  {/* Metadata row */}
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                    {(q.seccion||q._section)&&<span style={{fontSize:9,color:T.muted,background:T.surface,padding:'1px 5px',borderRadius:4,border:`0.5px solid ${T.border}`}}>{q.seccion||q._section}</span>}
+                    {(q.tipo||q._source)&&<span style={{fontSize:9,color:T.blue,background:T.blueS,padding:'1px 5px',borderRadius:4}}>{q.tipo||q._source}</span>}
+                    {q.dificultad&&<span style={{fontSize:9,color:q.dificultad==='alta'?T.red:q.dificultad==='media'?T.amber:T.green,background:q.dificultad==='alta'?T.redS:q.dificultad==='media'?T.amberS:T.greenS,padding:'1px 5px',borderRadius:4}}>{q.dificultad}</span>}
+                    {q.fechaGeneracion&&<span style={{fontSize:9,color:T.dim}}>{q.fechaGeneracion}</span>}
                   </div>
-                </Card>
-              ))}
-              {topicQs.length>20&&<div style={{fontSize:12,color:T.muted,textAlign:'center',padding:12}}>...y {topicQs.length-20} preguntas más</div>}
-            </div>
-          ):(
-            <Card style={{padding:'50px',textAlign:'center'}}>
-              <div style={{fontSize:40,marginBottom:12}}>🧪</div>
-              <div style={{fontSize:14,color:T.text,fontWeight:600,marginBottom:6}}>Sin preguntas para este tema</div>
-              <div style={{fontSize:12,color:T.muted,marginBottom:16}}>Ve al Banco de preguntas para generar preguntas de este tema</div>
-              <Btn onClick={()=>{onBack();setTab('banco');}} variant="primary">✨ Generar preguntas</Btn>
+                </div>
+              </div>
             </Card>
-          )}
+          ))}
+          {filtered.length>50&&<div style={{fontSize:12,color:T.dim,textAlign:'center',padding:10}}>...y {filtered.length-50} preguntas más</div>}
         </div>
       )}
     </div>
@@ -3062,7 +2909,7 @@ function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
         <Lbl>Tiempo por pregunta</Lbl>
         <RadioGroup value={cfg.timer} onChange={v=>setCfg({...cfg,timer:Number(v)})} options={[{value:0,label:'Sin límite'},{value:30,label:'30 segundos'},{value:60,label:'1 minuto'},{value:90,label:'90 segundos'}]}/>
         <Btn onClick={start} disabled={testQs.length===0} style={{marginTop:4}}>Comenzar →</Btn>
-        {testQs.length===0&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Genera preguntas en el Banco primero.</p>}
+        {testQs.length===0&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Genera preguntas en Preguntas primero.</p>}
       </div>
     );
   }
@@ -3176,7 +3023,7 @@ function Simulacro({testQs,recordAnswer,addSession}){
   const start=()=>{
     let pool=testQs;
     if(cfg.section!=='all'){const topics=SECTIONS.find(s=>s.id===cfg.section)?.topics;if(topics)pool=pool.filter(q=>topics.includes(q.topic));}
-    if(!pool.length)return alert('No hay preguntas. Genera primero en el Banco.');
+    if(!pool.length)return alert('No hay preguntas. Genera primero en Preguntas.');
     const s=shuffle(pool).slice(0,Math.min(cfg.n,pool.length));
     setSession(s);setAnswers(new Array(s.length).fill(null));setCurrent(0);setMarkedQ(new Set());setTimeLeft(cfg.totalTime*60);setStartTs(Date.now());setPhase('running');
   };
@@ -3210,7 +3057,7 @@ function Simulacro({testQs,recordAnswer,addSession}){
       <Lbl>Sistema de puntuación</Lbl>
       <RadioGroup value={cfg.penalty} onChange={v=>setCfg({...cfg,penalty:v})} options={[{value:'tercio',label:'✅ +1 acierto · ❌ −1/3 error · ⬜ 0 en blanco (OPE estándar SESCAM)'},{value:'cuarto',label:'✅ +1 acierto · ❌ −1/4 error · ⬜ 0 en blanco'},{value:'ninguna',label:'✅ +1 acierto · ❌ 0 error · sin penalización'}]}/>
       <Btn onClick={start} disabled={testQs.length<10} variant="orange" style={{marginTop:4}}>⚡ Comenzar simulacro →</Btn>
-      {testQs.length<10&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Necesitas al menos 10 preguntas test en el Banco.</p>}
+      {testQs.length<10&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Necesitas al menos 10 preguntas test en Preguntas.</p>}
     </div>
   );
 
@@ -3381,7 +3228,7 @@ function FlashcardMode({fcQs,dueQs,sr,marked,toggleMark,recordAnswer,addSession}
       <RadioGroup value={mode} onChange={setMode} options={[{value:'due',label:`📅 Pendientes de hoy (${dueQs.length})`},{value:'all',label:`🔄 Todas (${fcQs.length})`},{value:'section',label:'📂 Por bloque temático'}]}/>
       {mode==='section'&&<><Lbl>Bloque</Lbl><Sel value={section} onChange={setSection}>{SECTIONS.map(s=>{const n=fcQs.filter(q=>s.topics.includes(q.topic)).length;return<option key={s.id} value={s.id}>{s.emoji} {s.name} ({n})</option>;})}</Sel></>}
       <Btn onClick={start} disabled={fcQs.length===0} variant="teal">Empezar →</Btn>
-      {fcQs.length===0&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Genera flashcards en el Banco primero.</p>}
+      {fcQs.length===0&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Genera flashcards en Preguntas primero.</p>}
     </div>
   );
 
@@ -3540,7 +3387,7 @@ Responde ÚNICAMENTE con array JSON válido sin texto previo ni backticks:
     if(!preview)return;
     const withIds=preview.map(q=>({...q,id:uid(),correct:q.correct??0}));
     await saveQs([...qs,...withIds]);
-    setMsg(`✅ ${withIds.length} preguntas importadas al banco.`);
+    setMsg(`✅ ${withIds.length} preguntas importadas.`);
     setPreview(null);setFile(null);
   };
 
@@ -3549,7 +3396,7 @@ Responde ÚNICAMENTE con array JSON válido sin texto previo ni backticks:
   return(
     <div style={{maxWidth:800}}>
       <h3 style={{fontSize:16,fontWeight:700,color:T.text,marginBottom:6}}>📄 Importar examen oficial PDF</h3>
-      <p style={{color:T.muted,fontSize:13,marginBottom:20,lineHeight:1.6}}>Sube un PDF de examen oficial. La IA extrae todas las preguntas automáticamente en lotes y las añade al banco con el tema asignado.</p>
+      <p style={{color:T.muted,fontSize:13,marginBottom:20,lineHeight:1.6}}>Sube un PDF de examen oficial. La IA extrae todas las preguntas automáticamente en lotes y las añade con el tema asignado.</p>
 
       <div onClick={()=>fileRef.current?.click()}
         style={{border:`2px dashed ${file?T.green:T.border}`,borderRadius:12,padding:'28px 20px',textAlign:'center',cursor:'pointer',background:file?T.greenS:T.card,transition:'all 0.2s',marginBottom:16}}>
@@ -3596,7 +3443,7 @@ Responde ÚNICAMENTE con array JSON válido sin texto previo ni backticks:
               <Btn variant="green" onClick={confirm}>✅ Importar {preview.length} preguntas →</Btn>
             </div>
           </div>
-          {nullCount>0&&<div style={{background:T.amberS,border:`1px solid ${T.amber}`,borderRadius:8,padding:'8px 12px',fontSize:12,color:T.amberText,marginBottom:12}}>⚠️ Sin solucionario en el PDF. Las preguntas se importan con opción A por defecto — corrígelas en el banco.</div>}
+          {nullCount>0&&<div style={{background:T.amberS,border:`1px solid ${T.amber}`,borderRadius:8,padding:'8px 12px',fontSize:12,color:T.amberText,marginBottom:12}}>⚠️ Sin solucionario en el PDF. Las preguntas se importan con opción A por defecto — corrígelas en Preguntas.</div>}
           <div style={{display:'flex',flexDirection:'column',gap:8,maxHeight:400,overflowY:'auto'}}>
             {preview.slice(0,20).map((q,i)=>(
               <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 14px'}}>
@@ -3665,7 +3512,7 @@ function BankManager({qs,saveQs,preselect,onPreselect,pdfMeta,apiKey}){
   const exportJSON=()=>{
     const blob=new Blob([JSON.stringify(qs,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');a.href=url;a.download=`banco_opelab_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);
+    const a=document.createElement('a');a.href=url;a.download=`preguntas_opelab_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);
   };
 
   const generateAI=async()=>{
@@ -3982,7 +3829,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
             <span style={{color:T.dim,fontSize:12,marginLeft:'auto'}}>{filtered.length} mostradas</span>
             {qs.length>0&&<><button onClick={exportJSON} style={{background:T.blueS,color:T.blue,border:'1px solid #1a2a3a',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>⬇️ Exportar JSON</button><button onClick={async()=>{if(confirm(`¿Borrar TODAS las ${qs.length} preguntas?`)){await idbClearQs();setQs([]);}}} style={{background:T.redS,color:T.red,border:'1px solid #3a1a1a',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontFamily:FONT}}>🗑 Borrar todo</button></>}
           </div>
-          {filtered.length===0?<Card style={{padding:'50px',textAlign:'center'}}><div style={{fontSize:36,marginBottom:8}}>📭</div><div style={{color:T.dim}}>{qs.length===0?'Banco vacío. Genera preguntas con IA.':'Sin preguntas para este filtro.'}</div></Card>:<div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {filtered.length===0?<Card style={{padding:'50px',textAlign:'center'}}><div style={{fontSize:36,marginBottom:8}}>📭</div><div style={{color:T.dim}}>{qs.length===0?'Sin preguntas. Genera preguntas con IA.':'Sin preguntas para este filtro.'}</div></Card>:<div style={{display:'flex',flexDirection:'column',gap:8}}>
             {filtered.map(q=><Card key={q.id} style={{padding:'10px 14px',display:'flex',gap:12,borderLeft:`3px solid ${q.type==='test'?T.blue:T.teal}`}}>
               <div style={{flex:1}}>
                 <div style={{display:'flex',gap:6,marginBottom:6,flexWrap:'wrap'}}>
@@ -4003,7 +3850,7 @@ ESTÁNDARES DE CALIDAD INAMOVIBLES:
 
       {subTab==='upload'&&(
         <div style={{maxWidth:'100%'}}>
-          <h3 style={{color:T.text,fontSize:16,fontWeight:600,marginBottom:4}}>📤 Importar banco JSON</h3>
+          <h3 style={{color:T.text,fontSize:16,fontWeight:600,marginBottom:4}}>📤 Importar preguntas JSON</h3>
           <p style={{color:T.muted,fontSize:13,marginTop:0,marginBottom:12}}>Usa los campos "topic" del temario SESCAM para estadísticas correctas. Acepta mezcla de test y flashcard.</p>
           <textarea value={upText} onChange={e=>setUpText(e.target.value)} placeholder={'[\n  {"topic":"T15. Equilibrio ácido-base...","type":"test","question":"...","options":["A","B","C","D"],"correct":0,"explanation":"..."}\n]'} style={{width:'100%',minHeight:140,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:12,fontSize:12,fontFamily:'monospace',boxSizing:'border-box',resize:'vertical',outline:'none',boxShadow:sh.sm}}/>
           <div style={{marginTop:10,display:'flex',gap:10,alignItems:'center'}}>
