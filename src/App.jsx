@@ -678,16 +678,15 @@ export default function App(){
 
   const navItems=[
     {id:'panel',label:'Panel'},
-    {id:'temario',label:'Temario'},
-    {id:'practica',label:'Práctica'},
-    {id:'banco',label:'Banco'},
+    {id:'conocimiento',label:'Conocimiento'},
+    {id:'test',label:'Test'},
   ];
 
   // Normalize legacy tab names
   const normalizedTab=
     tab==='dashboard'||tab==='stats'||tab==='planificador'?'panel':
-    tab==='estudio'?'temario':
-    tab==='test'||tab==='simulacro'||tab==='flashcard'?'practica':
+    tab==='temario'||tab==='estudio'?'conocimiento':
+    tab==='test'||tab==='simulacro'||tab==='flashcard'||tab==='practica'||tab==='banco'?'test':
     tab==='ajustes'?'ajustes':tab;
 
   // SetupScreen solo si no hay API key Y estamos en modo local (sin servidor)
@@ -739,10 +738,9 @@ export default function App(){
           <TopicPage topic={topicView} onBack={()=>setTopicView(null)} stats={stats} qs={qs} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} topicNotes={topicNotes} saveTopicNote={saveTopicNote} learningData={learningData} saveLearningData={saveLearningData} sr={sr} recordAnswer={recordAnswer} goToBank={goToBank} setTab={setTab}/>
         ):(
           <>
-            {normalizedTab==='panel'   &&<PanelTab shared={shared} examDate={examDate} sessions={sessions} stats={stats} setExamDate={setExamDate} goToBank={goToBank} setTab={setTab} errSet={errSet} dueQs={dueQs} learningData={learningData} setTopicView={setTopicView}/>}
-            {normalizedTab==='temario' &&<TemarioConEstudio setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} studyPreselect={studyPreselect} onStudyPreselect={()=>setStudyPreselect(null)} goToStudy={t=>{setStudyPreselect(t);setTab('temario');}} topicNotes={topicNotes} saveTopicNote={saveTopicNote} setTopicView={setTopicView} learningData={learningData}/>}
-            {normalizedTab==='practica'&&<PracticaTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs}/>}
-            {normalizedTab==='banco'   &&<BankManager {...shared} preselect={bankPreselect} onPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} apiKey={apiKey}/>}
+            {normalizedTab==='panel'&&<Dashboard {...shared} examDate={examDate} sessions={sessions} learningData={learningData} setTopicView={setTopicView} setExamDate={setExamDate}/>}
+            {normalizedTab==='conocimiento'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} studyNotes={studyNotes} saveStudyNote={saveStudyNote} apiKey={apiKey} goToStudy={t=>{setTopicView(t);}} topicNotes={topicNotes} saveTopicNote={saveTopicNote} setTopicView={setTopicView} learningData={learningData}/>}
+            {normalizedTab==='test'&&<TestTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs} bankPreselect={bankPreselect} onBankPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} stats={stats} learningData={learningData}/>}
           </>
         )}
       </div>
@@ -859,6 +857,27 @@ function PracticaTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs}){
       {subTab==='test'      &&<TestMode {...shared}/>}
       {subTab==='simulacro' &&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey}/>}
       {subTab==='flashcard' &&<FlashcardMode {...shared}/>}
+    </div>
+  );
+}
+
+// ── TestTab — Test OPE + Simulacro + Flashcards + Banco (3-tab architecture) ─
+function TestTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs,bankPreselect,onBankPreselect,pdfMeta,stats,learningData}){
+  const [subTab,setSubTab]=useState('test');
+  return(
+    <div>
+      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
+        <button onClick={()=>setSubTab('test')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='test'?600:400,color:subTab==='test'?T.blue:T.muted,borderBottom:`2px solid ${subTab==='test'?T.blue:'transparent'}`,fontFamily:FONT}}>🧪 Test OPE</button>
+        <button onClick={()=>setSubTab('simulacro')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='simulacro'?600:400,color:subTab==='simulacro'?T.orange:T.muted,borderBottom:`2px solid ${subTab==='simulacro'?T.orange:'transparent'}`,fontFamily:FONT}}>⚡ Simulacro</button>
+        <button onClick={()=>setSubTab('flashcard')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='flashcard'?600:400,color:subTab==='flashcard'?T.teal:T.muted,borderBottom:`2px solid ${subTab==='flashcard'?T.teal:'transparent'}`,fontFamily:FONT}}>
+          🃏 Flashcards {dueQs.length>0&&<span style={{fontSize:10,background:T.amberS,color:T.amber,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{dueQs.length}</span>}
+        </button>
+        <button onClick={()=>setSubTab('banco')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='banco'?600:400,color:subTab==='banco'?T.purple:T.muted,borderBottom:`2px solid ${subTab==='banco'?T.purple:'transparent'}`,fontFamily:FONT}}>📦 Banco</button>
+      </div>
+      {subTab==='test'      &&<TestMode {...shared}/>}
+      {subTab==='simulacro' &&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey}/>}
+      {subTab==='flashcard' &&<FlashcardMode {...shared}/>}
+      {subTab==='banco'     &&<BankManager {...shared} preselect={bankPreselect} onPreselect={onBankPreselect} pdfMeta={pdfMeta} apiKey={apiKey}/>}
     </div>
   );
 }
@@ -1095,7 +1114,7 @@ function Sel({value,onChange,children,style:st}){return <select value={value} on
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
-function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,sessions,learningData,setTopicView}){
+function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,sessions,learningData,setTopicView,setExamDate}){
   const totalA=Object.values(stats).reduce((a,b)=>a+b.t,0);
   const totalC=Object.values(stats).reduce((a,b)=>a+b.c,0);
   const acc=totalA?Math.round(totalC/totalA*100):0;
@@ -1213,7 +1232,7 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
       )}
 
       {Object.keys(stats).length>0&&(
-        <Card style={{padding:'18px 22px'}}>
+        <Card style={{padding:'18px 22px',marginBottom:20}}>
           <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:14,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.teal,borderRadius:2,display:'block'}}/>Rendimiento por tema</div>
           {Object.entries(stats).sort((a,b)=>b[1].t-a[1].t).slice(0,5).map(([topic,s])=>{
             const pct=Math.round(s.c/s.t*100);
@@ -1227,6 +1246,27 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
           })}
         </Card>
       )}
+
+      {/* Planificador compacto */}
+      <Card style={{padding:'18px 22px'}}>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.amber,borderRadius:2,display:'block'}}/>📅 Planificación</div>
+        <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:12}}>
+          <span style={{fontSize:12,color:T.muted}}>Fecha del examen:</span>
+          <input type="date" value={examDate} onChange={e=>setExamDate?.(e.target.value)} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:'4px 8px',fontSize:12,color:T.text,fontFamily:FONT}}/>
+        </div>
+        {(()=>{
+          const weak=ALL_TOPICS.filter(t=>{const s=stats[t];return !s||s.t<4||(s.c/s.t)<0.5;}).slice(0,5);
+          if(!weak.length)return <div style={{fontSize:12,color:T.green}}>¡Todos los temas van bien!</div>;
+          return(
+            <div>
+              <div style={{fontSize:11,color:T.muted,fontWeight:600,marginBottom:6}}>Temas que necesitan trabajo:</div>
+              {weak.map(t=>(
+                <div key={t} onClick={()=>setTopicView?.(t)} style={{fontSize:11,color:T.text,padding:'4px 0',cursor:'pointer',borderBottom:`1px solid ${T.border}20`}} onMouseEnter={e=>e.currentTarget.style.color=T.blue} onMouseLeave={e=>e.currentTarget.style.color=T.text}>{t}</div>
+              ))}
+            </div>
+          );
+        })()}
+      </Card>
     </div>
   );
 }
@@ -1690,18 +1730,32 @@ function StudyPanel({data,topic,date,onRegenerate,isGenerating}){
 // ═══════════════════════════════════════════════════════════════════════════
 function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTopic,studyNotes,saveStudyNote,apiKey,topicNotes,saveTopicNote,learningData,saveLearningData,sr,recordAnswer,goToBank,setTab}){
   const [activeTab,setActiveTab]=useState('temario');
+  const [viewingPdf,setViewingPdf]=useState(null); // {source, fileId, name}
   const refs=TOPIC_REFS[topic];
   const hasRefs=refs&&refs.tietz!=='—';
   const topicNum=parseInt(topic.match(/^T(\d+)/)?.[1]);
   const officialText=topicNum&&TOPIC_OFFICIAL[topicNum];
   const pKey=topicPdfKey(topic);
   const files=pdfMeta[pKey]||[];
+  const tietzKey=pKey+'_T';const henryKey=pKey+'_H';
+  const tietzFiles=pdfMeta[tietzKey]||[];
+  const henryFiles=pdfMeta[henryKey]||[];
   const topicQs=qs.filter(q=>q.topic===topic);
   const topicStats=stats[topic];
   const status=getStatus(topic,stats);
   const learning=learningData[topic];
   const section=SECTIONS.find(s=>s.topics.includes(topic));
   const ls=learning?getLearningStatus(learning):null;
+
+  // Upload PDF for Tietz/Henry — uses savePdfForTopic with suffixed topic key
+  const uploadPdf=(source)=>{
+    const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
+    inp.onchange=async e=>{const f=e.target.files?.[0];if(!f||f.size>200*1024*1024)return;
+      await savePdfForTopic(topic+'§'+source,f);
+    };inp.click();
+  };
+  const tietzFilesReal=pdfMeta[topicPdfKey(topic+'§tietz')]||[];
+  const henryFilesReal=pdfMeta[topicPdfKey(topic+'§henry')]||[];
 
   const tabs=[
     {id:'temario',label:'Temario',icon:'📋',color:T.blue},
@@ -1743,34 +1797,75 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
               <div style={{fontSize:13,color:T.text,lineHeight:1.8}}>{officialText}</div>
             </Card>
           )}
-          {hasRefs&&(
-            <Card style={{padding:'16px 22px',marginBottom:16}}>
-              <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>Referencias bibliográficas</div>
-              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                <div style={{background:T.blueS,border:`1px solid ${T.border2}`,borderRadius:8,padding:'8px 14px',flex:1,minWidth:200}}>
-                  <div style={{fontSize:11,fontWeight:700,color:T.blueText,marginBottom:2}}>📘 Tietz {refs.tietz}</div>
-                  {refs.tietzD&&<div style={{fontSize:11,color:T.muted}}>{refs.tietzD}</div>}
-                </div>
-                <div style={{background:'#fef9c3',border:'1px solid #fde047',borderRadius:8,padding:'8px 14px',flex:1,minWidth:200}}>
-                  <div style={{fontSize:11,fontWeight:700,color:T.amberText,marginBottom:2}}>📙 Henry {refs.henry}</div>
-                  {refs.henryD&&<div style={{fontSize:11,color:T.muted}}>{refs.henryD}</div>}
-                </div>
+
+          {/* PDF Tietz & Henry — subir y visualizar */}
+          <div style={{display:'flex',gap:12,marginBottom:16,flexWrap:'wrap'}}>
+            {/* Tietz */}
+            <Card style={{padding:'14px 18px',flex:1,minWidth:280}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                <div style={{fontSize:12,fontWeight:700,color:T.blueText}}>📘 Tietz {hasRefs?refs.tietz:''}</div>
+                <button onClick={()=>uploadPdf('tietz')} style={{fontSize:10,background:T.blueS,border:`1px solid ${T.border2}`,borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.blueText,fontWeight:600,fontFamily:FONT}}>
+                  {tietzFilesReal.length?'+ Añadir':'Subir PDF'}
+                </button>
               </div>
+              {hasRefs&&refs.tietzD&&<div style={{fontSize:10,color:T.muted,marginBottom:6}}>{refs.tietzD}</div>}
+              {tietzFilesReal.length>0?(
+                <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  {tietzFilesReal.map(f=>{
+                    const isViewing=viewingPdf?.source==='tietz'&&viewingPdf?.fileId===f.id;
+                    return(
+                      <div key={f.id} style={{display:'flex',alignItems:'center',gap:6,background:isViewing?T.blueS:T.card,border:`1px solid ${isViewing?T.blue:T.border}`,borderRadius:6,padding:'5px 8px'}}>
+                        <button onClick={()=>setViewingPdf(isViewing?null:{source:'tietz',fileId:f.id,name:f.name,topicKey:topic+'§tietz'})}
+                          style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:isViewing?T.blue:T.text,fontWeight:600,flex:1,textAlign:'left',fontFamily:FONT}}>
+                          {isViewing?'▼ ':'📄 '}{f.name} {f.pages&&<span style={{color:T.muted,fontWeight:400}}>pp.{f.pages}</span>}
+                        </button>
+                        <button onClick={()=>deletePdfForTopic(topic+'§tietz',f.id)} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:12}}>×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ):(
+                <div style={{fontSize:11,color:T.dim,textAlign:'center',padding:'8px 0'}}>Sin PDF subido</div>
+              )}
             </Card>
-          )}
-          {files.length>0&&(
-            <Card style={{padding:'16px 22px',marginBottom:16}}>
-              <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>📄 PDFs adjuntos ({files.length})</div>
-              <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-                {files.map(f=>(
-                  <div key={f.id} style={{background:T.greenS,border:'1px solid #86efac',borderRadius:6,padding:'6px 10px',fontSize:11,color:T.greenText,fontWeight:600}}>
-                    📄 {f.name} {f.pages&&<span style={{color:T.muted,fontWeight:400}}>pp.{f.pages}</span>}
-                  </div>
-                ))}
+
+            {/* Henry */}
+            <Card style={{padding:'14px 18px',flex:1,minWidth:280}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                <div style={{fontSize:12,fontWeight:700,color:T.amberText}}>📙 Henry {hasRefs?refs.henry:''}</div>
+                <button onClick={()=>uploadPdf('henry')} style={{fontSize:10,background:'#fef9c3',border:'1px solid #fde047',borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.amberText,fontWeight:600,fontFamily:FONT}}>
+                  {henryFilesReal.length?'+ Añadir':'Subir PDF'}
+                </button>
               </div>
+              {hasRefs&&refs.henryD&&<div style={{fontSize:10,color:T.muted,marginBottom:6}}>{refs.henryD}</div>}
+              {henryFilesReal.length>0?(
+                <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  {henryFilesReal.map(f=>{
+                    const isViewing=viewingPdf?.source==='henry'&&viewingPdf?.fileId===f.id;
+                    return(
+                      <div key={f.id} style={{display:'flex',alignItems:'center',gap:6,background:isViewing?T.amberS:T.card,border:`1px solid ${isViewing?T.amber:T.border}`,borderRadius:6,padding:'5px 8px'}}>
+                        <button onClick={()=>setViewingPdf(isViewing?null:{source:'henry',fileId:f.id,name:f.name,topicKey:topic+'§henry'})}
+                          style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:isViewing?T.amber:T.text,fontWeight:600,flex:1,textAlign:'left',fontFamily:FONT}}>
+                          {isViewing?'▼ ':'📄 '}{f.name} {f.pages&&<span style={{color:T.muted,fontWeight:400}}>pp.{f.pages}</span>}
+                        </button>
+                        <button onClick={()=>deletePdfForTopic(topic+'§henry',f.id)} style={{background:'none',border:'none',cursor:'pointer',color:T.dim,fontSize:12}}>×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ):(
+                <div style={{fontSize:11,color:T.dim,textAlign:'center',padding:'8px 0'}}>Sin PDF subido</div>
+              )}
             </Card>
+          </div>
+
+          {/* Inline PDF viewer */}
+          {viewingPdf&&(
+            <PdfViewer topic={viewingPdf.topicKey} fileId={viewingPdf.fileId} name={viewingPdf.name} onClose={()=>setViewingPdf(null)}/>
           )}
-          <Card style={{padding:'16px 22px'}}>
+
+          {/* Topic notes */}
+          <Card style={{padding:'16px 22px',marginTop:viewingPdf?16:0}}>
             <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:8}}>📝 Mis apuntes</div>
             <textarea defaultValue={topicNotes[topic]||''} onBlur={e=>saveTopicNote(topic,e.target.value)} placeholder="Escribe tus apuntes personales sobre este tema..."
               style={{width:'100%',minHeight:100,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 12px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box'}}/>
@@ -1792,7 +1887,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
         </div>
       )}
 
-      {activeTab==='aprendizaje'&&<AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData}/>}
+      {activeTab==='aprendizaje'&&<AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData} pdfMeta={pdfMeta}/>}
 
       {activeTab==='banco'&&(
         <div>
@@ -1836,7 +1931,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
 // ═══════════════════════════════════════════════════════════════════════════
 // APRENDIZAJE TAB — Secciones desplegables con generación independiente
 // ═══════════════════════════════════════════════════════════════════════════
-function AprendizajeTab({topic,learning,saveLearningData}){
+function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
   const [newTitle,setNewTitle]=useState('');
   const [openSec,setOpenSec]=useState(null);    // index of open section accordion
   const [activePhase,setActivePhase]=useState({}); // {secIdx: phaseIdx}
@@ -1844,6 +1939,8 @@ function AprendizajeTab({topic,learning,saveLearningData}){
   const [genStep,setGenStep]=useState('');
   const [genPct,setGenPct]=useState(0);
   const [genError,setGenError]=useState('');
+  const [extracting,setExtracting]=useState(false);
+  const [extractMsg,setExtractMsg]=useState('');
 
   // Ensure learning data structure
   const data=learning||{sections:[],spacedRepetition:null};
@@ -1856,6 +1953,54 @@ function AprendizajeTab({topic,learning,saveLearningData}){
     if(!newTitle.trim())return;
     const updated={...data,sections:[...sections,{id:uid(),title:newTitle.trim(),text:'',generated:null}]};
     save(updated);setNewTitle('');
+  };
+
+  // ── Extract sections from PDF ─────────────────────────────────────────────
+  const extractSectionsFromPdf=async()=>{
+    // Find the first available PDF for this topic (Tietz or Henry)
+    const tietzKey=topicPdfKey(topic+'§tietz');
+    const henryKey=topicPdfKey(topic+'§henry');
+    const genericKey=topicPdfKey(topic);
+    const allPdfFiles=[...(pdfMeta[tietzKey]||[]).map(f=>({...f,tk:topic+'§tietz'})),...(pdfMeta[henryKey]||[]).map(f=>({...f,tk:topic+'§henry'})),...(pdfMeta[genericKey]||[]).map(f=>({...f,tk:topic}))];
+    if(!allPdfFiles.length){setExtractMsg('No hay PDFs subidos. Sube un PDF en la pestaña Temario primero.');return;}
+
+    setExtracting(true);setExtractMsg('Cargando PDF...');
+    try{
+      const pdfFile=allPdfFiles[0];
+      const blob=await idbLoad(topicFilePdfKey(pdfFile.tk,pdfFile.id));
+      if(!blob)throw new Error('PDF no encontrado en almacenamiento');
+
+      setExtractMsg('Enviando a IA para extraer secciones...');
+      const b64=await blobToB64(blob instanceof File?blob:new File([blob],pdfFile.name,{type:'application/pdf'}));
+
+      const res=await fetch('/api/anthropic',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:'claude-sonnet-4-5',max_tokens:4096,
+          messages:[{role:'user',content:[
+            {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}},
+            {type:'text',text:`Analiza este documento del tema "${topic}" de bioquímica clínica (FEA Laboratorio Clínico, SESCAM 2025).\n\nIdentifica TODOS los subapartados o secciones principales del capítulo leyendo el índice, tabla de contenidos o encabezados.\n\nDevuelve SOLO JSON válido:\n{"sections":[{"title":"Título exacto tal como aparece en el documento","pageHint":"página aproximada"}]}\n\n- Extrae los subapartados reales (no inventes)\n- Incluye TODAS las secciones principales (5-12 típico)\n- Ordena en el orden del documento`}
+          ]}]
+        })
+      });
+      if(!res.ok){const d=await res.json().catch(()=>({}));throw new Error(d?.error?.message||`HTTP ${res.status}`);}
+      const apiData=await res.json();
+      const text=(apiData.content||[]).map(c=>c.text||'').join('').trim();
+      const cleaned=text.replace(/```json|```/g,'').trim();
+      const parsed=JSON.parse(repairJSON(cleaned));
+      const extractedSections=parsed.sections||parsed;
+
+      if(!Array.isArray(extractedSections)||!extractedSections.length) throw new Error('No se encontraron secciones');
+
+      // Create sections from extraction
+      const newSections=extractedSections.map(s=>({id:uid(),title:s.title||(typeof s==='string'?s:'Sin título'),text:'',generated:null}));
+      const updated={...data,sections:[...sections,...newSections]};
+      await save(updated);
+      setExtractMsg(`✓ ${newSections.length} secciones extraídas del PDF`);
+      setTimeout(()=>setExtractMsg(''),3000);
+    }catch(e){setExtractMsg(`Error: ${e.message}`);}
+    setExtracting(false);
   };
 
   const removeSection=async(idx)=>{
@@ -2091,7 +2236,7 @@ function AprendizajeTab({topic,learning,saveLearningData}){
 
       {/* Add section */}
       <Card style={{padding:'14px 16px'}}>
-        <div style={{display:'flex',gap:8}}>
+        <div style={{display:'flex',gap:8,marginBottom:8}}>
           <input value={newTitle} onChange={e=>setNewTitle(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSection()}
             placeholder="Título de la nueva sección (ej: Fisiología, Métodos analíticos, Patología...)"
             style={{flex:1,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'8px 12px',fontSize:12,outline:'none',fontFamily:FONT}}/>
@@ -2099,6 +2244,13 @@ function AprendizajeTab({topic,learning,saveLearningData}){
             style={{background:!newTitle.trim()?T.card:T.purple,color:!newTitle.trim()?T.dim:'#fff',border:'none',borderRadius:7,padding:'8px 18px',fontSize:12,fontWeight:600,cursor:!newTitle.trim()?'not-allowed':'pointer',fontFamily:FONT,whiteSpace:'nowrap'}}>
             + Añadir sección
           </button>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <button onClick={extractSectionsFromPdf} disabled={extracting}
+            style={{background:extracting?T.amberS:T.tealS,border:`1px solid ${extracting?T.amber:T.teal}`,borderRadius:7,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:extracting?'wait':'pointer',color:extracting?T.amberText:T.tealText,fontFamily:FONT}}>
+            {extracting?'⏳ Extrayendo...':'📄 Extraer secciones del PDF'}
+          </button>
+          {extractMsg&&<span style={{fontSize:11,color:extractMsg.startsWith('✓')?T.green:extractMsg.startsWith('Error')?T.red:T.muted}}>{extractMsg}</span>}
         </div>
       </Card>
     </div>
