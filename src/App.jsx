@@ -537,7 +537,27 @@ export default function App(){
   const [reviewDismissed,setReviewDismissed]=useState(false);
   const [activeReview,setActiveReview]=useState(null);
   const [streakData,setStreakData]=useState({current:0,max:0,lastDate:null});
-  const [levelUpMsg,setLevelUpMsg]=useState(null); // {topic, oldLevel, newLevel} for celebration
+  const [levelUpMsg,setLevelUpMsg]=useState(null);
+  // ── Background jobs system — generations survive tab switches ──────────────
+  const [bgJobs,setBgJobs]=useState(()=>load('olab_bgjobs',{})); // {jobId: {type,topic,status,step,pct,error,result}}
+  const bgJobsRef=useRef({});
+  const updateJob=(id,update)=>{setBgJobs(prev=>{const n={...prev,[id]:{...prev[id],...update}};save('olab_bgjobs',n);return n;});};
+  const clearJob=(id)=>{setBgJobs(prev=>{const n={...prev};delete n[id];save('olab_bgjobs',n);return n;});};
+  const getActiveJobs=()=>Object.entries(bgJobs).filter(([,j])=>j.status==='running');
+  // Expose job runner for child components
+  const startBgJob=useCallback((id,type,topic,runFn)=>{
+    updateJob(id,{type,topic,status:'running',step:'Iniciando...',pct:0,error:null,result:null,startedAt:Date.now()});
+    // Run async work independently of component lifecycle
+    const run=async()=>{
+      try{
+        await runFn(
+          (step,pct)=>updateJob(id,{step,pct}), // progress callback
+          (result)=>{updateJob(id,{status:'done',pct:100,step:'Completado',result});} // done callback
+        );
+      }catch(e){updateJob(id,{status:'error',error:e.message});}
+    };
+    run();
+  },[]);
 
   useEffect(()=>{
     (async()=>{
@@ -571,7 +591,16 @@ export default function App(){
 
       setQs(q);setSr(s);setStats(st);setMarked(new Set(mk));setErrSet(new Set(er));
       setSessions(sess);setExamDateState(ed);setNotesState(nt);setTopicNotesState(tn);setPdfMetaState(pm);
-      setApiKeyState(ak);setStudyNotesState(sn);setLearningData(ld);setStreakData(loadStreak());setLoaded(true);
+      setApiKeyState(ak);setStudyNotesState(sn);setLearningData(ld);setStreakData(loadStreak());
+      // Mark interrupted bg jobs from previous session
+      const savedJobs=load('olab_bgjobs',{});
+      const fixedJobs={};
+      Object.entries(savedJobs).forEach(([id,j])=>{
+        if(j.status==='running') fixedJobs[id]={...j,status:'interrupted',error:'Sesión interrumpida. Puedes reintentar.'};
+        else if(j.status==='done'||j.status==='error') fixedJobs[id]=j;
+      });
+      if(Object.keys(fixedJobs).length) setBgJobs(fixedJobs);
+      setLoaded(true);
     })();
   },[]);
 
@@ -847,15 +876,28 @@ export default function App(){
             </div>
           </div>
           <div style={{display:'flex',marginTop:4,gap:0}}>
-            {navItems.map(n=>(
-              <button key={n.id} onClick={()=>setTab(n.id)} style={{padding:'9px 16px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:normalizedTab===n.id?700:500,color:normalizedTab===n.id?T.green:T.dim,borderBottom:`2px solid ${normalizedTab===n.id?T.green:'transparent'}`,whiteSpace:'nowrap',fontFamily:FONT,transition:'color 0.15s',letterSpacing:'0.3px'}}>
-                {n.label}
-              </button>
-            ))}
+            {navItems.map(n=>{
+              const hasJobs=getActiveJobs().length>0&&n.id==='estudio';
+              return(
+                <button key={n.id} onClick={()=>setTab(n.id)} style={{padding:'9px 16px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:normalizedTab===n.id?700:500,color:normalizedTab===n.id?T.green:T.dim,borderBottom:`2px solid ${normalizedTab===n.id?T.green:'transparent'}`,whiteSpace:'nowrap',fontFamily:FONT,transition:'color 0.15s',letterSpacing:'0.3px',display:'flex',alignItems:'center',gap:4}}>
+                  {n.label}
+                  {hasJobs&&<span style={{width:6,height:6,borderRadius:'50%',background:T.green,animation:'pulse 1.5s infinite'}}/>}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
 
+      {/* Background job notifications */}
+      {Object.entries(bgJobs).filter(([,j])=>j.status==='done'||j.status==='error').map(([id,j])=>(
+        <div key={id} style={{position:'fixed',bottom:20,right:20,zIndex:200,background:j.status==='done'?T.greenS:T.redS,border:`0.5px solid ${j.status==='done'?T.green:T.red}`,borderRadius:10,padding:'12px 18px',maxWidth:320,cursor:'pointer'}} onClick={()=>clearJob(id)}>
+          <div style={{fontSize:12,fontWeight:700,color:j.status==='done'?T.green:T.red}}>{j.status==='done'?'✅ Completado':'❌ Error'}</div>
+          <div style={{fontSize:11,color:T.muted,marginTop:2}}>{j.type} · {j.topic?.split('.')[0]}</div>
+          {j.error&&<div style={{fontSize:10,color:T.red,marginTop:2}}>{j.error}</div>}
+          <div style={{fontSize:9,color:T.dim,marginTop:4}}>Toca para cerrar</div>
+        </div>
+      ))}
       {/* Level-up celebration overlay */}
       {levelUpMsg&&(
         <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.7)',backdropFilter:'blur(4px)'}} onClick={()=>setLevelUpMsg(null)}>
@@ -875,7 +917,7 @@ export default function App(){
 
       <div style={{padding:'32px 40px'}}>
         {topicView?(
-          <TopicPage topic={topicView} onBack={()=>setTopicView(null)} stats={stats} qs={qs} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} apiKey={apiKey} learningData={learningData} saveLearningData={saveLearningData} sr={sr} recordAnswer={recordAnswer} goToBank={goToBank} setTab={setTab} saveQs={saveQs}/>
+          <TopicPage topic={topicView} onBack={()=>setTopicView(null)} stats={stats} qs={qs} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} apiKey={apiKey} learningData={learningData} saveLearningData={saveLearningData} sr={sr} recordAnswer={recordAnswer} goToBank={goToBank} setTab={setTab} saveQs={saveQs} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob}/>
         ):(
           <>
             {normalizedTab==='panel'&&<Dashboard {...shared} examDate={examDate} sessions={sessions} learningData={learningData} setTopicView={setTopicView} setExamDate={setExamDate} streakData={streakData}/>}
@@ -1847,7 +1889,7 @@ function StudyPanel({data,topic,date,onRegenerate,isGenerating}){
 // ═══════════════════════════════════════════════════════════════════════════
 // TOPIC PAGE — Vista dedicada de un tema con 4 tabs
 // ═══════════════════════════════════════════════════════════════════════════
-function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTopic,apiKey,learningData,saveLearningData,sr,recordAnswer,goToBank,setTab,saveQs}){
+function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTopic,apiKey,learningData,saveLearningData,sr,recordAnswer,goToBank,setTab,saveQs,bgJobs,startBgJob,clearJob}){
   const [activeTab,setActiveTab]=useState('temario');
   const [viewingPdf,setViewingPdf]=useState(null); // {source, fileId, name}
   const refs=TOPIC_REFS[topic];
@@ -1930,12 +1972,18 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
       </div>
 
       <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
-        {tabs.map(t=>(
-          <button key={t.id} onClick={()=>setActiveTab(t.id)} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:activeTab===t.id?600:400,color:activeTab===t.id?t.color:T.muted,borderBottom:`2px solid ${activeTab===t.id?t.color:'transparent'}`,fontFamily:FONT}}>{t.icon} {t.label}</button>
-        ))}
+        {tabs.map(t=>{
+          const hasActiveJob=Object.values(bgJobs||{}).some(j=>j.status==='running'&&j.type?.includes(t.id));
+          return(
+            <button key={t.id} onClick={()=>setActiveTab(t.id)} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:activeTab===t.id?600:400,color:activeTab===t.id?t.color:T.muted,borderBottom:`2px solid ${activeTab===t.id?t.color:'transparent'}`,fontFamily:FONT,display:'flex',alignItems:'center',gap:4}}>
+              {t.icon} {t.label}
+              {hasActiveJob&&<span style={{width:6,height:6,borderRadius:'50%',background:T.green,display:'inline-block',animation:'pulse 1.5s infinite'}}/>}
+            </button>
+          );
+        })}
       </div>
 
-      {activeTab==='temario'&&(
+      <div style={{display:activeTab==='temario'?'block':'none'}}>{(()=>(
         <div>
           {officialText&&(
             <Card style={{padding:'18px 22px',marginBottom:16,borderLeft:`3px solid #3a2a00`}}>
@@ -2011,13 +2059,13 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
           )}
 
         </div>
-      )}
+      ))()}</div>
 
-      {activeTab==='aprendizaje'&&<AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData} pdfMeta={pdfMeta}/>}
+      <div style={{display:activeTab==='aprendizaje'?'block':'none'}}><AprendizajeTab topic={topic} learning={learning} saveLearningData={saveLearningData} pdfMeta={pdfMeta} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob}/></div>
 
-      {activeTab==='apuntes'&&<TopicApuntesTab topic={topic} learning={learning} saveLearningData={saveLearningData}/>}
+      <div style={{display:activeTab==='apuntes'?'block':'none'}}><TopicApuntesTab topic={topic} learning={learning} saveLearningData={saveLearningData} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob}/></div>
 
-      {activeTab==='preguntas'&&<TopicPreguntasTab topic={topic} allQuestions={allTopicQuestions} topicTag={topicNum?`T${topicNum}`:''} stats={stats} saveQs={saveQs} qs={qs} apiKey={apiKey} learning={learning}/>}
+      <div style={{display:activeTab==='preguntas'?'block':'none'}}><TopicPreguntasTab topic={topic} allQuestions={allTopicQuestions} topicTag={topicNum?`T${topicNum}`:''} stats={stats} saveQs={saveQs} qs={qs} apiKey={apiKey} learning={learning} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob}/></div>
     </div>
   );
 }
@@ -2025,7 +2073,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
 // ═══════════════════════════════════════════════════════════════════════════
 // APUNTES TAB — apuntes auto-generados desde el contenido de Aprendizaje
 // ═══════════════════════════════════════════════════════════════════════════
-function TopicApuntesTab({topic,learning,saveLearningData}){
+function TopicApuntesTab({topic,learning,saveLearningData,bgJobs,startBgJob,clearJob}){
   const [generating,setGenerating]=useState(false);
   const [genMsg,setGenMsg]=useState('');
   const [editIdx,setEditIdx]=useState(null);
@@ -2167,7 +2215,7 @@ Requisitos:
 // ═══════════════════════════════════════════════════════════════════════════
 // PREGUNTAS TAB — todas las preguntas del tema con metadatos y generación
 // ═══════════════════════════════════════════════════════════════════════════
-function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,learning}){
+function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,learning,bgJobs,startBgJob,clearJob}){
   const [filter,setFilter]=useState({section:'',type:'',difficulty:''});
   const [generating,setGenerating]=useState(false);
   const [genMsg,setGenMsg]=useState('');
@@ -2297,7 +2345,7 @@ function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,l
 // ═══════════════════════════════════════════════════════════════════════════
 // APRENDIZAJE TAB — Secciones desplegables con generación independiente
 // ═══════════════════════════════════════════════════════════════════════════
-function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
+function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJob,clearJob}){
   const [newTitle,setNewTitle]=useState('');
   const [openSec,setOpenSec]=useState(null);    // index of open section accordion
   const [activePhase,setActivePhase]=useState({}); // {secIdx: phaseIdx}
@@ -2415,38 +2463,64 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
 
     try{
       // 1. Extract concepts
-      setGenStep('Extrayendo conceptos...');setGenPct(8);
+      setGenStep('Fase 1/6: Extrayendo conceptos...');setGenPct(5);
+      console.log('[OPELab] Fase 1: Extrayendo conceptos de',targetTitle);
       const rawC=await callClaude(`${SYS}\n\nExtrae TODA la información clave de esta sección.\n\n${CTX}\n\nJSON:\n{"concepts":[{"t":"título (5-8 palabras)","d":"Descripción concisa. Máximo 2 frases.","cat":"concept|value|mechanism|clinical"}]}\n\nSé exhaustivo.`);
       const conceptsParsed=JSON.parse(repairJSON(rawC));
       const conceptList=conceptsParsed.concepts||conceptsParsed;
-      const cMap=JSON.stringify(Array.isArray(conceptList)?conceptList.slice(0,150):[]);
+      // Limit concept map to 80 items for generation prompts (avoids token overflow)
+      const cMap=JSON.stringify(Array.isArray(conceptList)?conceptList.slice(0,80):[]);
+      console.log('[OPELab] Fase 1 OK:',Array.isArray(conceptList)?conceptList.length:0,'conceptos extraídos');
 
-      // 2. Pre-test (20 preguntas)
-      setGenStep('Generando pre-test (20 preguntas)...');setGenPct(20);
-      const p1=await callClaude(`${SYS}\n\nGenera exactamente 20 preguntas tipo test (PRE-TEST) basándote en estos conceptos de "${targetTitle}".\n\nCONCEPTOS:\n${cMap}\n\nMezcla 7 fáciles, 7 medias, 6 difíciles. 4 opciones (A-D).${META}\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","fase":"pretest"${DIFF.slice(1)}}]}`,8192);
+      // 2. Pre-test (20 preguntas) — compact prompt, no META in concepts
+      setGenStep('Fase 2/6: Pre-test (20 preguntas)...');setGenPct(15);
+      console.log('[OPELab] Fase 2: Generando pre-test...');
+      const p1=await callClaude(`${SYS}\n\nGenera 20 preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\n7 fáciles, 7 medias, 6 difíciles. JSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
       const preTest=JSON.parse(repairJSON(p1));
+      console.log('[OPELab] Fase 2 OK:',(preTest.questions||preTest).length,'preguntas');
 
       // 3. Guided reading
-      setGenStep('Generando lectura guiada...');setGenPct(35);
+      setGenStep('Fase 3/6: Lectura guiada...');setGenPct(30);
+      console.log('[OPELab] Fase 3: Generando lectura guiada...');
       const p2=await callClaude(`${SYS}\n\nOrganiza estos conceptos de "${targetTitle}" en subsecciones de lectura guiada (3-6).\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}`,8192);
       const guided=JSON.parse(repairJSON(p2));
+      console.log('[OPELab] Fase 3 OK:',(guided.sections||guided).length,'secciones');
 
       // 4. Flashcards (25 tarjetas)
-      setGenStep('Generando flashcards (25)...');setGenPct(50);
-      const p3=await callClaude(`${SYS}\n\nGenera exactamente 25 flashcards de los conceptos más importantes de "${targetTitle}".\n\nCONCEPTOS:\n${cMap}${META}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta concreta","back":"Respuesta precisa","fase":"flashcard","tipo":"concepto|mecanismo|valor|clinico|aplicacion","tema":"${topicTag}","seccion":"${sec.title}","subseccion":"${sub?.title||''}","fechaGeneracion":"${dateTag}"}]}\n\n25 flashcards exactas. Prioriza valores numéricos, criterios diagnósticos, clasificaciones.`,6144);
+      setGenStep('Fase 4/6: Flashcards (25)...');setGenPct(45);
+      console.log('[OPELab] Fase 4: Generando flashcards...');
+      const p3=await callClaude(`${SYS}\n\nGenera 25 flashcards de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta","back":"Respuesta","tipo":"concepto"}]}\n\n25 exactas. Prioriza valores, criterios, clasificaciones.`,6144);
       const fc=JSON.parse(repairJSON(p3));
+      console.log('[OPELab] Fase 4 OK:',(fc.flashcards||fc).length,'flashcards');
 
       // 5. Clinical cases (5 casos)
-      setGenStep('Generando casos clínicos (5)...');setGenPct(65);
-      const p4=await callClaude(`${SYS}\n\nCrea exactamente 5 casos clínicos realistas para "${targetTitle}".\n\nCONCEPTOS:\n${cMap}${META}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"...","fase":"caso","tipo":"clinico","dificultad":"alta","tema":"${topicTag}","seccion":"${sec.title}","subseccion":"${sub?.title||''}","fechaGeneracion":"${dateTag}"}]}`,8192);
+      setGenStep('Fase 5/6: Casos clínicos (5)...');setGenPct(60);
+      console.log('[OPELab] Fase 5: Generando casos clínicos...');
+      const p4=await callClaude(`${SYS}\n\nCrea 5 casos clínicos realistas de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"breve"}]}`,8192);
       const cc=JSON.parse(repairJSON(p4));
+      console.log('[OPELab] Fase 5 OK:',(cc.clinicalCases||cc).length,'casos');
 
-      // 6. Post-test (25 preguntas)
-      setGenStep('Generando post-test (25 preguntas)...');setGenPct(80);
-      const p5=await callClaude(`${SYS}\n\nGenera exactamente 25 preguntas DIFÍCILES (POST-TEST) para "${targetTitle}". Aplicación clínica, diagnóstico diferencial, integración.\n\nCONCEPTOS:\n${cMap}${META}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","fase":"posttest"${DIFF.slice(1)}}]}\n\n25 preguntas exactas, nivel alto.`,8192);
-      const postTest=JSON.parse(repairJSON(p5));
+      // 6. Post-test (25 preguntas) — split into 2 batches to avoid token overflow
+      setGenStep('Fase 6/6: Post-test (13+12 preguntas)...');setGenPct(75);
+      console.log('[OPELab] Fase 6: Generando post-test batch 1 (13 preguntas)...');
+      const postPromptBase=`${SYS}\n\nPreguntas DIFÍCILES (POST-TEST) de "${targetTitle}". Aplicación clínica, diagnóstico diferencial.\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
+      const p5a=await callClaude(postPromptBase+'\n\nGenera exactamente 13 preguntas.',8192);
+      const postBatch1=JSON.parse(repairJSON(p5a));
+      const postQs1=postBatch1.questions||postBatch1;
+      console.log('[OPELab] Fase 6 batch 1 OK:',Array.isArray(postQs1)?postQs1.length:0,'preguntas');
+
+      setGenPct(88);
+      console.log('[OPELab] Fase 6: Generando post-test batch 2 (12 preguntas)...');
+      const p5b=await callClaude(postPromptBase+'\n\nGenera exactamente 12 preguntas diferentes a las anteriores.',8192);
+      const postBatch2=JSON.parse(repairJSON(p5b));
+      const postQs2=postBatch2.questions||postBatch2;
+      console.log('[OPELab] Fase 6 batch 2 OK:',Array.isArray(postQs2)?postQs2.length:0,'preguntas');
+
+      const postTest={questions:[...(Array.isArray(postQs1)?postQs1:[]),...(Array.isArray(postQs2)?postQs2:[])]};
+      console.log('[OPELab] Fase 6 TOTAL:',postTest.questions.length,'preguntas post-test');
 
       setGenPct(95);setGenStep('Etiquetando y guardando...');
+      console.log('[OPELab] Etiquetando y guardando resultado...');
 
       // Tag all generated items with metadata
       const tag=(arr,fase)=>(Array.isArray(arr)?arr:[]).map((q,i)=>({...q,id:uid(),tema:topicTag,seccion:sec.title,subseccion:sub?.title||'',fase,fechaGeneracion:dateTag,tipo:q.tipo||'concepto',dificultad:q.dificultad||'media'}));

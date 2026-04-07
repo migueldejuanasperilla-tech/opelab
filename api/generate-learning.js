@@ -35,6 +35,7 @@ export default async function handler(req, res) {
   if (!topic || !sectionText) return res.status(400).json({ error: 'topic and sectionText are required' });
 
   const callClaude = async (prompt, maxTokens=4096) => {
+    console.log(`[generate-learning] Calling Claude (max_tokens=${maxTokens}, prompt_length=${prompt.length})`);
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -51,48 +52,76 @@ export default async function handler(req, res) {
     const data = await response.json();
     if (!response.ok) throw new Error(data?.error?.message || `HTTP ${response.status}`);
     const text = (data.content || []).map(c => c.text || '').join('').trim();
+    const stopReason = data.stop_reason || 'unknown';
+    console.log(`[generate-learning] Response: ${text.length} chars, stop_reason=${stopReason}`);
+    if (stopReason === 'max_tokens') console.warn('[generate-learning] WARNING: Response truncated by max_tokens!');
     return text.replace(/```json|```/g, '').trim();
   };
 
-  const SYS = 'Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). IDIOMA: Independientemente del idioma del texto de entrada, TODA tu respuesta debe estar en español. Traduce al español todos los conceptos, definiciones, mecanismos, preguntas, opciones de respuesta, explicaciones, flashcards, casos clínicos y secciones de lectura. Si el texto original está en inglés u otro idioma, tradúcelo. Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
-  const CTX = `TEMA: "${topic}"\nSECCIÓN: "${sectionTitle || 'Sin título'}"\n\nTEXTO DE LA SECCIÓN:\n${sectionText.slice(0, 30000)}`;
+  const SYS = 'Eres un experto en bioquímica clínica (FEA Laboratorio Clínico, SESCAM 2025). IDIOMA: Todo en español. Responde SOLO con JSON válido, sin texto adicional.';
+  const CTX = `TEMA: "${topic}"\nSECCIÓN: "${sectionTitle || 'Sin título'}"\n\nTEXTO:\n${sectionText.slice(0, 25000)}`;
 
   try {
-    // 1. Extract concept map
-    const rawConcepts = await callClaude(`${SYS}\n\nExtrae TODA la información clave de esta sección. Devuelve una lista compacta en JSON.\n\n${CTX}\n\nJSON:\n{"concepts":[{"t":"título del concepto (5-8 palabras)","d":"Descripción concisa con dato específico. Máximo 2 frases.","cat":"concept|value|mechanism|clinical"}]}\n\nCategorías: concept (definiciones, clasificaciones), value (valores numéricos, rangos), mechanism (fisiopatología, mecanismos), clinical (diagnóstico, terapéutica).\n\nSé exhaustivo — extrae cada dato, valor, mecanismo y nota clínica.`);
+    // 1. Extract concepts (limit to 80 for prompt efficiency)
+    console.log('[generate-learning] Phase 1: Extracting concepts...');
+    const rawConcepts = await callClaude(`${SYS}\n\nExtrae la información clave.\n\n${CTX}\n\nJSON:\n{"concepts":[{"t":"título (5-8 palabras)","d":"Descripción concisa, máx 2 frases.","cat":"concept|value|mechanism|clinical"}]}\n\nSé exhaustivo.`);
     const concepts = JSON.parse(repairJSON(rawConcepts));
     const conceptList = concepts.concepts || concepts;
-    const conceptMap = JSON.stringify(Array.isArray(conceptList) ? conceptList.slice(0, 150) : []);
+    const conceptMap = JSON.stringify(Array.isArray(conceptList) ? conceptList.slice(0, 80) : []);
+    console.log(`[generate-learning] Phase 1 OK: ${Array.isArray(conceptList) ? conceptList.length : 0} concepts`);
 
-    // 2. Pre-test (20 questions)
-    const p1 = await callClaude(`${SYS}\n\nGenera exactamente 20 preguntas tipo test (PRE-TEST) basándote en estos conceptos de la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nMezcla 7 fáciles, 7 medias, 6 difíciles. 4 opciones (A-D) por pregunta.\n\nCada pregunta incluye: "tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta","tema":"${topic}","seccion":"${sectionTitle}","fase":"pretest"\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","tipo":"concepto","dificultad":"media","fase":"pretest"}]}`, 8192);
+    // 2. Pre-test (20 questions) — compact prompt
+    console.log('[generate-learning] Phase 2: Pre-test (20 questions)...');
+    const p1 = await callClaude(`${SYS}\n\nGenera 20 preguntas test (PRE-TEST) de "${sectionTitle}".\n\nCONCEPTOS:\n${conceptMap}\n\n7 fáciles, 7 medias, 6 difíciles.\n\nJSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`, 8192);
     const preTest = JSON.parse(repairJSON(p1));
+    console.log(`[generate-learning] Phase 2 OK: ${(preTest.questions || preTest).length} questions`);
 
     // 3. Guided reading
-    const p2 = await callClaude(`${SYS}\n\nOrganiza estos conceptos de la sección "${sectionTitle}" en subsecciones de lectura guiada.\n\nCONCEPTOS:\n${conceptMap}\n\nPara cada subsección: título, resumen (3-5 frases), puntos clave con datos concretos, pregunta de comprensión.\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}\n\n3-6 subsecciones.`, 8192);
+    console.log('[generate-learning] Phase 3: Guided reading...');
+    const p2 = await callClaude(`${SYS}\n\nOrganiza conceptos de "${sectionTitle}" en lectura guiada (3-6 subsecciones).\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}`, 8192);
     const guidedReading = JSON.parse(repairJSON(p2));
+    console.log(`[generate-learning] Phase 3 OK: ${(guidedReading.sections || guidedReading).length} sections`);
 
-    // 4. Flashcards (25)
-    const p3 = await callClaude(`${SYS}\n\nGenera exactamente 25 flashcards de los conceptos más importantes de la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta concreta","back":"Respuesta precisa","tipo":"concepto|mecanismo|valor|clinico","fase":"flashcard"}]}\n\n25 flashcards exactas. Prioriza valores numéricos, criterios diagnósticos, clasificaciones.`, 6144);
+    // 4. Flashcards (25) — compact prompt
+    console.log('[generate-learning] Phase 4: Flashcards (25)...');
+    const p3 = await callClaude(`${SYS}\n\nGenera 25 flashcards de "${sectionTitle}".\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta","back":"Respuesta","tipo":"concepto"}]}\n\n25 exactas.`, 6144);
     const flashcards = JSON.parse(repairJSON(p3));
+    console.log(`[generate-learning] Phase 4 OK: ${(flashcards.flashcards || flashcards).length} flashcards`);
 
     // 5. Clinical cases (5)
-    const p4 = await callClaude(`${SYS}\n\nCrea exactamente 5 casos clínicos realistas para la sección "${sectionTitle}" del tema "${topic}".\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"...","tipo":"clinico","dificultad":"alta","fase":"caso"}]}`, 8192);
+    console.log('[generate-learning] Phase 5: Clinical cases (5)...');
+    const p4 = await callClaude(`${SYS}\n\nCrea 5 casos clínicos de "${sectionTitle}".\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"breve"}]}`, 8192);
     const clinicalCases = JSON.parse(repairJSON(p4));
+    console.log(`[generate-learning] Phase 5 OK: ${(clinicalCases.clinicalCases || clinicalCases).length} cases`);
 
-    // 6. Post-test (25 questions)
-    const p5 = await callClaude(`${SYS}\n\nGenera exactamente 25 preguntas DIFÍCILES (POST-TEST) para la sección "${sectionTitle}" del tema "${topic}". Aplicación clínica, diagnóstico diferencial, integración.\n\nCONCEPTOS:\n${conceptMap}\n\nCada pregunta incluye: "tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta","fase":"posttest"\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","tipo":"aplicacion","dificultad":"alta","fase":"posttest"}]}`, 8192);
-    const postTest = JSON.parse(repairJSON(p5));
+    // 6. Post-test — SPLIT into 2 batches to prevent token overflow
+    console.log('[generate-learning] Phase 6: Post-test batch 1 (13 questions)...');
+    const postBase = `${SYS}\n\nPreguntas DIFÍCILES (POST-TEST) de "${sectionTitle}". Aplicación clínica, diagnóstico diferencial.\n\nCONCEPTOS:\n${conceptMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
+    const p5a = await callClaude(postBase + '\n\nGenera exactamente 13 preguntas.', 8192);
+    const batch1 = JSON.parse(repairJSON(p5a));
+    const qs1 = batch1.questions || batch1;
+    console.log(`[generate-learning] Phase 6 batch 1 OK: ${Array.isArray(qs1) ? qs1.length : 0} questions`);
 
+    console.log('[generate-learning] Phase 6: Post-test batch 2 (12 questions)...');
+    const p5b = await callClaude(postBase + '\n\nGenera exactamente 12 preguntas diferentes.', 8192);
+    const batch2 = JSON.parse(repairJSON(p5b));
+    const qs2 = batch2.questions || batch2;
+    console.log(`[generate-learning] Phase 6 batch 2 OK: ${Array.isArray(qs2) ? qs2.length : 0} questions`);
+
+    const postTest = [...(Array.isArray(qs1) ? qs1 : []), ...(Array.isArray(qs2) ? qs2 : [])];
+    console.log(`[generate-learning] Phase 6 TOTAL: ${postTest.length} post-test questions`);
+
+    console.log('[generate-learning] ALL PHASES COMPLETE. Sending response.');
     res.status(200).json({
       conceptMap: Array.isArray(conceptList) ? conceptList : [],
       preTest: preTest.questions || preTest,
       guidedReading: guidedReading.sections || guidedReading,
       flashcards: flashcards.flashcards || flashcards,
       clinicalCases: clinicalCases.clinicalCases || clinicalCases,
-      postTest: postTest.questions || postTest,
+      postTest: postTest,
     });
   } catch (err) {
+    console.error('[generate-learning] ERROR:', err.message);
     res.status(500).json({ error: err.message });
   }
 }
