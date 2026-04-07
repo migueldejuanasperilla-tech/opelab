@@ -2472,10 +2472,11 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
       const cMap=JSON.stringify(Array.isArray(conceptList)?conceptList.slice(0,80):[]);
       console.log('[OPELab] Fase 1 OK:',Array.isArray(conceptList)?conceptList.length:0,'conceptos extraídos');
 
-      // 2. Pre-test (20 preguntas) — compact prompt, no META in concepts
-      setGenStep('Fase 2/6: Pre-test (20 preguntas)...');setGenPct(15);
+      // 2. Pre-test (20 preguntas de transferencia)
+      setGenStep('Fase 2/8: Pre-test (20 preguntas)...');setGenPct(12);
       console.log('[OPELab] Fase 2: Generando pre-test...');
-      const p1=await callClaude(`${SYS}\n\nGenera 20 preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\n7 fáciles, 7 medias, 6 difíciles. JSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
+      const TRANSFER='IMPORTANTE: NUNCA preguntes directamente lo que dice el texto. SIEMPRE presenta el concepto en un contexto clínico o analítico NUEVO donde el estudiante tenga que APLICAR el conocimiento, no reconocerlo. Ejemplo: en lugar de "¿Qué hace la PTH?" → "Un paciente presenta hipocalcemia persistente tras tiroidectomía. ¿Qué hormona está deficitaria?"';
+      const p1=await callClaude(`${SYS}\n\n${TRANSFER}\n\nGenera 20 preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\n7 fáciles, 7 medias, 6 difíciles. JSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
       const preTest=JSON.parse(repairJSON(p1));
       console.log('[OPELab] Fase 2 OK:',(preTest.questions||preTest).length,'preguntas');
 
@@ -2487,37 +2488,51 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
       console.log('[OPELab] Fase 3 OK:',(guided.sections||guided).length,'secciones');
 
       // 4. Flashcards (25 tarjetas)
-      setGenStep('Fase 4/6: Flashcards (25)...');setGenPct(45);
+      setGenStep('Fase 4/8: Flashcards (25)...');setGenPct(35);
       console.log('[OPELab] Fase 4: Generando flashcards...');
-      const p3=await callClaude(`${SYS}\n\nGenera 25 flashcards de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta","back":"Respuesta","tipo":"concepto"}]}\n\n25 exactas. Prioriza valores, criterios, clasificaciones.`,6144);
+      const p3=await callClaude(`${SYS}\n\nGenera 25 flashcards de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta de aplicación (no literal)","back":"Respuesta con dato concreto","tipo":"concepto"}]}\n\n25 exactas. Prioriza valores, criterios, clasificaciones.`,6144);
       const fc=JSON.parse(repairJSON(p3));
       console.log('[OPELab] Fase 4 OK:',(fc.flashcards||fc).length,'flashcards');
 
-      // 5. Clinical cases (5 casos)
-      setGenStep('Fase 5/6: Casos clínicos (5)...');setGenPct(60);
-      console.log('[OPELab] Fase 5: Generando casos clínicos...');
-      const p4=await callClaude(`${SYS}\n\nCrea 5 casos clínicos realistas de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Paciente...","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"breve"}]}`,8192);
+      // 5. Casos de laboratorio (5)
+      setGenStep('Fase 5/8: Casos de laboratorio (5)...');setGenPct(45);
+      console.log('[OPELab] Fase 5: Generando casos de laboratorio...');
+      const p4=await callClaude(`${SYS}\n\nCrea 5 casos de laboratorio clínico de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nFORMATO OBLIGATORIO: "Recibes en el laboratorio una muestra con los siguientes resultados: [valores analíticos reales del tema con unidades]. ¿Qué patrón patológico sugiere, qué interferencias debes descartar y qué pruebas adicionales solicitarías?"\n\nLos valores numéricos DEBEN venir de los conceptos extraídos.\nEl razonamiento modelo incluye: recepción de muestra → análisis → interpretación → informe.\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Recibes en el laboratorio una muestra con...","question":"¿Qué patrón sugiere y qué pruebas adicionales?","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"Proceso analítico completo desde recepción hasta informe"}]}`,8192);
       const cc=JSON.parse(repairJSON(p4));
       console.log('[OPELab] Fase 5 OK:',(cc.clinicalCases||cc).length,'casos');
 
-      // 6. Post-test (25 preguntas) — split into 2 batches to avoid token overflow
-      setGenStep('Fase 6/6: Post-test (13+12 preguntas)...');setGenPct(75);
-      console.log('[OPELab] Fase 6: Generando post-test batch 1 (13 preguntas)...');
-      const postPromptBase=`${SYS}\n\nPreguntas DIFÍCILES (POST-TEST) de "${targetTitle}". Aplicación clínica, diagnóstico diferencial.\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
+      // 6. Fill-in-the-blanks (5 preguntas)
+      setGenStep('Fase 6/8: Completar blancos (5)...');setGenPct(55);
+      console.log('[OPELab] Fase 6: Generando fill-blanks...');
+      const p6=await callClaude(`${SYS}\n\nGenera 5 preguntas de completar el espacio en blanco sobre "${targetTitle}". CONCEPTOS:\n${cMap}\n\nCada pregunta es una frase con un concepto clave omitido (marcado con ___). Incluye las respuestas aceptables.\n\nJSON:\n{"fillBlanks":[{"id":"fb1","sentence":"La PTH actúa sobre el riñón aumentando la reabsorción de ___ e inhibiendo la reabsorción de ___","answers":["calcio","fosfato"],"explanation":"La PTH aumenta Ca y disminuye P en el túbulo renal"}]}`,4096);
+      const fb=JSON.parse(repairJSON(p6));
+      console.log('[OPELab] Fase 6 OK:',(fb.fillBlanks||fb).length,'fill-blanks');
+
+      // 7. Diagnóstico diferencial (2 pares)
+      setGenStep('Fase 7/8: Diagnóstico diferencial (2 pares)...');setGenPct(65);
+      console.log('[OPELab] Fase 7: Generando pares de diagnóstico diferencial...');
+      const p7=await callClaude(`${SYS}\n\nGenera 2 pares de diagnóstico diferencial de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nCada par presenta dos casos con resultados analíticos similares pero con una diferencia clave. El estudiante debe identificar la diferencia y proponer el diagnóstico para cada caso.\n\nEjemplo: "Caso A: Ca 12 mg/dL, PTH 150 pg/mL. Caso B: Ca 12 mg/dL, PTH 8 pg/mL."\n\nJSON:\n{"diffDiagnosis":[{"id":"dd1","caseA":"Caso A: valores analíticos...","caseB":"Caso B: valores analíticos similares pero con diferencia clave...","question":"¿Qué diagnóstico diferencial planteas?","explanation":"Caso A = diagnóstico X porque... Caso B = diagnóstico Y porque... La diferencia clave es..."}]}`,4096);
+      const dd=JSON.parse(repairJSON(p7));
+      console.log('[OPELab] Fase 7 OK:',(dd.diffDiagnosis||dd).length,'pares');
+
+      // 8. Post-test (25 preguntas de transferencia) — split into 2 batches
+      setGenStep('Fase 8/8: Post-test (13+12 preguntas)...');setGenPct(75);
+      console.log('[OPELab] Fase 8: Generando post-test batch 1 (13 preguntas)...');
+      const postPromptBase=`${SYS}\n\n${TRANSFER}\n\nPreguntas DIFÍCILES (POST-TEST) de "${targetTitle}". Aplicación clínica, diagnóstico diferencial.\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
       const p5a=await callClaude(postPromptBase+'\n\nGenera exactamente 13 preguntas.',8192);
       const postBatch1=JSON.parse(repairJSON(p5a));
       const postQs1=postBatch1.questions||postBatch1;
-      console.log('[OPELab] Fase 6 batch 1 OK:',Array.isArray(postQs1)?postQs1.length:0,'preguntas');
+      console.log('[OPELab] Fase 8 batch 1 OK:',Array.isArray(postQs1)?postQs1.length:0,'preguntas');
 
       setGenPct(88);
-      console.log('[OPELab] Fase 6: Generando post-test batch 2 (12 preguntas)...');
+      console.log('[OPELab] Fase 8: Generando post-test batch 2 (12 preguntas)...');
       const p5b=await callClaude(postPromptBase+'\n\nGenera exactamente 12 preguntas diferentes a las anteriores.',8192);
       const postBatch2=JSON.parse(repairJSON(p5b));
       const postQs2=postBatch2.questions||postBatch2;
-      console.log('[OPELab] Fase 6 batch 2 OK:',Array.isArray(postQs2)?postQs2.length:0,'preguntas');
+      console.log('[OPELab] Fase 8 batch 2 OK:',Array.isArray(postQs2)?postQs2.length:0,'preguntas');
 
       const postTest={questions:[...(Array.isArray(postQs1)?postQs1:[]),...(Array.isArray(postQs2)?postQs2:[])]};
-      console.log('[OPELab] Fase 6 TOTAL:',postTest.questions.length,'preguntas post-test');
+      console.log('[OPELab] Fase 8 TOTAL:',postTest.questions.length,'preguntas post-test');
 
       setGenPct(95);setGenStep('Etiquetando y guardando...');
       console.log('[OPELab] Etiquetando y guardando resultado...');
@@ -2538,9 +2553,11 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
           guidedReading:guided.sections||guided,
           flashcards:taggedFlashcards,
           clinicalCases:taggedClinical,
+          fillBlanks:fb.fillBlanks||fb||[],
+          diffDiagnosis:dd.diffDiagnosis||dd||[],
           postTest:taggedPostTest,
         },
-        progress:{preTest:null,postTest:null,flashcardsDominated:null,clinicalScore:null}
+        progress:{preTest:null,postTest:null,flashcardsDominated:null,flashcardsSm2:null,clinicalScore:null,fillBlanks:null}
       };
 
       let updSections;
@@ -2602,11 +2619,13 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   const ls=getLearningStatus(data);
   const phasesList=[
     {id:'preTest',label:'Pre-Test',icon:'📝',color:T.blue},
-    {id:'guidedReading',label:'Lectura Guiada',icon:'📖',color:T.teal},
+    {id:'guidedReading',label:'Lectura',icon:'📖',color:T.teal},
     {id:'flashcards',label:'Flashcards',icon:'🃏',color:T.green},
-    {id:'clinicalCases',label:'Casos Clínicos',icon:'🏥',color:T.orange},
+    {id:'clinicalCases',label:'Casos Lab',icon:'🔬',color:T.orange},
+    {id:'fillBlanks',label:'Completar',icon:'✏️',color:T.purple},
+    {id:'diffDiagnosis',label:'Diferencial',icon:'⚖️',color:T.amber},
     {id:'postTest',label:'Post-Test',icon:'✅',color:T.red},
-    {id:'spacedRepetition',label:'Plan de Repaso',icon:'📅',color:T.purple},
+    {id:'spacedRepetition',label:'Repaso SM-2',icon:'📅',color:T.blue},
   ];
 
   return(
@@ -2775,9 +2794,11 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
       </div>
       {curPhase===0&&<QuizPhase questions={gen.phases.preTest} title="Pre-Test (20)" progress={gen.progress?.preTest} onSaveProgress={p=>onSaveProg('preTest',p)} color={T.blue}/>}
       {curPhase===1&&<GuidedReadingPhase sections={gen.phases.guidedReading}/>}
-      {curPhase===2&&<FlashcardsPhase cards={gen.phases.flashcards} onDominatedChange={count=>onSaveProg('flashcardsDominated',count)}/>}
+      {curPhase===2&&<FlashcardsPhase cards={gen.phases.flashcards} onDominatedChange={count=>onSaveProg('flashcardsDominated',count)} onSm2Update={d=>onSaveProg('flashcardsSm2',d)}/>}
       {curPhase===3&&<ClinicalCasesPhase cases={gen.phases.clinicalCases} onScoreChange={score=>onSaveProg('clinicalScore',score)}/>}
-      {curPhase===4&&(
+      {curPhase===4&&<FillBlanksPhase items={gen.phases.fillBlanks||[]} progress={gen.progress?.fillBlanks} onSaveProgress={p=>onSaveProg('fillBlanks',p)}/>}
+      {curPhase===5&&<DiffDiagnosisPhase pairs={gen.phases.diffDiagnosis||[]}/>}
+      {curPhase===6&&(
         <div>
           <QuizPhase questions={gen.phases.postTest} title="Post-Test (25)" progress={gen.progress?.postTest} onSaveProgress={p=>onSaveProg('postTest',p)} color={T.red}/>
           {gen.progress?.preTest?.completed&&gen.progress?.postTest?.completed&&(
@@ -2795,7 +2816,7 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
           )}
         </div>
       )}
-      {curPhase===5&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
+      {curPhase===7&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
     </div>
   );
 }
@@ -2929,36 +2950,66 @@ function GuidedReadingPhase({sections}){
 }
 
 // ── Flashcards Phase ────────────────────────────────────────────────────────
-function FlashcardsPhase({cards,onDominatedChange}){
+function FlashcardsPhase({cards,onDominatedChange,onSm2Update}){
   const [current,setCurrent]=useState(0);
   const [flipped,setFlipped]=useState(false);
-  const [known,setKnown]=useState(new Set());
+  const [ratings,setRatings]=useState({}); // {cardIdx: quality 0-5}
+  const [fcSr,setFcSr]=useState({}); // SM-2 state per card index
 
   if(!Array.isArray(cards)||cards.length===0) return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay flashcards disponibles.</div>;
 
   const card=cards[current];
+  const rated=Object.keys(ratings).length;
+  const dominated=Object.values(ratings).filter(q=>q>=3).length;
+
+  const rateCard=(quality)=>{
+    const newRatings={...ratings,[current]:quality};
+    setRatings(newRatings);
+    // Update SM-2 for this card
+    const sr=sm2Update(fcSr[current],quality);
+    const newSr={...fcSr,[current]:sr};
+    setFcSr(newSr);
+    // Report dominated count and SM-2 data
+    const domCount=Object.values(newRatings).filter(q=>q>=3).length;
+    onDominatedChange?.(domCount);
+    onSm2Update?.({ratings:newRatings,sr:newSr});
+    // Auto-advance
+    if(current<cards.length-1){setTimeout(()=>{setCurrent(c=>c+1);setFlipped(false);},300);}
+  };
+
+  const isRated=ratings[current]!=null;
+  const cardSr=fcSr[current];
 
   return(
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
         <span style={{fontSize:13,fontWeight:600,color:T.text}}>🃏 Flashcards — {current+1}/{cards.length}</span>
-        <span style={{fontSize:12,color:T.green,fontWeight:600}}>{known.size} dominadas · {cards.length-known.size} restantes</span>
+        <span style={{fontSize:12,color:T.green,fontWeight:600}}>{dominated} dominadas · {rated}/{cards.length} evaluadas</span>
       </div>
-      <PBar pct={known.size/cards.length*100} color={T.green}/>
+      <PBar pct={dominated/cards.length*100} color={T.green}/>
       <div onClick={()=>setFlipped(!flipped)}
-        style={{background:flipped?T.tealS:T.surface,border:`1px solid ${flipped?T.teal:T.border}`,borderRadius:14,padding:'40px 30px',marginTop:14,cursor:'pointer',textAlign:'center',minHeight:160,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',boxShadow:sh.md,transition:'all 0.2s'}}>
-        <div style={{fontSize:10,color:T.muted,marginBottom:8,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>{flipped?'Respuesta':'Pregunta'} — clic para girar</div>
+        style={{background:flipped?T.tealS:T.surface,border:`0.5px solid ${flipped?T.teal:T.border}`,borderRadius:12,padding:'36px 28px',marginTop:14,cursor:'pointer',textAlign:'center',minHeight:140,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',transition:'all 0.2s'}}>
+        <div style={{fontSize:10,color:T.dim,marginBottom:8,fontWeight:600,textTransform:'uppercase',letterSpacing:0.5}}>{flipped?'Respuesta':'Pregunta'} — clic para girar</div>
         <div style={{fontSize:15,color:flipped?T.tealText:T.text,fontWeight:600,lineHeight:1.6,maxWidth:500}}>{flipped?(card.back||'—'):(card.front||'—')}</div>
       </div>
-      <div style={{display:'flex',justifyContent:'center',gap:10,marginTop:16}}>
+      {/* SM-2 quality rating — visible after flipping */}
+      {flipped&&!isRated&&(
+        <div style={{display:'flex',justifyContent:'center',gap:6,marginTop:14}}>
+          {[{q:0,l:'No sé',c:T.red},{q:1,l:'Mal',c:T.red},{q:2,l:'Difícil',c:T.amber},{q:3,l:'Regular',c:T.amber},{q:4,l:'Bien',c:T.green},{q:5,l:'Perfecto',c:T.green}].map(({q,l,c})=>(
+            <button key={q} onClick={()=>rateCard(q)} style={{background:c+'18',border:`0.5px solid ${c}`,borderRadius:8,padding:'6px 10px',fontSize:11,cursor:'pointer',color:c,fontWeight:600,fontFamily:FONT}}>{q} {l}</button>
+          ))}
+        </div>
+      )}
+      {isRated&&(
+        <div style={{textAlign:'center',marginTop:10,fontSize:11,color:T.dim}}>
+          Evaluada: {ratings[current]}/5 {cardSr?`· Próximo repaso: ${cardSr.interval} día${cardSr.interval>1?'s':''} · EF: ${cardSr.ef.toFixed(1)}`:''}
+        </div>
+      )}
+      <div style={{display:'flex',justifyContent:'center',gap:8,marginTop:12}}>
         <button onClick={()=>{setCurrent(Math.max(0,current-1));setFlipped(false);}} disabled={current===0}
-          style={{background:'none',border:`1px solid ${T.border}`,borderRadius:8,padding:'8px 16px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>← Anterior</button>
-        <button onClick={()=>{setKnown(prev=>{const n=new Set(prev);n.has(current)?n.delete(current):n.add(current);onDominatedChange?.(n.size);return n;});}}
-          style={{background:known.has(current)?T.greenS:T.card,border:`1px solid ${known.has(current)?T.green:T.border}`,borderRadius:8,padding:'8px 16px',fontSize:12,cursor:'pointer',color:known.has(current)?T.green:T.muted,fontWeight:600,fontFamily:FONT}}>
-          {known.has(current)?'✅ Dominada':'Marcar dominada'}
-        </button>
-        <button onClick={()=>{setCurrent(Math.min(cards.length-1,current+1));setFlipped(false);}} disabled={current===cards.length-1}
-          style={{background:'none',border:`1px solid ${T.border}`,borderRadius:8,padding:'8px 16px',fontSize:12,cursor:current===cards.length-1?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>Siguiente →</button>
+          style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:8,padding:'6px 14px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>←</button>
+        <button onClick={()=>{setCurrent(Math.min(cards.length-1,current+1));setFlipped(false);}}  disabled={current===cards.length-1}
+          style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:8,padding:'6px 14px',fontSize:12,cursor:current===cards.length-1?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>→</button>
       </div>
     </div>
   );
@@ -3018,6 +3069,110 @@ function ClinicalCasesPhase({cases,onScoreChange}){
           </div>
         )}
       </Card>
+    </div>
+  );
+}
+
+// ── Fill-in-the-Blanks Phase ────────────────────────────────────────────────
+function FillBlanksPhase({items,progress,onSaveProgress}){
+  const [current,setCurrent]=useState(0);
+  const [answers,setAnswers]=useState(progress?.answers||{});
+  const [checking,setChecking]=useState({});
+  const [results,setResults]=useState(progress?.results||{});
+
+  if(!Array.isArray(items)||items.length===0) return <div style={{color:T.dim,textAlign:'center',padding:40}}>Sin preguntas de completar. Regenera la sección para incluirlas.</div>;
+
+  const item=items[current];if(!item)return null;
+  const answered=Object.keys(results).length;
+
+  const checkAnswer=async()=>{
+    const userAnswer=(answers[current]||'').trim();
+    if(!userAnswer)return;
+    setChecking(prev=>({...prev,[current]:true}));
+    // Simple check: compare with expected answers (case-insensitive, trim)
+    const expected=(item.answers||[item.answer]||['']).map(a=>a.toLowerCase().trim());
+    const userWords=userAnswer.toLowerCase().trim();
+    const isCorrect=expected.some(exp=>userWords.includes(exp)||exp.includes(userWords));
+    setResults(prev=>{
+      const n={...prev,[current]:{correct:isCorrect,userAnswer,expected:item.answers||[item.answer]}};
+      const totalAnswered=Object.keys(n).length;
+      const totalCorrect=Object.values(n).filter(r=>r.correct).length;
+      onSaveProgress?.({answers,results:n,score:Math.round(totalCorrect/totalAnswered*100),completed:totalAnswered>=items.length});
+      return n;
+    });
+    setChecking(prev=>({...prev,[current]:false}));
+  };
+
+  const result=results[current];
+
+  return(
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <span style={{fontSize:13,fontWeight:600,color:T.text}}>✏️ Completar blancos — {current+1}/{items.length}</span>
+        <span style={{fontSize:12,color:T.muted}}>{answered}/{items.length}</span>
+      </div>
+      <PBar pct={answered/items.length*100} color={T.purple}/>
+      <Card style={{padding:'18px',marginTop:12}}>
+        <div style={{fontSize:14,color:T.text,lineHeight:1.8,marginBottom:14}}>{item.sentence}</div>
+        {!result?(
+          <div style={{display:'flex',gap:8}}>
+            <input value={answers[current]||''} onChange={e=>setAnswers(prev=>({...prev,[current]:e.target.value}))} placeholder="Escribe tu respuesta..."
+              onKeyDown={e=>e.key==='Enter'&&checkAnswer()}
+              style={{flex:1,background:T.bg,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'8px 12px',fontSize:13,outline:'none',fontFamily:FONT}}/>
+            <button onClick={checkAnswer} disabled={checking[current]||!answers[current]?.trim()}
+              style={{background:T.purple,color:'#000',border:'none',borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Comprobar</button>
+          </div>
+        ):(
+          <div style={{padding:'10px 14px',borderRadius:8,background:result.correct?T.greenS:T.redS,border:`0.5px solid ${result.correct?T.green:T.red}`}}>
+            <div style={{fontSize:12,color:result.correct?T.green:T.red,fontWeight:700,marginBottom:4}}>{result.correct?'✅ Correcto':'❌ Incorrecto'}</div>
+            <div style={{fontSize:12,color:T.text}}>Tu respuesta: {result.userAnswer}</div>
+            {!result.correct&&<div style={{fontSize:12,color:T.green,marginTop:2}}>Respuesta esperada: {(result.expected||[]).join(' / ')}</div>}
+          </div>
+        )}
+        <div style={{display:'flex',justifyContent:'space-between',marginTop:12}}>
+          <button onClick={()=>setCurrent(Math.max(0,current-1))} disabled={current===0} style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'5px 12px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>←</button>
+          <button onClick={()=>setCurrent(Math.min(items.length-1,current+1))} disabled={current===items.length-1} style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'5px 12px',fontSize:12,cursor:current===items.length-1?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>→</button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── Differential Diagnosis Phase ────────────────────────────────────────────
+function DiffDiagnosisPhase({pairs}){
+  const [current,setCurrent]=useState(0);
+  const [revealed,setRevealed]=useState({});
+
+  if(!Array.isArray(pairs)||pairs.length===0) return <div style={{color:T.dim,textAlign:'center',padding:40}}>Sin pares de diagnóstico diferencial. Regenera la sección para incluirlos.</div>;
+
+  const pair=pairs[current];if(!pair)return null;
+
+  return(
+    <div>
+      <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>⚖️ Diagnóstico diferencial — Par {current+1}/{pairs.length}</div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:14}}>
+        <Card style={{padding:'14px',borderLeft:`2px solid ${T.blue}`}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.blue,marginBottom:6}}>Caso A</div>
+          <div style={{fontSize:12,color:T.text,lineHeight:1.7}}>{pair.caseA}</div>
+        </Card>
+        <Card style={{padding:'14px',borderLeft:`2px solid ${T.orange}`}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.orange,marginBottom:6}}>Caso B</div>
+          <div style={{fontSize:12,color:T.text,lineHeight:1.7}}>{pair.caseB}</div>
+        </Card>
+      </div>
+      <Card style={{padding:'14px',marginBottom:12}}>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:6}}>{pair.question||'¿Qué diagnóstico diferencial planteas para cada caso?'}</div>
+        {revealed[current]?(
+          <div style={{fontSize:12,color:T.text,lineHeight:1.8,whiteSpace:'pre-wrap',background:T.bg,padding:'10px 14px',borderRadius:8,border:`0.5px solid ${T.border}`}}>{pair.explanation}</div>
+        ):(
+          <button onClick={()=>setRevealed(prev=>({...prev,[current]:true}))} style={{background:T.amberS,border:`0.5px solid ${T.amber}`,borderRadius:8,padding:'8px 18px',fontSize:12,cursor:'pointer',color:T.amber,fontWeight:600,fontFamily:FONT}}>Mostrar diagnóstico diferencial</button>
+        )}
+      </Card>
+      <div style={{display:'flex',justifyContent:'center',gap:8}}>
+        {pairs.map((_,i)=>(
+          <button key={i} onClick={()=>setCurrent(i)} style={{width:28,height:28,borderRadius:'50%',background:current===i?T.amber:T.surface,border:`0.5px solid ${current===i?T.amber:T.border}`,color:current===i?'#000':T.dim,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>{i+1}</button>
+        ))}
+      </div>
     </div>
   );
 }
