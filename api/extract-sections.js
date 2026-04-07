@@ -12,17 +12,19 @@ export default async function handler(req, res) {
     if (pdfBase64) {
       content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } });
     }
-    content.push({ type: 'text', text: `Analiza este documento del tema "${topic}" de bioquímica clínica (FEA Laboratorio Clínico, SESCAM 2025).
+    content.push({ type: 'text', text: `IDIOMA: Independientemente del idioma del documento, TODA tu respuesta debe estar en español. Si los títulos del documento están en inglés u otro idioma, tradúcelos al español.
+
+Analiza este documento del tema "${topic}" de bioquímica clínica (FEA Laboratorio Clínico, SESCAM 2025).
 
 Identifica TODOS los subapartados o secciones principales del capítulo leyendo el índice, tabla de contenidos, o la estructura de encabezados del documento.
 
 Devuelve SOLO un JSON válido con esta estructura:
-{"sections":[{"title":"Título exacto de la sección tal como aparece en el documento","pageHint":"página aproximada o rango"}]}
+{"sections":[{"title":"Título de la sección traducido al español","pageHint":"página aproximada o rango"}]}
 
 Requisitos:
 - Extrae los subapartados reales del capítulo (no inventes)
 - Incluye TODAS las secciones principales (típicamente 5-12 por capítulo)
-- Usa los títulos tal como aparecen en el documento
+- Traduce los títulos al español si el documento está en inglés
 - Si no hay índice claro, identifica las secciones por los encabezados del texto
 - Ordena las secciones en el orden en que aparecen en el documento` });
 

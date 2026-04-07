@@ -54,7 +54,7 @@ export default async function handler(req, res) {
     return text.replace(/```json|```/g, '').trim();
   };
 
-  const SYS = 'Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
+  const SYS = 'Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). IDIOMA: Independientemente del idioma del texto de entrada, TODA tu respuesta debe estar en español. Traduce al español todos los conceptos, definiciones, mecanismos, preguntas, opciones de respuesta, explicaciones, flashcards, casos clínicos y secciones de lectura. Si el texto original está en inglés u otro idioma, tradúcelo. Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
   const CTX = `TEMA: "${topic}"\nSECCIÓN: "${sectionTitle || 'Sin título'}"\n\nTEXTO DE LA SECCIÓN:\n${sectionText.slice(0, 30000)}`;
 
   try {

@@ -2015,7 +2015,7 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
           model:'claude-sonnet-4-5',max_tokens:4096,
           messages:[{role:'user',content:[
             {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}},
-            {type:'text',text:`Analiza este documento del tema "${topic}" de bioquímica clínica (FEA Laboratorio Clínico, SESCAM 2025).\n\nIdentifica TODOS los subapartados o secciones principales del capítulo leyendo el índice, tabla de contenidos o encabezados.\n\nDevuelve SOLO JSON válido:\n{"sections":[{"title":"Título exacto tal como aparece en el documento","pageHint":"página aproximada"}]}\n\n- Extrae los subapartados reales (no inventes)\n- Incluye TODAS las secciones principales (5-12 típico)\n- Ordena en el orden del documento`}
+            {type:'text',text:`IDIOMA: Independientemente del idioma del documento, TODA tu respuesta debe estar en español. Traduce los títulos al español si el documento está en inglés.\n\nAnaliza este documento del tema "${topic}" de bioquímica clínica (FEA Laboratorio Clínico, SESCAM 2025).\n\nIdentifica TODOS los subapartados o secciones principales del capítulo leyendo el índice, tabla de contenidos o encabezados.\n\nDevuelve SOLO JSON válido:\n{"sections":[{"title":"Título de la sección en español","pageHint":"página aproximada"}]}\n\n- Extrae los subapartados reales (no inventes)\n- Incluye TODAS las secciones principales (5-12 típico)\n- Traduce al español si el original está en inglés\n- Ordena en el orden del documento`}
           ]}]
         })
       });
@@ -2074,7 +2074,7 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta}){
     if(!targetText?.trim()){setGenError('Pega texto primero.');return;}
     setGenIdx(subIdx!=null?`${idx}-${subIdx}`:idx);setGenError('');setGenPct(0);
 
-    const SYS='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
+    const SYS='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). IDIOMA: Independientemente del idioma del texto de entrada, TODA tu respuesta debe estar en español. Traduce al español todos los conceptos, definiciones, mecanismos, preguntas, opciones de respuesta, explicaciones, flashcards, casos clínicos y secciones de lectura. Si el texto original está en inglés u otro idioma, tradúcelo. Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
     const CTX=`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"\n\nTEXTO:\n${targetText.slice(0,30000)}`;
     const now=new Date();
     const dateTag=now.toISOString().slice(0,10);
