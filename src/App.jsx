@@ -880,7 +880,7 @@ export default function App(){
           <>
             {normalizedTab==='panel'&&<Dashboard {...shared} examDate={examDate} sessions={sessions} learningData={learningData} setTopicView={setTopicView} setExamDate={setExamDate} streakData={streakData}/>}
             {normalizedTab==='estudio'&&<Temario setTab={setTab} stats={stats} qs={qs} notes={notes} setNote={setNote} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} apiKey={apiKey} setTopicView={setTopicView} learningData={learningData}/>}
-            {normalizedTab==='test'&&<TestTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs} bankPreselect={bankPreselect} onBankPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} stats={stats} learningData={learningData}/>}
+            {normalizedTab==='test'&&<TestTab shared={shared} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey} testQs={testQs} fcQs={fcQs} dueQs={dueQs} bankPreselect={bankPreselect} onBankPreselect={()=>setBankPreselect(null)} pdfMeta={pdfMeta} stats={stats} learningData={learningData} sessions={sessions}/>}
           </>
         )}
       </div>
@@ -1137,7 +1137,7 @@ function ReviewPhase({item,onComplete}){
 }
 
 // ── TestTab — Test OPE + Simulacro + Flashcards + Preguntas ─────────────────
-function TestTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs,bankPreselect,onBankPreselect,pdfMeta,stats,learningData}){
+function TestTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs,bankPreselect,onBankPreselect,pdfMeta,stats,learningData,sessions}){
   const [subTab,setSubTab]=useState('test');
   return(
     <div>
@@ -1150,7 +1150,7 @@ function TestTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs,bankPr
         <button onClick={()=>setSubTab('preguntas')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='preguntas'?600:400,color:subTab==='preguntas'?T.purple:T.muted,borderBottom:`2px solid ${subTab==='preguntas'?T.purple:'transparent'}`,fontFamily:FONT}}>📦 Preguntas</button>
       </div>
       {subTab==='test'      &&<TestMode {...shared}/>}
-      {subTab==='simulacro' &&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} apiKey={apiKey}/>}
+      {subTab==='simulacro' &&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} sessions={sessions}/>}
       {subTab==='flashcard' &&<FlashcardMode {...shared}/>}
       {subTab==='preguntas' &&<BankManager {...shared} preselect={bankPreselect} onPreselect={onBankPreselect} pdfMeta={pdfMeta} apiKey={apiKey}/>}
     </div>
@@ -2969,13 +2969,13 @@ function TestMode({testQs,marked,errSet,toggleMark,recordAnswer,addSession}){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SIMULACRO  ⚡ — examen real con penalización
+// SIMULACRO  ⚡ — examen completo con distribución por bloques
 // ═══════════════════════════════════════════════════════════════════════════
-function Simulacro({testQs,recordAnswer,addSession}){
+function Simulacro({testQs,recordAnswer,addSession,sessions}){
   const [phase,setPhase]=useState('setup');
-  const [cfg,setCfg]=useState({section:'all',n:100,totalTime:120,penalty:'tercio'});
+  const [cfg,setCfg]=useState({n:100,totalTime:120,penalty:'tercio',difficulty:'all',blockDist:{}});
   const [session,setSession]=useState([]);
-  const [answers,setAnswers]=useState([]); // null=blank, 0-3=selected
+  const [answers,setAnswers]=useState([]);
   const [current,setCurrent]=useState(0);
   const [markedQ,setMarkedQ]=useState(new Set());
   const [timeLeft,setTimeLeft]=useState(0);
@@ -2983,6 +2983,9 @@ function Simulacro({testQs,recordAnswer,addSession}){
   const [results,setResults]=useState(null);
   const timerRef=useRef(null);
   const submitRef=useRef(null);
+
+  // Available blocks with question counts
+  const blocks=useMemo(()=>SECTIONS.map(s=>({...s,count:testQs.filter(q=>s.topics.includes(q.topic)).length})).filter(b=>b.count>0),[testQs]);
 
   const penFactors={tercio:1/3,cuarto:1/4,ninguna:0};
 
@@ -3002,8 +3005,10 @@ function Simulacro({testQs,recordAnswer,addSession}){
       const correct=a===q.correct;
       recordAnswer(q.id,q.topic,correct,a===null?0:correct?5:2,{seccion:q.seccion,subseccion:q.subseccion,tipo:q.tipo,fase:q.fase});
     });
+    const sid=uid();
+    r.sessionId=sid;
     setResults(r);
-    addSession({mode:'simulacro',topics:[...new Set(sess.map(q=>q.topic))],n:sess.length,...r,duration:Math.round((Date.now()-startTs)/1000)});
+    addSession({mode:'simulacro',id:sid,topics:[...new Set(sess.map(q=>q.topic))],n:sess.length,...r,duration:Math.round((Date.now()-startTs)/1000),penalty:cfg.penalty,difficulty:cfg.difficulty,blockDist:cfg.blockDist});
     setPhase('results');
   },[recordAnswer,addSession,startTs]);
 
@@ -3011,6 +3016,7 @@ function Simulacro({testQs,recordAnswer,addSession}){
 
   useEffect(()=>{
     if(phase!=='running')return;
+    if(cfg.totalTime===0)return; // no timer for unlimited
     timerRef.current=setInterval(()=>{
       setTimeLeft(t=>{
         if(t<=1){clearInterval(timerRef.current);const{handleSubmit:hs,answers:a,session:s,cfg:c}=submitRef.current;hs(a,s,c);return 0;}
@@ -3018,14 +3024,36 @@ function Simulacro({testQs,recordAnswer,addSession}){
       });
     },1000);
     return()=>clearInterval(timerRef.current);
-  },[phase]);
+  },[phase,cfg.totalTime]);
 
   const start=()=>{
     let pool=testQs;
-    if(cfg.section!=='all'){const topics=SECTIONS.find(s=>s.id===cfg.section)?.topics;if(topics)pool=pool.filter(q=>topics.includes(q.topic));}
-    if(!pool.length)return alert('No hay preguntas. Genera primero en Preguntas.');
-    const s=shuffle(pool).slice(0,Math.min(cfg.n,pool.length));
-    setSession(s);setAnswers(new Array(s.length).fill(null));setCurrent(0);setMarkedQ(new Set());setTimeLeft(cfg.totalTime*60);setStartTs(Date.now());setPhase('running');
+    // Difficulty filter
+    if(cfg.difficulty&&cfg.difficulty!=='all')pool=pool.filter(q=>(q.dificultad||'media')===cfg.difficulty);
+    if(!pool.length)return alert('No hay preguntas para esta configuración.');
+
+    // Block distribution
+    const distKeys=Object.keys(cfg.blockDist||{}).filter(k=>cfg.blockDist[k]>0);
+    let selected=[];
+    if(distKeys.length>0){
+      const totalPct=distKeys.reduce((a,k)=>a+cfg.blockDist[k],0);
+      distKeys.forEach(secId=>{
+        const pct=cfg.blockDist[secId]/totalPct;
+        const nFromBlock=Math.round(cfg.n*pct);
+        const sec=SECTIONS.find(s=>s.id===secId);
+        if(!sec)return;
+        const blockPool=pool.filter(q=>sec.topics.includes(q.topic));
+        selected.push(...shuffle(blockPool).slice(0,nFromBlock));
+      });
+      // Fill remaining if rounding left gaps
+      if(selected.length<cfg.n){const remaining=pool.filter(q=>!selected.some(s=>s.id===q.id));selected.push(...shuffle(remaining).slice(0,cfg.n-selected.length));}
+      selected=shuffle(selected).slice(0,cfg.n);
+    }else{
+      selected=shuffle(pool).slice(0,Math.min(cfg.n,pool.length));
+    }
+    if(!selected.length)return alert('No hay suficientes preguntas.');
+    setSession(selected);setAnswers(new Array(selected.length).fill(null));setCurrent(0);setMarkedQ(new Set());
+    setTimeLeft(cfg.totalTime>0?cfg.totalTime*60:999999);setStartTs(Date.now());setPhase('running');
   };
 
   const selectAnswer=(i)=>{
@@ -3036,85 +3064,155 @@ function Simulacro({testQs,recordAnswer,addSession}){
 
   // ── Setup ──
   if(phase==='setup') return(
-    <div style={{maxWidth:680}}>
+    <div style={{maxWidth:720}}>
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:24}}>
-        <div style={{width:40,height:40,borderRadius:10,background:T.orangeS,border:`2px solid ${T.orange}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>⚡</div>
-        <div><h2 style={{fontSize:18,fontWeight:700,margin:0,color:T.text,letterSpacing:-0.3}}>Simulacro de examen</h2><p style={{color:T.muted,fontSize:13,margin:0}}>Condiciones reales: tiempo total, sin feedback inmediato, penalización por error</p></div>
+        <div style={{width:40,height:40,borderRadius:10,background:T.orangeS,border:`0.5px solid ${T.orange}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>⚡</div>
+        <div><h2 style={{fontSize:18,fontWeight:700,margin:0,color:T.text,letterSpacing:-0.3}}>Simulacro de examen</h2><p style={{color:T.dim,fontSize:13,margin:0}}>Condiciones reales · sin feedback · penalización configurable</p></div>
       </div>
-      <Lbl>Bloque temático</Lbl>
-      <Sel value={cfg.section} onChange={v=>setCfg({...cfg,section:v})}>
-        <option value="all">Temario completo — todos los bloques ({testQs.length} preg. disponibles)</option>
-        {SECTIONS.map(s=>{const n=testQs.filter(q=>s.topics.includes(q.topic)).length;return n>0?<option key={s.id} value={s.id}>{s.emoji} {s.name} ({n})</option>:null;})}
-      </Sel>
+
       <Lbl>Número de preguntas</Lbl>
-      <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
-        {[25,50,75,100].map(n=><button key={n} onClick={()=>setCfg({...cfg,n})} style={{padding:'7px 18px',borderRadius:7,fontWeight:600,fontSize:13,cursor:'pointer',background:cfg.n===n?T.orange:T.surface,border:`1px solid ${cfg.n===n?T.orange:T.border}`,color:cfg.n===n?'#fff':T.muted,boxShadow:sh.sm,fontFamily:FONT}}>{n}</button>)}
+      <div style={{display:'flex',gap:6,marginBottom:14,flexWrap:'wrap'}}>
+        {[25,50,75,100].map(n=><button key={n} onClick={()=>setCfg(c=>({...c,n}))} style={{padding:'6px 16px',borderRadius:8,fontWeight:600,fontSize:13,cursor:'pointer',background:cfg.n===n?T.orange:T.surface,border:`0.5px solid ${cfg.n===n?T.orange:T.border}`,color:cfg.n===n?'#000':T.muted,fontFamily:FONT}}>{n}</button>)}
       </div>
-      <Lbl>Tiempo total del examen</Lbl>
-      <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
-        {[60,90,120,150,180].map(t=><button key={t} onClick={()=>setCfg({...cfg,totalTime:t})} style={{padding:'7px 16px',borderRadius:7,fontWeight:600,fontSize:13,cursor:'pointer',background:cfg.totalTime===t?T.orange:T.surface,border:`1px solid ${cfg.totalTime===t?T.orange:T.border}`,color:cfg.totalTime===t?'#fff':T.muted,boxShadow:sh.sm,fontFamily:FONT}}>{t} min</button>)}
+
+      <Lbl>Tiempo límite</Lbl>
+      <div style={{display:'flex',gap:6,marginBottom:14,flexWrap:'wrap'}}>
+        {[{v:60,l:'60 min'},{v:90,l:'90 min'},{v:120,l:'120 min'},{v:0,l:'Sin límite'}].map(t=><button key={t.v} onClick={()=>setCfg(c=>({...c,totalTime:t.v}))} style={{padding:'6px 16px',borderRadius:8,fontWeight:600,fontSize:13,cursor:'pointer',background:cfg.totalTime===t.v?T.orange:T.surface,border:`0.5px solid ${cfg.totalTime===t.v?T.orange:T.border}`,color:cfg.totalTime===t.v?'#000':T.muted,fontFamily:FONT}}>{t.l}</button>)}
       </div>
+
+      <Lbl>Dificultad</Lbl>
+      <div style={{display:'flex',gap:6,marginBottom:14,flexWrap:'wrap'}}>
+        {[{v:'all',l:'Aleatoria'},{v:'baja',l:'Baja'},{v:'media',l:'Media'},{v:'alta',l:'Alta'}].map(d=><button key={d.v} onClick={()=>setCfg(c=>({...c,difficulty:d.v}))} style={{padding:'6px 14px',borderRadius:8,fontWeight:600,fontSize:12,cursor:'pointer',background:cfg.difficulty===d.v?T.teal:T.surface,border:`0.5px solid ${cfg.difficulty===d.v?T.teal:T.border}`,color:cfg.difficulty===d.v?'#000':T.muted,fontFamily:FONT}}>{d.l}</button>)}
+      </div>
+
+      <Lbl>Distribución por bloques (opcional)</Lbl>
+      <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:14}}>
+        {blocks.map(b=>{
+          const pct=cfg.blockDist[b.id]||0;
+          return <div key={b.id} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0'}}>
+            <span style={{fontSize:12,flex:1,color:T.text,minWidth:180}}>{b.emoji} {b.name} <span style={{color:T.dim,fontSize:10}}>({b.count})</span></span>
+            <input type="range" min={0} max={100} step={5} value={pct} onChange={e=>setCfg(c=>({...c,blockDist:{...c.blockDist,[b.id]:parseInt(e.target.value)}}))}
+              style={{width:100,accentColor:T.orange}}/>
+            <span style={{fontSize:11,fontWeight:700,color:pct>0?T.orange:T.dim,minWidth:32,textAlign:'right'}}>{pct}%</span>
+          </div>;
+        })}
+        <div style={{fontSize:10,color:T.dim,marginTop:2}}>Deja todo a 0% para distribución aleatoria.</div>
+      </div>
+
       <Lbl>Sistema de puntuación</Lbl>
-      <RadioGroup value={cfg.penalty} onChange={v=>setCfg({...cfg,penalty:v})} options={[{value:'tercio',label:'✅ +1 acierto · ❌ −1/3 error · ⬜ 0 en blanco (OPE estándar SESCAM)'},{value:'cuarto',label:'✅ +1 acierto · ❌ −1/4 error · ⬜ 0 en blanco'},{value:'ninguna',label:'✅ +1 acierto · ❌ 0 error · sin penalización'}]}/>
-      <Btn onClick={start} disabled={testQs.length<10} variant="orange" style={{marginTop:4}}>⚡ Comenzar simulacro →</Btn>
-      {testQs.length<10&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Necesitas al menos 10 preguntas test en Preguntas.</p>}
+      <RadioGroup value={cfg.penalty} onChange={v=>setCfg(c=>({...c,penalty:v}))} options={[
+        {value:'tercio',label:'✅ +1 · ❌ −1/3 · ⬜ 0 (OPE estándar SESCAM)'},
+        {value:'cuarto',label:'✅ +1 · ❌ −1/4 · ⬜ 0'},
+        {value:'ninguna',label:'✅ +1 · ❌ 0 · sin penalización'}
+      ]}/>
+
+      <Btn onClick={start} disabled={testQs.length<10} variant="orange" style={{marginTop:8}}>⚡ Comenzar simulacro →</Btn>
+      {testQs.length<10&&<p style={{color:T.amber,marginTop:10,fontSize:12}}>⚠️ Necesitas al menos 10 preguntas test.</p>}
+
+      {/* History chart */}
+      {(()=>{
+        const sims=(sessions||[]).filter(s=>s.mode==='simulacro').slice(0,10);
+        if(!sims.length)return null;
+        const maxPct=100;
+        return(
+          <Card style={{padding:'16px 20px',marginTop:20}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>📈 Evolución de simulacros</div>
+            <div style={{display:'flex',alignItems:'flex-end',gap:4,height:80}}>
+              {sims.reverse().map((s,i)=>(
+                <div key={s.id||i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                  <span style={{fontSize:9,fontWeight:700,color:s.pct>=70?T.green:s.pct>=50?T.amber:T.red}}>{s.pct}%</span>
+                  <div style={{width:'100%',background:s.pct>=70?T.green:s.pct>=50?T.amber:T.red,borderRadius:4,height:`${Math.max(4,s.pct/maxPct*60)}px`,transition:'height 0.3s'}}/>
+                  <span style={{fontSize:8,color:T.dim}}>{s.date?.slice(5,10)}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        );
+      })()}
     </div>
   );
 
   // ── Results ──
-  if(phase==='results'&&results) return(
+  if(phase==='results'&&results) {
+    // Block breakdown
+    const blockResults=SECTIONS.map(sec=>{
+      const secQs=session.map((q,i)=>({q,a:answers[i],i})).filter(({q})=>sec.topics.includes(q.topic));
+      if(!secQs.length)return null;
+      const c=secQs.filter(({q,a})=>a===q.correct).length;
+      const w=secQs.filter(({q,a})=>a!==null&&a!==q.correct).length;
+      return{name:sec.name,emoji:sec.emoji,total:secQs.length,correct:c,wrong:w,blank:secQs.length-c-w,pct:Math.round(c/secQs.length*100)};
+    }).filter(Boolean);
+    // Previous simulacro for comparison
+    const prevSims=(sessions||[]).filter(s=>s.mode==='simulacro'&&s.id!==results.sessionId);
+    const prevBest=prevSims.length?Math.max(...prevSims.map(s=>s.pct)):null;
+    // Nota sobre 10
+    const nota10=(results.score/results.maxScore*10).toFixed(2);
+
+    return(
     <div>
       <Card style={{padding:'28px 32px',marginBottom:20,textAlign:'center'}}>
         <div style={{fontSize:11,fontWeight:700,color:T.orange,letterSpacing:1.5,textTransform:'uppercase',marginBottom:12}}>Resultado del simulacro</div>
-        <div style={{display:'flex',justifyContent:'center',gap:32,marginBottom:20,flexWrap:'wrap'}}>
-          <div><div style={{fontSize:42,fontWeight:800,color:results.pct>=70?T.green:results.pct>=50?T.amber:T.red,lineHeight:1,letterSpacing:-2}}>{results.pct}%</div><div style={{fontSize:12,color:T.muted,marginTop:4}}>Nota</div></div>
-          <div style={{borderLeft:`1px solid ${T.border}`,paddingLeft:32}}><div style={{fontSize:28,fontWeight:700,color:T.greenDk}}>{results.correct}</div><div style={{fontSize:12,color:T.muted}}>Correctas</div></div>
-          <div><div style={{fontSize:28,fontWeight:700,color:T.red}}>{results.wrong}</div><div style={{fontSize:12,color:T.muted}}>Erróneas</div></div>
-          <div><div style={{fontSize:28,fontWeight:700,color:T.dim}}>{results.blank}</div><div style={{fontSize:12,color:T.muted}}>En blanco</div></div>
-        </div>
-        <div style={{background:results.pct>=70?T.greenS:results.pct>=50?T.amberS:T.redS,border:`1px solid ${results.pct>=70?'#1a3a1a':results.pct>=50?'#3a2a00':'#3a1a1a'}`,borderRadius:8,padding:'10px 16px',display:'inline-block',marginBottom:16}}>
-          <span style={{fontSize:14,fontWeight:600,color:results.pct>=70?T.greenText:results.pct>=50?T.amberText:T.redText}}>
-            Puntuación: <strong>{results.score.toFixed(2)}</strong> / {results.maxScore} puntos
-          </span>
+        <div style={{display:'flex',justifyContent:'center',gap:28,marginBottom:20,flexWrap:'wrap'}}>
+          <div><div style={{fontSize:48,fontWeight:800,color:results.pct>=70?T.green:results.pct>=50?T.amber:T.red,lineHeight:1,letterSpacing:-2}}>{nota10}</div><div style={{fontSize:12,color:T.muted,marginTop:4}}>Nota /10</div></div>
+          <div style={{borderLeft:`0.5px solid ${T.border}`,paddingLeft:28}}><div style={{fontSize:24,fontWeight:700,color:T.green}}>{results.correct}</div><div style={{fontSize:11,color:T.dim}}>Correctas</div></div>
+          <div><div style={{fontSize:24,fontWeight:700,color:T.red}}>{results.wrong}</div><div style={{fontSize:11,color:T.dim}}>Erróneas</div></div>
+          <div><div style={{fontSize:24,fontWeight:700,color:T.dim}}>{results.blank}</div><div style={{fontSize:11,color:T.dim}}>En blanco</div></div>
         </div>
         <div style={{fontSize:12,color:T.dim,marginBottom:4}}>
-          Fórmula: {results.correct} − {results.wrong} × {cfg.penalty==='tercio'?'1/3':cfg.penalty==='cuarto'?'1/4':'0'} = {results.score.toFixed(2)} puntos
+          ({results.correct} − {results.wrong}×{cfg.penalty==='tercio'?'⅓':cfg.penalty==='cuarto'?'¼':'0'}) / {results.maxScore} × 10 = <strong style={{color:T.text}}>{nota10}</strong>
         </div>
-        <div style={{fontSize:12,color:T.muted}}>
-          {results.pct>=70?'✅ Superarías el examen si el umbral es el 70%':'❌ Por debajo del umbral de aprobado (70%)'}
+        <div style={{fontSize:12,color:results.pct>=70?T.green:T.red,fontWeight:600,marginBottom:8}}>
+          {results.pct>=70?'✅ Aprobado':'❌ Suspenso'} ({results.pct}%)
+        </div>
+        {prevBest!==null&&<div style={{fontSize:11,color:T.muted}}>Mejor anterior: {prevBest}% {results.pct>prevBest?<span style={{color:T.green}}>· ¡Nuevo récord!</span>:results.pct===prevBest?'· Igual':'· '+((results.pct-prevBest)>0?'+':'')+(results.pct-prevBest)+'%'}</div>}
+      </Card>
+
+      {/* Block breakdown */}
+      {blockResults.length>1&&(
+        <Card style={{padding:'16px 20px',marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>Desglose por bloque</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {blockResults.map(b=>(
+              <div key={b.name} style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:14}}>{b.emoji}</span>
+                <span style={{fontSize:11,color:T.text,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.name}</span>
+                <span style={{fontSize:10,color:T.dim}}>{b.correct}/{b.total}</span>
+                <div style={{width:50}}><PBar pct={b.pct} color={b.pct>=70?T.green:b.pct>=50?T.amber:T.red} height={3}/></div>
+                <span style={{fontSize:11,fontWeight:700,color:b.pct>=70?T.green:b.pct>=50?T.amber:T.red,minWidth:28,textAlign:'right'}}>{b.pct}%</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <div style={{display:'flex',gap:10,justifyContent:'center',marginBottom:20}}>
+        <Btn onClick={()=>{setPhase('setup');setResults(null);}} variant="orange">Nuevo simulacro</Btn>
+      </div>
+      {/* Review — failed questions with explanation */}
+      <Card style={{padding:'14px 18px',marginBottom:16}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>Preguntas falladas ({results.wrong})</div>
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {session.map((q,i)=>{
+            const a=answers[i];const ok=a===q.correct;const blank=a===null;
+            if(ok||blank)return null;
+            return <div key={q.id} style={{padding:'8px 12px',borderLeft:`2px solid ${T.red}`,borderRadius:4,background:T.bg}}>
+              <div style={{display:'flex',gap:6,marginBottom:3}}><span style={{fontSize:9,background:T.blueS,color:T.blueText,padding:'1px 6px',borderRadius:10,fontWeight:600}}>{q.topic?.split('.')[0]||'—'}</span></div>
+              <div style={{fontSize:12,color:T.text,lineHeight:1.5,marginBottom:3}}>{q.question}</div>
+              <div style={{fontSize:11,color:T.red}}>Tu: {q.options[a]} → Correcta: <span style={{color:T.green}}>{q.options[q.correct]}</span></div>
+              {q.explanation&&<div style={{fontSize:10,color:T.dim,marginTop:2,fontStyle:'italic'}}>{q.explanation}</div>}
+            </div>;
+          })}
         </div>
       </Card>
-      <div style={{display:'flex',gap:10,justifyContent:'center',marginBottom:24}}>
-        <Btn onClick={()=>{setPhase('setup');setResults(null);}} variant="orange">Nuevo simulacro</Btn>
-        <Btn variant="ghost" onClick={()=>{
-          const[detail,setDetail]=useState(false);
-        }}>Revisar respuestas</Btn>
-      </div>
-      {/* Review */}
-      <div style={{display:'flex',flexDirection:'column',gap:8}}>
-        {session.map((q,i)=>{
-          const a=answers[i];const ok=a===q.correct;const blank=a===null;
-          return <Card key={q.id} style={{padding:'10px 14px',borderLeft:`3px solid ${blank?T.dim:ok?T.green:T.red}`}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
-              <div style={{flex:1}}>
-                <div style={{marginBottom:4,display:'flex',gap:6}}><span style={{fontSize:10,background:T.blueS,color:T.blueText,padding:'2px 8px',borderRadius:20,fontWeight:600}}>{q.topic}</span></div>
-                <p style={{margin:'4px 0 5px',fontSize:13,color:T.text,lineHeight:1.5}}>{q.question}</p>
-                <p style={{margin:0,fontSize:12,color:blank?T.dim:ok?T.greenDk:T.redDk}}>{blank?'⬜ En blanco':ok?'✅':' ❌'} {blank?'':q.options[q.correct]}{!blank&&!ok&&a!=null?<span style={{color:T.muted}}> · Tuya: {q.options[a]}</span>:''}</p>
-                {q.explanation&&<p style={{margin:'4px 0 0',fontSize:11,color:T.muted,fontStyle:'italic'}}>{q.explanation}</p>}
-              </div>
-              <span style={{fontSize:11,fontWeight:700,color:blank?T.dim:ok?T.greenDk:T.redDk,flexShrink:0}}>{blank?'0':ok?'+1':`-${cfg.penalty==='tercio'?'0.33':cfg.penalty==='cuarto'?'0.25':'0'}`}</span>
-            </div>
-          </Card>;
-        })}
-      </div>
     </div>
-  );
+  );}
 
   // ── Running ──
   const q=session[current];if(!q)return null;
   const OPT=['A','B','C','D'];
   const answered=answers.filter(a=>a!==null).length;
-  const timeColor=timeLeft<300?T.red:timeLeft<600?T.amber:T.teal;
+  const noTimeLimit=cfg.totalTime===0;
+  const timeColor=noTimeLimit?T.dim:timeLeft<300?T.red:timeLeft<600?T.amber:T.teal;
 
   return(
     <div>
@@ -3122,8 +3220,8 @@ function Simulacro({testQs,recordAnswer,addSession}){
       <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:'12px 18px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',boxShadow:sh.sm,flexWrap:'wrap',gap:8}}>
         <div style={{display:'flex',alignItems:'center',gap:16}}>
           <div style={{textAlign:'center'}}>
-            <div style={{fontSize:22,fontWeight:800,color:timeColor,fontVariantNumeric:'tabular-nums',letterSpacing:1}}>{fmtTime(timeLeft)}</div>
-            <div style={{fontSize:10,color:T.dim,marginTop:-2}}>tiempo restante</div>
+            <div style={{fontSize:22,fontWeight:800,color:timeColor,fontVariantNumeric:'tabular-nums',letterSpacing:1}}>{noTimeLimit?'∞':fmtTime(timeLeft)}</div>
+            <div style={{fontSize:10,color:T.dim,marginTop:-2}}>{noTimeLimit?'sin límite':'tiempo restante'}</div>
           </div>
           <div style={{width:1,height:36,background:T.border}}/>
           <div style={{textAlign:'center'}}>
