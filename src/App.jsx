@@ -2511,7 +2511,6 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   const topicTag=topicNum?`T${topicNum}`:'';
 
   const generateSection=async(idx,subIdx)=>{
-    // subIdx: if defined, generate for a subsection within section[idx]
     const sec=sections[idx];
     const sub=subIdx!=null?sec.subsections?.[subIdx]:null;
     const targetText=sub?sub.text:sec.text;
@@ -2519,161 +2518,155 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     if(!targetText?.trim()){setGenError('Pega texto primero.');return;}
     setGenIdx(subIdx!=null?`${idx}-${subIdx}`:idx);setGenError('');setGenPct(0);
 
-    const SYS='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). IDIOMA: Independientemente del idioma del texto de entrada, TODA tu respuesta debe estar en español. Traduce al español todos los conceptos, definiciones, mecanismos, preguntas, opciones de respuesta, explicaciones, flashcards, casos clínicos y secciones de lectura. Si el texto original está en inglés u otro idioma, tradúcelo. Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
-    const CTX=`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"\n\nTEXTO:\n${targetText.slice(0,30000)}`;
+    const SYS='Eres un experto en bioquímica clínica (FEA Lab. Clínico, SESCAM 2025). IDIOMA: Todo en español. Responde SOLO con JSON válido.';
+    const CTX=`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"\n\nTEXTO:\n${targetText.slice(0,25000)}`;
+    const TRANSFER='NUNCA preguntes lo que dice el texto. SIEMPRE presenta el concepto en contexto clínico NUEVO.';
+    const CALIB=getDiffCalibration();
     const now=new Date();
     const dateTag=now.toISOString().slice(0,10);
-    // Metadata template for question tagging
-    const META=`\n\nIMPORTANTE — cada pregunta DEBE incluir estos campos de metadatos:\n"tema":"${topicTag}","seccion":"${sec.title}","subseccion":"${sub?.title||''}","fechaGeneracion":"${dateTag}"`;
-    const DIFF=`\n\nPara cada pregunta incluye: "tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta"`;
 
-    try{
-      // 1. Extract concepts
-      setGenStep('Fase 1/6: Extrayendo conceptos...');setGenPct(5);
-      console.log('[OPELab] Fase 1: Extrayendo conceptos de',targetTitle);
-      const rawC=await callClaude(`${SYS}\n\nExtrae TODA la información clave de esta sección.\n\n${CTX}\n\nJSON:\n{"concepts":[{"t":"título (5-8 palabras)","d":"Descripción concisa. Máximo 2 frases.","cat":"concept|value|mechanism|clinical"}]}\n\nSé exhaustivo.`);
-      const conceptsParsed=JSON.parse(repairJSON(rawC));
-      const conceptList=conceptsParsed.concepts||conceptsParsed;
-      // Limit concept map to 80 items for generation prompts (avoids token overflow)
-      const cMap=JSON.stringify(Array.isArray(conceptList)?conceptList.slice(0,80):[]);
-      console.log('[OPELab] Fase 1 OK:',Array.isArray(conceptList)?conceptList.length:0,'conceptos extraídos');
+    // Checkpoint-based generation: each phase runs independently
+    const phases={};
+    const errors=[];
+    let conceptList=[];
+    let cMap='[]';
 
-      // 2. Pre-test (20 preguntas de transferencia)
-      setGenStep('Fase 2/8: Pre-test (20 preguntas)...');setGenPct(12);
-      console.log('[OPELab] Fase 2: Generando pre-test...');
-      const TRANSFER='IMPORTANTE: NUNCA preguntes directamente lo que dice el texto. SIEMPRE presenta el concepto en un contexto clínico o analítico NUEVO donde el estudiante tenga que APLICAR el conocimiento, no reconocerlo.';
-      const CALIB=getDiffCalibration();
-      const p1=await callClaude(`${SYS}\n\n${TRANSFER}${CALIB}\n\nGenera 20 preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\n7 fáciles, 7 medias, 6 difíciles. JSON:\n{"questions":[{"id":"pre1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
-      const preTest=JSON.parse(repairJSON(p1));
-      console.log('[OPELab] Fase 2 OK:',(preTest.questions||preTest).length,'preguntas');
-
-      // 3. Guided reading
-      setGenStep('Fase 3/6: Lectura guiada...');setGenPct(30);
-      console.log('[OPELab] Fase 3: Generando lectura guiada...');
-      const p2=await callClaude(`${SYS}\n\nOrganiza estos conceptos de "${targetTitle}" en subsecciones de lectura guiada (3-6).\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}`,8192);
-      const guided=JSON.parse(repairJSON(p2));
-      console.log('[OPELab] Fase 3 OK:',(guided.sections||guided).length,'secciones');
-
-      // 4. Flashcards (25 tarjetas)
-      setGenStep('Fase 4/8: Flashcards (25)...');setGenPct(35);
-      console.log('[OPELab] Fase 4: Generando flashcards...');
-      const p3=await callClaude(`${SYS}\n\nGenera 25 flashcards de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"flashcards":[{"id":"fc1","front":"Pregunta de aplicación (no literal)","back":"Respuesta con dato concreto","tipo":"concepto"}]}\n\n25 exactas. Prioriza valores, criterios, clasificaciones.`,6144);
-      const fc=JSON.parse(repairJSON(p3));
-      console.log('[OPELab] Fase 4 OK:',(fc.flashcards||fc).length,'flashcards');
-
-      // 5. Casos de laboratorio (5)
-      setGenStep('Fase 5/8: Casos de laboratorio (5)...');setGenPct(45);
-      console.log('[OPELab] Fase 5: Generando casos de laboratorio...');
-      const p4=await callClaude(`${SYS}\n\nCrea 5 casos de laboratorio clínico de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nFORMATO OBLIGATORIO: "Recibes en el laboratorio una muestra con los siguientes resultados: [valores analíticos reales del tema con unidades]. ¿Qué patrón patológico sugiere, qué interferencias debes descartar y qué pruebas adicionales solicitarías?"\n\nLos valores numéricos DEBEN venir de los conceptos extraídos.\nEl razonamiento modelo incluye: recepción de muestra → análisis → interpretación → informe.\n\nJSON:\n{"clinicalCases":[{"id":"cc1","presentation":"Recibes en el laboratorio una muestra con...","question":"¿Qué patrón sugiere y qué pruebas adicionales?","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"discussion":"Proceso analítico completo desde recepción hasta informe"}]}`,8192);
-      const cc=JSON.parse(repairJSON(p4));
-      console.log('[OPELab] Fase 5 OK:',(cc.clinicalCases||cc).length,'casos');
-
-      // 6. Fill-in-the-blanks (5 preguntas)
-      setGenStep('Fase 6/8: Completar blancos (5)...');setGenPct(55);
-      console.log('[OPELab] Fase 6: Generando fill-blanks...');
-      const p6=await callClaude(`${SYS}\n\nGenera 5 preguntas de completar el espacio en blanco sobre "${targetTitle}". CONCEPTOS:\n${cMap}\n\nCada pregunta es una frase con un concepto clave omitido (marcado con ___). Incluye las respuestas aceptables.\n\nJSON:\n{"fillBlanks":[{"id":"fb1","sentence":"La PTH actúa sobre el riñón aumentando la reabsorción de ___ e inhibiendo la reabsorción de ___","answers":["calcio","fosfato"],"explanation":"La PTH aumenta Ca y disminuye P en el túbulo renal"}]}`,4096);
-      const fb=JSON.parse(repairJSON(p6));
-      console.log('[OPELab] Fase 6 OK:',(fb.fillBlanks||fb).length,'fill-blanks');
-
-      // 7. Diagnóstico diferencial (2 pares)
-      setGenStep('Fase 7/8: Diagnóstico diferencial (2 pares)...');setGenPct(65);
-      console.log('[OPELab] Fase 7: Generando pares de diagnóstico diferencial...');
-      const p7=await callClaude(`${SYS}\n\nGenera 2 pares de diagnóstico diferencial de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nCada par presenta dos casos con resultados analíticos similares pero con una diferencia clave. El estudiante debe identificar la diferencia y proponer el diagnóstico para cada caso.\n\nEjemplo: "Caso A: Ca 12 mg/dL, PTH 150 pg/mL. Caso B: Ca 12 mg/dL, PTH 8 pg/mL."\n\nJSON:\n{"diffDiagnosis":[{"id":"dd1","caseA":"Caso A: valores analíticos...","caseB":"Caso B: valores analíticos similares pero con diferencia clave...","question":"¿Qué diagnóstico diferencial planteas?","explanation":"Caso A = diagnóstico X porque... Caso B = diagnóstico Y porque... La diferencia clave es..."}]}`,4096);
-      const dd=JSON.parse(repairJSON(p7));
-      console.log('[OPELab] Fase 7 OK:',(dd.diffDiagnosis||dd).length,'pares');
-
-      // 8. Open-ended questions (3)
-      setGenStep('Fase 8/10: Preguntas abiertas (3)...');setGenPct(72);
-      console.log('[OPELab] Fase 8: Generando preguntas abiertas...');
-      const p8=await callClaude(`${SYS}\n\nGenera 3 preguntas de respuesta abierta sobre "${targetTitle}". El estudiante debe escribir su respuesta sin opciones. CONCEPTOS:\n${cMap}\n\nJSON:\n{"openQuestions":[{"id":"oq1","question":"Pregunta que requiere explicar un mecanismo o interpretar resultados","modelAnswer":"Respuesta modelo completa","keyConcepts":["concepto clave 1","concepto clave 2"]}]}`,4096);
-      const oq=JSON.parse(repairJSON(p8));
-      console.log('[OPELab] Fase 8 OK:',(oq.openQuestions||oq).length,'preguntas abiertas');
-
-      // 9. Concept map relationships
-      setGenStep('Fase 9/10: Mapa de relaciones...');setGenPct(78);
-      console.log('[OPELab] Fase 9: Generando mapa de relaciones...');
-      const p9=await callClaude(`${SYS}\n\nA partir de los conceptos de "${targetTitle}", genera un mapa de relaciones modelo.\n\nCONCEPTOS:\n${cMap}\n\nIdentifica las 8-12 relaciones más importantes entre conceptos.\n\nJSON:\n{"relationships":[{"from":"concepto A","to":"concepto B","relation":"tipo de relación: causa, regula, inhibe, aumenta, disminuye, diagnostica, etc."}]}`,4096);
-      const rm=JSON.parse(repairJSON(p9));
-      console.log('[OPELab] Fase 9 OK:',(rm.relationships||rm).length,'relaciones');
-
-      // 10. Post-test (25 preguntas de transferencia) — split into 2 batches
-      setGenStep('Fase 10/10: Post-test (13+12 preguntas)...');setGenPct(82);
-      console.log('[OPELab] Fase 8: Generando post-test batch 1 (13 preguntas)...');
-      const postPromptBase=`${SYS}\n\n${TRANSFER}${CALIB}\n\nPreguntas DIFÍCILES (POST-TEST) de "${targetTitle}". Aplicación clínica, diagnóstico diferencial.\n\nCONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"post1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
-      const p5a=await callClaude(postPromptBase+'\n\nGenera exactamente 13 preguntas.',8192);
-      const postBatch1=JSON.parse(repairJSON(p5a));
-      const postQs1=postBatch1.questions||postBatch1;
-      console.log('[OPELab] Fase 8 batch 1 OK:',Array.isArray(postQs1)?postQs1.length:0,'preguntas');
-
-      setGenPct(88);
-      console.log('[OPELab] Fase 8: Generando post-test batch 2 (12 preguntas)...');
-      const p5b=await callClaude(postPromptBase+'\n\nGenera exactamente 12 preguntas diferentes a las anteriores.',8192);
-      const postBatch2=JSON.parse(repairJSON(p5b));
-      const postQs2=postBatch2.questions||postBatch2;
-      console.log('[OPELab] Fase 8 batch 2 OK:',Array.isArray(postQs2)?postQs2.length:0,'preguntas');
-
-      const postTest={questions:[...(Array.isArray(postQs1)?postQs1:[]),...(Array.isArray(postQs2)?postQs2:[])]};
-      console.log('[OPELab] Fase 8 TOTAL:',postTest.questions.length,'preguntas post-test');
-
-      setGenPct(95);setGenStep('Etiquetando y guardando...');
-      console.log('[OPELab] Etiquetando y guardando resultado...');
-
-      // Tag all generated items with metadata
-      const tag=(arr,fase)=>(Array.isArray(arr)?arr:[]).map((q,i)=>({...q,id:uid(),tema:topicTag,seccion:sec.title,subseccion:sub?.title||'',fase,fechaGeneracion:dateTag,tipo:q.tipo||'concepto',dificultad:q.dificultad||'media'}));
-      const taggedPreTest=tag(preTest.questions||preTest,'pretest');
-      const taggedPostTest=tag(postTest.questions||postTest,'posttest');
-      const taggedFlashcards=(fc.flashcards||fc||[]).map((f,i)=>({...f,id:uid(),tema:topicTag,seccion:sec.title,subseccion:sub?.title||'',fase:'flashcard',fechaGeneracion:dateTag}));
-      const taggedClinical=tag(cc.clinicalCases||cc,'caso');
-
-      const addDays=(d,n)=>{const r=new Date(d);r.setDate(r.getDate()+n);return r.toISOString().slice(0,10);};
-      const generated={
-        generatedAt:now.toISOString(),
-        conceptMap:Array.isArray(conceptList)?conceptList:[],
-        phases:{
-          preTest:taggedPreTest,
-          guidedReading:guided.sections||guided,
-          flashcards:taggedFlashcards,
-          clinicalCases:taggedClinical,
-          fillBlanks:fb.fillBlanks||fb||[],
-          diffDiagnosis:dd.diffDiagnosis||dd||[],
-          openQuestions:oq.openQuestions||oq||[],
-          conceptRelations:rm.relationships||rm||[],
-          postTest:taggedPostTest,
-        },
-        progress:{preTest:null,postTest:null,flashcardsDominated:null,flashcardsSm2:null,clinicalScore:null,fillBlanks:null,openQuestions:null}
-      };
-
-      // Detect cross-topic connections
-      const myConceptNames=new Set((Array.isArray(conceptList)?conceptList:[]).map(c=>(c.t||'').toLowerCase()));
-      const connections=[];
-      if(allLearningData){
-        Object.entries(allLearningData).forEach(([otherTopic,otherData])=>{
-          if(otherTopic===topic||!otherData?.sections)return;
-          otherData.sections.forEach(otherSec=>{
-            if(!otherSec?.generated?.conceptMap)return;
-            otherSec.generated.conceptMap.forEach(c=>{
-              const name=(c.t||'').toLowerCase();
-              if(myConceptNames.has(name)&&!connections.some(x=>x.concept===name&&x.topic===otherTopic)){
-                connections.push({concept:c.t,topic:otherTopic,section:otherSec.title});
-              }
-            });
-          });
-        });
+    // Helper: run a phase with error isolation
+    const runPhase=async(name,pct,fn)=>{
+      setGenStep(`${name}...`);setGenPct(pct);
+      console.log(`[OPELab] ${name}`);
+      try{
+        const result=await fn();
+        console.log(`[OPELab] ✓ ${name}`);
+        return result;
+      }catch(e){
+        console.error(`[OPELab] ✗ ${name}: ${e.message}`);
+        errors.push(`${name}: ${e.message}`);
+        return null;
       }
-      if(connections.length)generated.connections=connections.slice(0,10);
+    };
 
-      let updSections;
-      if(subIdx!=null){
-        const updSubs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,generated}:s);
-        updSections=sections.map((s,i)=>i===idx?{...s,subsections:updSubs}:s);
-      }else{
-        updSections=sections.map((s,i)=>i===idx?{...s,generated}:s);
-      }
-      let sr=data.spacedRepetition;
-      if(!sr){sr={startDate:now.toISOString().slice(0,10),reviews:{'D+1':{date:addDays(now,1),completed:false},'D+3':{date:addDays(now,3),completed:false},'D+7':{date:addDays(now,7),completed:false},'D+14':{date:addDays(now,14),completed:false},'D+30':{date:addDays(now,30),completed:false}}};}
-      await save({...data,sections:updSections,spacedRepetition:sr});
-      setGenStep('');setGenPct(100);
-    }catch(e){setGenError(`Error: ${e.message}`);}
+    // Phase 1: Concepts (required — abort if fails)
+    const concepts=await runPhase('1/10 Extrayendo conceptos',5,async()=>{
+      const raw=await callClaude(`${SYS}\n\nExtrae información clave.\n\n${CTX}\n\nJSON:\n{"concepts":[{"t":"título","d":"descripción breve","cat":"concept|value|mechanism|clinical"}]}\n\nSé exhaustivo.`);
+      const p=JSON.parse(repairJSON(raw));
+      conceptList=p.concepts||p;
+      cMap=JSON.stringify(Array.isArray(conceptList)?conceptList.slice(0,60):[]);
+      return conceptList;
+    });
+    if(!concepts){setGenError('Error extrayendo conceptos: '+errors.join('. '));setGenIdx(null);return;}
+
+    // Phase 2: Pre-test (20)
+    const preTest=await runPhase('2/10 Pre-test (20 preguntas)',12,async()=>{
+      const r=await callClaude(`${SYS}\n\n${TRANSFER}${CALIB}\n\n20 preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\n7 fáciles, 7 medias, 6 difíciles.\n\nJSON:\n{"questions":[{"id":"p1","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
+      return JSON.parse(repairJSON(r));
+    });
+
+    // Phase 3: Guided reading
+    const guided=await runPhase('3/10 Lectura guiada',25,async()=>{
+      const r=await callClaude(`${SYS}\n\nLectura guiada de "${targetTitle}" (3-6 subsecciones). CONCEPTOS:\n${cMap}\n\nJSON:\n{"sections":[{"title":"...","summary":"...","keyPoints":["..."],"checkQuestion":{"question":"...","answer":"..."}}]}`,8192);
+      return JSON.parse(repairJSON(r));
+    });
+
+    // Phase 4: Flashcards (25)
+    const fc=await runPhase('4/10 Flashcards (25)',35,async()=>{
+      const r=await callClaude(`${SYS}\n\n25 flashcards de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"flashcards":[{"id":"f1","front":"Pregunta","back":"Respuesta","tipo":"concepto"}]}\n\n25 exactas.`,6144);
+      return JSON.parse(repairJSON(r));
+    });
+
+    // Phase 5: Lab cases (5) — split into 3+2 to avoid truncation
+    const cc=await runPhase('5/10 Casos laboratorio (3+2)',45,async()=>{
+      const r1=await callClaude(`${SYS}\n\n3 casos de laboratorio de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nFormato: "Recibes una muestra con [valores con unidades]. ¿Patrón, interferencias, pruebas adicionales?"\n\nJSON:\n{"clinicalCases":[{"id":"c1","presentation":"Recibes...","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"discussion":"breve"}]}`,6144);
+      const b1=JSON.parse(repairJSON(r1));
+      const r2=await callClaude(`${SYS}\n\n2 casos de laboratorio más de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nMismo formato.\n\nJSON:\n{"clinicalCases":[{"id":"c4","presentation":"...","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"discussion":"breve"}]}`,4096);
+      const b2=JSON.parse(repairJSON(r2));
+      return{clinicalCases:[...(b1.clinicalCases||b1||[]),...(b2.clinicalCases||b2||[])]};
+    });
+
+    // Phase 6: Fill blanks (5)
+    const fb=await runPhase('6/10 Completar blancos (5)',55,async()=>{
+      const r=await callClaude(`${SYS}\n\n5 preguntas completar blancos de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"fillBlanks":[{"id":"fb1","sentence":"Frase con ___","answers":["respuesta"],"explanation":"breve"}]}`,4096);
+      return JSON.parse(repairJSON(r));
+    });
+
+    // Phase 7: Diff diagnosis (2 pairs)
+    const dd=await runPhase('7/10 Diagnóstico diferencial (2)',62,async()=>{
+      const r=await callClaude(`${SYS}\n\n2 pares diagnóstico diferencial de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"diffDiagnosis":[{"id":"d1","caseA":"Caso A: valores...","caseB":"Caso B: valores similares...","question":"¿Diferencial?","explanation":"A=X, B=Y, diferencia clave..."}]}`,4096);
+      return JSON.parse(repairJSON(r));
+    });
+
+    // Phase 8: Open questions (3)
+    const oq=await runPhase('8/10 Preguntas abiertas (3)',70,async()=>{
+      const r=await callClaude(`${SYS}\n\n3 preguntas respuesta abierta de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"openQuestions":[{"id":"o1","question":"...","modelAnswer":"...","keyConcepts":["..."]}]}`,4096);
+      return JSON.parse(repairJSON(r));
+    });
+
+    // Phase 9: Concept map (8-12 relations)
+    const rm=await runPhase('9/10 Mapa de relaciones',78,async()=>{
+      const r=await callClaude(`${SYS}\n\n8-12 relaciones entre conceptos de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"relationships":[{"from":"A","to":"B","relation":"causa|regula|inhibe|aumenta|diagnostica"}]}`,4096);
+      return JSON.parse(repairJSON(r));
+    });
+
+    // Phase 10: Post-test (13+12) — always split
+    const postTest=await runPhase('10/10 Post-test (13+12)',85,async()=>{
+      const base=`${SYS}\n\n${TRANSFER}${CALIB}\n\nPreguntas DIFÍCILES de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"p1","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
+      const r1=await callClaude(base+'\n\n13 preguntas exactas.',8192);
+      const b1=JSON.parse(repairJSON(r1));
+      const q1=b1.questions||b1;
+      setGenPct(92);
+      const r2=await callClaude(base+'\n\n12 preguntas exactas diferentes.',8192);
+      const b2=JSON.parse(repairJSON(r2));
+      const q2=b2.questions||b2;
+      return{questions:[...(Array.isArray(q1)?q1:[]),...(Array.isArray(q2)?q2:[])]};
+    });
+
+    // ── Assemble and save whatever we got ──────────────────────────────────
+    setGenPct(96);setGenStep('Guardando...');
+    const tag=(arr,fase)=>(Array.isArray(arr)?arr:[]).map(q=>({...q,id:uid(),tema:topicTag,seccion:sec.title,subseccion:sub?.title||'',fase,fechaGeneracion:dateTag,tipo:q.tipo||'concepto',dificultad:q.dificultad||'media'}));
+    const taggedPreTest=tag(preTest?.questions||preTest||[],'pretest');
+    const taggedPostTest=tag(postTest?.questions||postTest||[],'posttest');
+    const taggedFlashcards=(fc?.flashcards||fc||[]).map(f=>({...f,id:uid(),tema:topicTag,seccion:sec.title,subseccion:sub?.title||'',fase:'flashcard',fechaGeneracion:dateTag}));
+    const taggedClinical=tag(cc?.clinicalCases||cc||[],'caso');
+
+    const addDays=(d,n)=>{const r=new Date(d);r.setDate(r.getDate()+n);return r.toISOString().slice(0,10);};
+    const generated={
+      generatedAt:now.toISOString(),
+      conceptMap:Array.isArray(conceptList)?conceptList:[],
+      phases:{
+        preTest:taggedPreTest,
+        guidedReading:guided?.sections||guided||[],
+        flashcards:taggedFlashcards,
+        clinicalCases:taggedClinical,
+        fillBlanks:fb?.fillBlanks||fb||[],
+        diffDiagnosis:dd?.diffDiagnosis||dd||[],
+        openQuestions:oq?.openQuestions||oq||[],
+        conceptRelations:rm?.relationships||rm||[],
+        postTest:taggedPostTest,
+      },
+      progress:{preTest:null,postTest:null,flashcardsDominated:null,flashcardsSm2:null,clinicalScore:null,fillBlanks:null,openQuestions:null},
+      errors:errors.length?errors:undefined,
+    };
+
+    // Cross-topic connections
+    const myNames=new Set((Array.isArray(conceptList)?conceptList:[]).map(c=>(c.t||'').toLowerCase()));
+    const connections=[];
+    if(allLearningData){Object.entries(allLearningData).forEach(([ot,od])=>{if(ot===topic||!od?.sections)return;od.sections.forEach(os=>{if(!os?.generated?.conceptMap)return;os.generated.conceptMap.forEach(c=>{const n=(c.t||'').toLowerCase();if(myNames.has(n)&&!connections.some(x=>x.concept===n&&x.topic===ot))connections.push({concept:c.t,topic:ot,section:os.title});});});});}
+    if(connections.length)generated.connections=connections.slice(0,10);
+
+    let updSections;
+    if(subIdx!=null){const updSubs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,generated}:s);updSections=sections.map((s,i)=>i===idx?{...s,subsections:updSubs}:s);}
+    else{updSections=sections.map((s,i)=>i===idx?{...s,generated}:s);}
+    let sr=data.spacedRepetition;
+    if(!sr){sr={startDate:now.toISOString().slice(0,10),reviews:{'D+1':{date:addDays(now,1),completed:false},'D+3':{date:addDays(now,3),completed:false},'D+7':{date:addDays(now,7),completed:false},'D+14':{date:addDays(now,14),completed:false},'D+30':{date:addDays(now,30),completed:false}}};}
+    await save({...data,sections:updSections,spacedRepetition:sr});
+
+    if(errors.length){
+      setGenError(`Completado con ${errors.length} error(es): ${errors.map(e=>e.split(':')[0]).join(', ')}. Las fases completadas se guardaron.`);
+      console.warn('[OPELab] Completado con errores:',errors);
+    }else{
+      console.log('[OPELab] ✓ TODAS las fases completadas correctamente');
+    }
+    setGenStep('');setGenPct(100);
     setGenIdx(null);
   };
 
