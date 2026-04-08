@@ -196,6 +196,11 @@ let T=LIGHT; // mutable — gets swapped by App on mount
 const FONT="system-ui,-apple-system,sans-serif";
 const sh={sm:'0 1px 3px rgba(26,46,43,.06)',md:'0 4px 12px rgba(26,46,43,.08)',lg:'0 8px 24px rgba(26,46,43,.1)'};
 
+// ── Global session timer store (survives component unmount/remount) ──────
+// Key: "topic::sectionIdx" or "topic::sectionIdx-subIdx"
+// Value: { startTs: number (Date.now() when pretest began), pausedAt: number|null, accumulated: number (ms paused) }
+const _sessionTimers=new Map();
+
 // ── Sections ─────────────────────────────────────────────────────────────────
 const SECTIONS=[
   {id:'comun',name:'Temario Común y Legislación',emoji:'⚖️',color:'#2a9d8f',colorS:'#e8f4f1',colorBorder:'#b0d8d0',desc:'Constitución, autonomía CLM, leyes sanitarias, SESCAM, legislación laboral y ética',tietz:'—',henry:'—',temas:[1,2,3,4,5,6],
@@ -608,7 +613,7 @@ function getLearningStatus(learning){
   learning.sections.forEach(s=>{
     const score=calcSectionScore(s);
     if(score===null)return;
-    const words=(s.extractedContent?.words||s.text?.split(/\s+/).length||1000);
+    const words=(s.text?.split(/\s+/).length||1000);
     weightedSum+=score*words;totalWeight+=words;
   });
   const mastery=totalWeight>0?Math.round(weightedSum/totalWeight):0;
@@ -3158,7 +3163,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
                 await saveLearningData(topic,{...existingData,sections:[...(existingData.sections||[]),...newSections]});
               }
               setManualMode(false);setTreeNodes([]);
-              setProgress({step:`✓ ${newSections.length} secciones creadas. Usa "Extraer contenido" para llenarlas desde los PDFs.`,pct:100,detail:''});
+              setProgress({step:`✓ ${newSections.length} secciones creadas. Pega el texto de cada sección manualmente.`,pct:100,detail:''});
             }}
               style={{background:T.green,color:'#fff',border:'none',borderRadius:8,padding:'6px 18px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>
               ✓ Confirmar estructura
@@ -3308,6 +3313,115 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
 // ═══════════════════════════════════════════════════════════════════════════
 // APUNTES TAB — apuntes auto-generados desde el contenido de Aprendizaje
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ── Markdown renderer for medical notes ──────────────────────────────────
+function MedicalMarkdown({text}){
+  if(!text)return null;
+  const READING='Georgia,Cambria,"Times New Roman",serif';
+
+  // Extract inline TOC headings
+  const lines=text.split('\n');
+  const elements=[];
+  let i=0;
+  let listBuffer=[];
+
+  const flushList=()=>{
+    if(!listBuffer.length)return;
+    elements.push(<ul key={`ul-${elements.length}`} style={{margin:'8px 0 16px 4px',paddingLeft:20,listStyleType:'none'}}>{listBuffer.map((li,j)=>(
+      <li key={j} style={{fontSize:16,lineHeight:1.8,color:T.text,marginBottom:4,position:'relative',paddingLeft:12}}>
+        <span style={{position:'absolute',left:-8,color:T.teal,fontWeight:700}}>•</span>
+        {renderInline(li)}
+      </li>
+    ))}</ul>);
+    listBuffer=[];
+  };
+
+  // Render inline markdown: **bold**, *italic*, `code`, numbers with units
+  const renderInline=(str)=>{
+    const parts=[];
+    // Regex to match **bold**, *italic*, `code`
+    const rx=/(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|(\d+[\.,]?\d*\s*(?:mg\/[dL]+|g\/[dL]+|µmol\/[Ll]|mmol\/[Ll]|mEq\/[Ll]|U\/[Ll]|ng\/[dLm]+|pg\/[mL]+|fl|%|×10[³⁹⁶]\/[µL]+|mm³|kDa|Da|μg|mg|g|kg|mL|dL|L|µL|h|min|s|rpm|°C|IU|UI|pH|nm|μm|mm|cm)))/g;
+    let last=0;let m;
+    while((m=rx.exec(str))!==null){
+      if(m.index>last)parts.push(str.slice(last,m.index));
+      if(m[2])parts.push(<strong key={`b${m.index}`} style={{fontWeight:700,color:T.text}}>{m[2]}</strong>);
+      else if(m[3])parts.push(<em key={`i${m.index}`} style={{fontStyle:'italic',color:T.muted}}>{m[3]}</em>);
+      else if(m[4])parts.push(<code key={`c${m.index}`} style={{background:T.tealS,color:T.tealText,padding:'1px 5px',borderRadius:3,fontSize:'0.9em',fontFamily:'Consolas,monospace'}}>{m[4]}</code>);
+      else if(m[5])parts.push(<span key={`n${m.index}`} style={{fontWeight:700,color:T.teal}}>{m[5]}</span>);
+      last=m.index+m[0].length;
+    }
+    if(last<str.length)parts.push(str.slice(last));
+    return parts.length?parts:str;
+  };
+
+  while(i<lines.length){
+    const line=lines[i];
+    const trimmed=line.trim();
+
+    // Empty line → paragraph break
+    if(!trimmed){flushList();elements.push(<div key={`sp-${i}`} style={{height:12}}/>);i++;continue;}
+
+    // Clinical pearl / important note detection
+    const pearlRx=/^(?:💡|⚠️?|🔑|📌|❗|🩺|Perla clínica|PERLA|Nota importante|NOTA|Importante|IMPORTANTE|Recuerda|RECUERDA)[:\s]*(.*)/i;
+    const pearlMatch=trimmed.match(pearlRx);
+    if(pearlMatch){
+      flushList();
+      const icon=trimmed.match(/^(💡|⚠️?|🔑|📌|❗|🩺)/)?.[0]||'💡';
+      const pearlText=pearlMatch[1]||trimmed.replace(pearlRx,'').trim();
+      elements.push(
+        <div key={`pearl-${i}`} style={{margin:'16px 0',padding:'14px 18px',background:T.amberS,borderLeft:`4px solid ${T.amber}`,borderRadius:'0 10px 10px 0',display:'flex',gap:12,alignItems:'flex-start'}}>
+          <span style={{fontSize:20,flexShrink:0,lineHeight:1}}>{icon}</span>
+          <div style={{fontSize:15,lineHeight:1.8,color:T.text,fontFamily:READING}}>{renderInline(pearlText)}</div>
+        </div>
+      );i++;continue;
+    }
+
+    // Headings: # ## ### or ALL CAPS lines (>4 words all uppercase)
+    const h1=trimmed.match(/^#\s+(.*)/);
+    const h2=trimmed.match(/^##\s+(.*)/);
+    const h3=trimmed.match(/^###\s+(.*)/);
+    const isAllCaps=trimmed.length>8&&trimmed===trimmed.toUpperCase()&&/[A-ZÁÉÍÓÚÑ]{4,}/.test(trimmed)&&!trimmed.startsWith('-')&&!trimmed.startsWith('•');
+
+    if(h1||isAllCaps){
+      flushList();
+      const title=h1?h1[1]:trimmed;
+      const slug=title.toLowerCase().replace(/[^a-záéíóúñ0-9]+/g,'-');
+      elements.push(
+        <div key={`h1-${i}`} id={`sec-${slug}`} style={{marginTop:elements.length?32:0,marginBottom:16}}>
+          <h3 style={{fontSize:19,fontWeight:800,color:T.teal,fontFamily:READING,letterSpacing:0.3,margin:0,lineHeight:1.4}}>{title.charAt(0).toUpperCase()+title.slice(1).toLowerCase().replace(/(^|\.\s+)([a-záéíóúñ])/g,(_,p,c)=>p+c.toUpperCase())}</h3>
+          <div style={{height:3,width:50,background:`linear-gradient(90deg,${T.teal},transparent)`,borderRadius:2,marginTop:6}}/>
+        </div>
+      );i++;continue;
+    }
+    if(h2){
+      flushList();
+      const slug=h2[1].toLowerCase().replace(/[^a-záéíóúñ0-9]+/g,'-');
+      elements.push(
+        <h4 key={`h2-${i}`} id={`sec-${slug}`} style={{fontSize:17,fontWeight:700,color:T.text,fontFamily:READING,margin:'24px 0 10px',borderBottom:`1px solid ${T.border}`,paddingBottom:6}}>{h2[1]}</h4>
+      );i++;continue;
+    }
+    if(h3){
+      flushList();
+      elements.push(
+        <h5 key={`h3-${i}`} style={{fontSize:15,fontWeight:700,color:T.tealText,fontFamily:READING,margin:'18px 0 8px'}}>{h3[1]}</h5>
+      );i++;continue;
+    }
+
+    // List items: - or • or numbered (1. 2.)
+    const listMatch=trimmed.match(/^[-•]\s+(.*)/)||trimmed.match(/^\d+[.)]\s+(.*)/);
+    if(listMatch){listBuffer.push(listMatch[1]);i++;continue;}
+
+    // Regular paragraph
+    flushList();
+    elements.push(
+      <p key={`p-${i}`} style={{fontSize:16,lineHeight:1.8,color:T.text,margin:'0 0 14px',fontFamily:READING}}>{renderInline(trimmed)}</p>
+    );
+    i++;
+  }
+  flushList();
+  return <>{elements}</>;
+}
+
 function TopicApuntesTab({topic,learning,saveLearningData,bgJobs,startBgJob,clearJob}){
   const [generating,setGenerating]=useState(false);
   const [genMsg,setGenMsg]=useState('');
@@ -3346,14 +3460,15 @@ SECCIONES Y CONCEPTOS:
 ${JSON.stringify(sectionsData.slice(0,20))}
 
 JSON:
-{"notes":[{"section":"Título de la sección","content":"Texto estructurado con todos los conceptos clave, valores numéricos con unidades, mecanismos paso a paso, relaciones causales y perlas clínicas. Incluye TODOS los valores, clasificaciones y criterios diagnósticos extraídos."}]}
+{"notes":[{"section":"Título de la sección","content":"Texto con markdown: usa # para títulos principales, ## para subtítulos, **negrita** para términos clave, - para listas. Incluye TODOS los valores numéricos con unidades, mecanismos paso a paso, relaciones causales. Marca las perlas clínicas con 💡 al inicio de la línea. Usa párrafos separados por línea vacía."}]}
 
 Requisitos:
 - Una entrada por cada sección proporcionada, en el mismo orden
+- Usar formato markdown: # títulos, ## subtítulos, **negrita**, - listas, 💡 perlas clínicas
 - Incluir TODOS los conceptos, valores y mecanismos
-- Valores numéricos siempre con unidades
-- Mecanismos descritos paso a paso
-- Perlas clínicas destacadas
+- Valores numéricos siempre con unidades y en **negrita**
+- Mecanismos descritos paso a paso con listas numeradas
+- Perlas clínicas en líneas que empiecen con 💡
 - Lenguaje técnico de especialista FEA
 - Mínimo 200 palabras por sección`}]})
       });
@@ -3382,67 +3497,118 @@ Requisitos:
     const a=document.createElement('a');a.href=url;a.download=`apuntes_${topic.split('.')[0]}.txt`;a.click();URL.revokeObjectURL(url);
   };
 
+  // Extract TOC from all notes
+  const tocItems=useMemo(()=>{
+    const items=[];
+    notes.forEach((n,ni)=>{
+      items.push({level:0,title:n.section,secIdx:ni,id:`toc-sec-${ni}`});
+      (n.content||'').split('\n').forEach(line=>{
+        const t=line.trim();
+        const h1=t.match(/^#\s+(.*)/);
+        const h2=t.match(/^##\s+(.*)/);
+        const isAllCaps=t.length>8&&t===t.toUpperCase()&&/[A-ZÁÉÍÓÚÑ]{4,}/.test(t)&&!t.startsWith('-')&&!t.startsWith('•');
+        if(h2)items.push({level:2,title:h2[1],secIdx:ni,id:`sec-${h2[1].toLowerCase().replace(/[^a-záéíóúñ0-9]+/g,'-')}`});
+        else if(h1||isAllCaps){
+          const title=h1?h1[1]:t;
+          items.push({level:1,title:title.charAt(0).toUpperCase()+title.slice(1).toLowerCase().replace(/(^|\.\s+)([a-záéíóúñ])/g,(_,p,c)=>p+c.toUpperCase()),secIdx:ni,id:`sec-${title.toLowerCase().replace(/[^a-záéíóúñ0-9]+/g,'-')}`});
+        }
+      });
+    });
+    return items;
+  },[notes]);
+
+  const READING='Georgia,Cambria,"Times New Roman",serif';
+
   if(!notes.length) return(
-    <Card style={{padding:'24px'}}>
-      <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:6}}>📖 Apuntes del tema</div>
-      <div style={{fontSize:12,color:T.dim,marginBottom:16,lineHeight:1.6}}>
-        {hasSections
-          ?'Genera apuntes automáticamente a partir de toda la información extraída en las secciones de Aprendizaje.'
-          :'Primero genera el aprendizaje en al menos una sección. Los apuntes se sintetizan a partir de los conceptos extraídos.'}
+    <Card style={{padding:'32px',maxWidth:680,margin:'0 auto'}}>
+      <div style={{textAlign:'center'}}>
+        <div style={{fontSize:48,marginBottom:12}}>📖</div>
+        <div style={{fontSize:18,fontWeight:700,color:T.text,marginBottom:8,fontFamily:READING}}>Apuntes del tema</div>
+        <div style={{fontSize:14,color:T.dim,marginBottom:24,lineHeight:1.7,maxWidth:420,margin:'0 auto 24px'}}>
+          {hasSections
+            ?'Genera apuntes profesionales a partir de toda la información extraída en las secciones de Aprendizaje.'
+            :'Primero genera el aprendizaje en al menos una sección. Los apuntes se sintetizan a partir de los conceptos extraídos.'}
+        </div>
+        <button onClick={generateNotes} disabled={generating||!hasSections}
+          style={{background:generating?T.surface:(!hasSections?T.surface:T.teal),color:generating?T.dim:(!hasSections?T.dim:'#fff'),border:'none',borderRadius:10,padding:'12px 28px',fontSize:14,fontWeight:700,cursor:generating||!hasSections?'not-allowed':'pointer',fontFamily:FONT,boxShadow:generating||!hasSections?'none':sh.md,transition:'all 200ms'}}>
+          {generating?'⏳ Generando apuntes...':'Generar apuntes del tema'}
+        </button>
+        {genMsg&&<div style={{marginTop:14,fontSize:13,color:genMsg.startsWith('Error')?T.red:T.muted}}>{genMsg}</div>}
       </div>
-      <button onClick={generateNotes} disabled={generating||!hasSections}
-        style={{background:generating?T.surface:(!hasSections?T.surface:T.teal),color:generating?T.dim:(!hasSections?T.dim:'#000'),border:`0.5px solid ${generating||!hasSections?T.border:T.teal}`,borderRadius:8,padding:'10px 22px',fontSize:13,fontWeight:700,cursor:generating||!hasSections?'not-allowed':'pointer',fontFamily:FONT}}>
-        {generating?'⏳ Generando apuntes...':'📖 Generar apuntes del tema'}
-      </button>
-      {genMsg&&<div style={{marginTop:10,fontSize:12,color:genMsg.startsWith('Error')?T.red:T.muted}}>{genMsg}</div>}
     </Card>
   );
 
   return(
-    <div>
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
-        <div>
-          <div style={{fontSize:15,fontWeight:700,color:T.text}}>📖 Apuntes del tema</div>
-          <div style={{fontSize:11,color:T.dim}}>{notes.length} secciones · Generado el {fmtDate(notes[0]?.generatedAt)}</div>
+    <div style={{display:'flex',gap:20,alignItems:'flex-start'}}>
+      {/* Sidebar TOC */}
+      <Card style={{position:'sticky',top:12,width:220,flexShrink:0,padding:'16px 0',maxHeight:'calc(100vh - 80px)',overflowY:'auto'}}>
+        <div style={{padding:'0 16px 10px',fontSize:10,fontWeight:700,color:T.dim,textTransform:'uppercase',letterSpacing:0.8}}>Contenidos</div>
+        {tocItems.map((item,j)=>{
+          const isSec=item.level===0;
+          const isActive=isSec&&item.secIdx===openSec;
+          return(
+            <button key={j} onClick={()=>{setOpenSec(item.secIdx);if(!isSec){setTimeout(()=>{const el=document.getElementById(item.id);el?.scrollIntoView({behavior:'smooth',block:'start'});},80);}}}
+              style={{display:'block',width:'100%',textAlign:'left',background:isActive?T.tealS:'transparent',border:'none',borderLeft:isActive?`3px solid ${T.teal}`:'3px solid transparent',padding:isSec?'8px 16px':`4px 16px 4px ${16+item.level*12}px`,fontSize:isSec?12:11,fontWeight:isSec?700:400,color:isActive?T.teal:isSec?T.text:T.muted,cursor:'pointer',fontFamily:FONT,lineHeight:1.4,transition:'all 150ms'}}>
+              {item.title}
+            </button>
+          );
+        })}
+        <div style={{borderTop:`1px solid ${T.border}`,margin:'12px 16px 0',paddingTop:12,display:'flex',gap:6,flexWrap:'wrap'}}>
+          <button onClick={exportPdf} style={{fontSize:10,background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>📥 Exportar</button>
+          <button onClick={generateNotes} disabled={generating} style={{fontSize:10,background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>{generating?'⏳...':'🔄 Regenerar'}</button>
         </div>
-        <div style={{display:'flex',gap:6}}>
-          <button onClick={exportPdf} style={{fontSize:11,background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 12px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>📥 Exportar</button>
-          <button onClick={generateNotes} disabled={generating} style={{fontSize:11,background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 12px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>{generating?'⏳...':'🔄 Regenerar'}</button>
+      </Card>
+
+      {/* Main content */}
+      <div style={{flex:1,minWidth:0}}>
+        {/* Header */}
+        <div style={{marginBottom:20}}>
+          <div style={{fontSize:11,color:T.dim,fontWeight:600,textTransform:'uppercase',letterSpacing:0.8,marginBottom:4}}>Apuntes de estudio</div>
+          <div style={{fontSize:22,fontWeight:800,color:T.text,fontFamily:READING,lineHeight:1.3}}>{topic}</div>
+          <div style={{fontSize:12,color:T.dim,marginTop:4}}>{notes.length} secciones · Generado el {fmtDate(notes[0]?.generatedAt)}</div>
         </div>
-      </div>
 
-      {/* Section navigation */}
-      <div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap'}}>
-        {notes.map((n,i)=>(
-          <button key={i} onClick={()=>setOpenSec(i)} style={{padding:'4px 10px',fontSize:10,fontWeight:openSec===i?700:500,color:openSec===i?T.teal:T.muted,background:openSec===i?T.tealS:T.surface,border:`0.5px solid ${openSec===i?T.teal:T.border}`,borderRadius:6,cursor:'pointer',fontFamily:FONT}}>
-            {n.section}
-          </button>
-        ))}
-      </div>
+        {/* Section tabs (mobile-friendly, redundant to sidebar) */}
+        <div style={{display:'flex',gap:6,marginBottom:18,flexWrap:'wrap',overflowX:'auto'}}>
+          {notes.map((n,i)=>(
+            <button key={i} onClick={()=>setOpenSec(i)} style={{padding:'6px 14px',fontSize:11,fontWeight:openSec===i?700:500,color:openSec===i?T.teal:T.muted,background:openSec===i?T.tealS:T.surface,border:`1px solid ${openSec===i?T.teal:T.border}`,borderRadius:8,cursor:'pointer',fontFamily:FONT,whiteSpace:'nowrap',transition:'all 150ms'}}>
+              {n.section}
+            </button>
+          ))}
+        </div>
 
-      {/* Active section content */}
-      {notes.map((n,i)=>{
-        if(i!==openSec)return null;
-        const isEditing=editIdx===i;
-        return(
-          <Card key={i} style={{padding:'18px 22px'}}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
-              <div style={{fontSize:14,fontWeight:700,color:T.text}}>{n.section}</div>
-              <button onClick={()=>{if(isEditing){saveEdit(i);}else{setEditIdx(i);setEditText(n.content);}}}
-                style={{fontSize:10,background:isEditing?T.teal:T.surface,color:isEditing?'#000':T.muted,border:`0.5px solid ${isEditing?T.teal:T.border}`,borderRadius:6,padding:'3px 10px',cursor:'pointer',fontFamily:FONT,fontWeight:600}}>
-                {isEditing?'💾 Guardar':'✏️ Editar'}
-              </button>
-            </div>
-            {isEditing?(
-              <textarea value={editText} onChange={e=>setEditText(e.target.value)}
-                style={{width:'100%',minHeight:300,background:T.bg,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'12px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.8}}/>
-            ):(
-              <div style={{fontSize:13,color:T.text,lineHeight:1.9,whiteSpace:'pre-wrap'}}>{n.content}</div>
-            )}
-            {n.editedAt&&<div style={{fontSize:10,color:T.dim,marginTop:8}}>Editado el {fmtDate(n.editedAt)}</div>}
-          </Card>
-        );
-      })}
+        {/* Active section content */}
+        {notes.map((n,i)=>{
+          if(i!==openSec)return null;
+          const isEditing=editIdx===i;
+          return(
+            <Card key={i} style={{padding:'28px 32px'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20,borderBottom:`2px solid ${T.teal}`,paddingBottom:14}}>
+                <h2 style={{fontSize:20,fontWeight:800,color:T.teal,margin:0,fontFamily:READING}}>{n.section}</h2>
+                <button onClick={()=>{if(isEditing){saveEdit(i);}else{setEditIdx(i);setEditText(n.content);}}}
+                  style={{fontSize:11,background:isEditing?T.teal:T.surface,color:isEditing?'#fff':T.muted,border:`1px solid ${isEditing?T.teal:T.border}`,borderRadius:8,padding:'5px 14px',cursor:'pointer',fontFamily:FONT,fontWeight:600,transition:'all 150ms'}}>
+                  {isEditing?'💾 Guardar':'✏️ Editar'}
+                </button>
+              </div>
+              {isEditing?(
+                <textarea value={editText} onChange={e=>setEditText(e.target.value)}
+                  style={{width:'100%',minHeight:400,background:T.bg,color:T.text,border:`1px solid ${T.border}`,borderRadius:10,padding:'16px 18px',fontSize:14,fontFamily:'Consolas,Monaco,monospace',resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.7}}/>
+              ):(
+                <div style={{maxWidth:720}}>
+                  <MedicalMarkdown text={n.content}/>
+                </div>
+              )}
+              {n.editedAt&&<div style={{fontSize:10,color:T.dim,marginTop:16,paddingTop:8,borderTop:`1px solid ${T.border}`}}>Editado el {fmtDate(n.editedAt)}</div>}
+
+              {/* Section navigation */}
+              <div style={{display:'flex',justifyContent:'space-between',marginTop:24,paddingTop:16,borderTop:`1px solid ${T.border}`}}>
+                {i>0?<button onClick={()=>setOpenSec(i-1)} style={{fontSize:12,background:'none',border:'none',color:T.teal,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>← {notes[i-1].section}</button>:<span/>}
+                {i<notes.length-1?<button onClick={()=>setOpenSec(i+1)} style={{fontSize:12,background:'none',border:'none',color:T.teal,cursor:'pointer',fontFamily:FONT,fontWeight:600}}>{notes[i+1].section} →</button>:<span/>}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -3758,162 +3924,6 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     save(updated);
   };
 
-  // ── Unification system ────────────────────────────────────────────────────
-  const [unifyingIdx,setUnifyingIdx]=useState(null);
-  const [unifyAllRunning,setUnifyAllRunning]=useState(false);
-
-  const hasBothSources=(sec)=>{
-    const t=sec.text||'';
-    return t.includes('[Fuente: Tietz]')&&t.includes('[Fuente: Henry]');
-  };
-
-  const getTietzText=(sec)=>{
-    const m=sec.text?.match(/\[Fuente: Tietz\]\s*([\s\S]*?)(?=\[Fuente: Henry\]|$)/);
-    return m?m[1].trim():'';
-  };
-  const getHenryText=(sec)=>{
-    const m=sec.text?.match(/\[Fuente: Henry\]\s*([\s\S]*?)(?=\[Fuente: Tietz\]|$)/);
-    return m?m[1].trim():'';
-  };
-
-  const unifySection=async(idx)=>{
-    const sec=sections[idx];
-    if(sec.unified)return; // already done
-    const tietzT=getTietzText(sec);
-    const henryT=getHenryText(sec);
-    const singleSource=sec.text&&!hasBothSources(sec);
-    // If only one source, just clean and use it directly
-    if(singleSource){
-      const cleanText=sec.text.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'').trim();
-      const updSections=sections.map((s,i)=>i===idx?{...s,unified:{text:cleanText,date:new Date().toISOString(),sources:sec.text.includes('[Fuente: Tietz]')?['tietz']:['henry']}}:s);
-      await save({...data,sections:updSections});
-      return;
-    }
-    if(!tietzT&&!henryT)return;
-
-    setUnifyingIdx(idx);
-    try{
-      const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:`Eres experto en bioquímica clínica. IDIOMA: Todo en español. Responde SOLO con JSON puro.\n\nUnifica el contenido de dos fuentes (Tietz y Henry) para la sección "${sec.title}". Reglas:\n- Información idéntica → conserva una vez\n- Información complementaria → conserva ambas\n- Contradicciones → marca con [CONTRADICCIÓN] y conserva ambas versiones\n- Traduce todo al español\n\nTIETZ:\n${tietzT.slice(0,12000)}\n\nHENRY:\n${henryT.slice(0,12000)}\n\n{"unifiedText":"texto unificado completo","contradictions":["contradicción 1 si existe"]}`}]})});
-      if(!res.ok)throw new Error(`HTTP ${res.status}`);
-      const d=await res.json();
-      let text=(d.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'');
-      text=text.split('\n').filter(l=>!/^\s*#/.test(l)).join('\n').trim();
-      const jIdx=text.indexOf('{');
-      const parsed=JSON.parse(jIdx>=0?text.slice(jIdx):text);
-      const unifiedText=parsed.unifiedText||parsed.text||text;
-      const contradictions=parsed.contradictions||[];
-
-      const updSections=sections.map((s,i)=>i===idx?{...s,unified:{text:unifiedText,date:new Date().toISOString(),sources:['tietz','henry'],contradictions}}:s);
-      await save({...data,sections:updSections});
-    }catch(e){console.error('[Unify] Error:',e.message);}
-    setUnifyingIdx(null);
-  };
-
-  const unifyAll=async()=>{
-    setUnifyAllRunning(true);
-    for(let i=0;i<sections.length;i++){
-      if(sections[i].unified)continue;
-      if(!sections[i].text?.trim())continue;
-      setGenStep(`Unificando sección ${i+1}/${sections.length}: ${sections[i].title}`);
-      setGenPct(Math.round(i/sections.length*100));
-      await unifySection(i);
-      // Delay between calls
-      if(i<sections.length-1)await new Promise(r=>setTimeout(r,3000));
-    }
-    setGenStep('');setGenPct(0);
-    setUnifyAllRunning(false);
-  };
-
-  // ── Content extraction: 1 API call per section, no chunks ──────────────
-  const [extractingAll,setExtractingAll]=useState(false);
-  const [extractingIdx,setExtractingIdx]=useState(null);
-  const [extractCancel,setExtractCancel]=useState(false);
-
-  const loadRawText=async(source)=>{
-    const key=`raw_text_${source}_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}`;
-    return await idbLoad(key);
-  };
-
-  // Trim text to ~15000 tokens (~60000 chars) to stay within API input limits
-  const trimForApi=(text)=>text.length>60000?text.slice(0,60000):text;
-
-  const extractSectionContent=async(idx,rawText)=>{
-    const sec=sections[idx];
-    if(sec.extractedContent)return;
-    setExtractingIdx(idx);
-    try{
-      // Use provided rawText or load from IndexedDB
-      let chapText=rawText;
-      if(!chapText){
-        const t=await loadRawText('tietz');
-        const h=await loadRawText('henry');
-        chapText=[t||'',h||''].filter(Boolean).join('\n\n');
-      }
-      if(!chapText?.trim()){
-        // Fallback to section's own text
-        const own=sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'')||'';
-        if(own.length>100){
-          const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:own,date:new Date().toISOString(),words:own.split(/\s+/).length}}:s);
-          await save({...data,sections:updSections});
-          setExtractingIdx(null);return;
-        }
-        throw new Error('No hay texto. Extrae los PDFs primero.');
-      }
-
-      const subsStr=(sec.subsections||[]).map(s=>s.title).join(', ');
-      // Single API call with full chapter text (trimmed to API limit)
-      const raw=await callClaude(
-        `Del siguiente texto, extrae TODA la información relacionada con "${sec.title}"${subsStr?` (incluye: ${subsStr})`:''}.`+
-        ` Sé exhaustivo, no resumas, incluye todos los valores numéricos y mecanismos.`+
-        ` Responde en español.\n\nTEXTO:\n${trimForApi(chapText)}`,4096);
-
-      // Parse — accept both JSON and plain text responses
-      let extracted=raw;
-      const cleaned=raw.replace(/```json|```/g,'').trim();
-      const jIdx=cleaned.indexOf('{');
-      if(jIdx>=0){try{const p=JSON.parse(cleaned.slice(jIdx));extracted=p.content||p.extractedText||p.text||cleaned;}catch{}}
-
-      const words=extracted.split(/\s+/).length;
-      console.log(`[Extract] "${sec.title}": ${words} words`);
-      const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:extracted,date:new Date().toISOString(),words}}:s);
-      await save({...data,sections:updSections});
-    }catch(e){console.error(`[Extract] "${sec.title}":`,e.message);setGenError(`Error: ${e.message}`);}
-    setExtractingIdx(null);
-  };
-
-  const extractAllContent=async()=>{
-    setExtractingAll(true);setExtractCancel(false);
-    const startTime=Date.now();
-
-    // Load raw text once for all sections
-    const t=await loadRawText('tietz');
-    const h=await loadRawText('henry');
-    const chapText=[t||'',h||''].filter(Boolean).join('\n\n');
-    if(!chapText.trim()){alert('Primero sube y procesa el PDF en la tab Temario.');setExtractingAll(false);return;}
-
-    const toExtract=sections.map((s,i)=>({s,i})).filter(({s})=>!s.extractedContent);
-    const total=toExtract.length;
-
-    for(let j=0;j<total;j++){
-      if(extractCancel)break;
-      const{s,i}=toExtract[j];
-      // ETA
-      const elapsed=(Date.now()-startTime)/1000;
-      const eta=j>0?Math.ceil((elapsed/j)*(total-j)/60):Math.ceil(total*3/60);
-      setGenStep(`Extrayendo: ${s.title} (${j+1}/${total}) · ~${eta} min`);
-      setGenPct(Math.round(j/total*100));
-
-      await extractSectionContent(i,chapText);
-
-      // 1s pause between sections
-      if(j<total-1)await new Promise(r=>setTimeout(r,1000));
-    }
-
-    setGenStep(extractCancel?'Cancelado — puedes reanudar':'');
-    setGenPct(extractCancel?0:100);
-    setExtractingAll(false);
-  };
 
   // ── API caller with retries and truncation detection ────────────────────
   const callClaude=async(prompt,maxTokens=4096,retries=3)=>{
@@ -3961,22 +3971,12 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   const generateSection=async(idx,subIdx)=>{
     const sec=sections[idx];
     const sub=subIdx!=null?sec.subsections?.[subIdx]:null;
-    // Priority: extractedContent > unified > raw text > load from IndexedDB
-    let targetText=sub?sub.text:(sec.extractedContent?.text||sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,''));
-    // If no text yet, try loading raw chapter text from IndexedDB
-    if(!targetText?.trim()){
-      console.log(`[Generate] Section "${sec.title}" has no text, trying raw PDF text...`);
-      const t=await loadRawText('tietz');
-      const h=await loadRawText('henry');
-      const raw=[t||'',h||''].filter(Boolean).join('\n\n');
-      if(raw.trim())targetText=raw;
-    }
+    let targetText=sub?sub.text:(sec.text||'');
     const targetTitle=sub?`${sec.title} > ${sub.title}`:sec.title;
     if(!targetText?.trim()){
-      // Set genIdx so the error is visible next to THIS section's button
       const gid=subIdx!=null?`${idx}-${subIdx}`:idx;
       setGenIdx(gid);
-      setGenError('Sin contenido. Extrae el contenido del PDF primero con el botón "Extraer contenido automáticamente".');
+      setGenError('Sin contenido. Pega el texto de la sección primero.');
       setTimeout(()=>{setGenIdx(null);},5000);
       return;
     }
@@ -4249,42 +4249,6 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
         </div>
         {sections.length>0&&<PBar pct={ls.coverage} color={ls.color}/>}
         {sections.length===0&&<div style={{fontSize:12,color:T.muted,lineHeight:1.6}}>Añade secciones del tema y pega el texto de cada una. Cada sección genera sus propias fases de aprendizaje.</div>}
-        {/* Unify all button */}
-        {sections.length>0&&sections.some(s=>s.text?.trim()&&!s.unified)&&(
-          <div style={{marginTop:8,display:'flex',gap:6,alignItems:'center'}}>
-            <button onClick={unifyAll} disabled={unifyAllRunning}
-              style={{fontSize:11,background:unifyAllRunning?T.surface:T.tealS,border:`0.5px solid ${unifyAllRunning?T.border:T.teal}`,borderRadius:6,padding:'4px 12px',cursor:unifyAllRunning?'wait':'pointer',color:unifyAllRunning?T.dim:T.tealText,fontWeight:600,fontFamily:FONT}}>
-              {unifyAllRunning?`⏳ ${genStep||'Unificando...'}`:'🔀 Unificar todo el tema'}
-            </button>
-            <span style={{fontSize:10,color:T.dim}}>{sections.filter(s=>s.unified).length}/{sections.length} unificadas</span>
-          </div>
-        )}
-        {/* Extract all content button */}
-        {sections.length>0&&sections.some(s=>!s.extractedContent)&&(
-          <div style={{marginTop:8,padding:'10px 14px',background:T.blueS,borderRadius:8,border:`0.5px solid ${T.blue}`}}>
-            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-              {!extractingAll?(
-                <button onClick={extractAllContent}
-                  style={{background:T.blue,color:'#fff',border:'none',borderRadius:8,padding:'8px 20px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>
-                  📄 Extraer contenido automáticamente
-                </button>
-              ):(
-                <button onClick={()=>setExtractCancel(true)}
-                  style={{background:T.redS,color:T.red,border:`0.5px solid ${T.red}`,borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>
-                  ⏹ Cancelar
-                </button>
-              )}
-              <span style={{fontSize:11,color:T.blueText}}>{sections.filter(s=>s.extractedContent).length}/{sections.length} extraídas</span>
-            </div>
-            {extractingAll&&(
-              <div style={{marginTop:6}}>
-                <PBar pct={genPct} color={T.blue} height={3}/>
-                <div style={{fontSize:10,color:T.dim,marginTop:3}}>{genStep}</div>
-              </div>
-            )}
-            {!extractingAll&&<div style={{fontSize:10,color:T.dim,marginTop:4}}>1 llamada por sección · ~1 min para todo el capítulo · se puede cancelar y reanudar</div>}
-          </div>
-        )}
         {sections.some(s=>s.generated)&&!data.notes?.length&&(
           <div style={{marginTop:8,fontSize:11,color:T.teal}}>Genera apuntes del tema desde la pestaña Apuntes para sintetizar todo el contenido.</div>
         )}
@@ -4315,10 +4279,7 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,fontWeight:600,color:T.text}}>{sec.title}</div>
                   <div style={{fontSize:10,color:T.muted}}>
-                    {(()=>{const hasTietz=sec.text?.includes('[Fuente: Tietz]');const hasHenry=sec.text?.includes('[Fuente: Henry]');const src=hasTietz&&hasHenry?'T+H':hasTietz?'T':hasHenry?'H':null;return src?<span style={{color:T.teal,marginRight:4}}>{src}</span>:null;})()}
-                    {sec.unified&&<span style={{color:T.green,marginRight:4}}>✓U</span>}
-                    {sec.extractedContent&&<span style={{color:T.blue,marginRight:4}}>✓E({sec.extractedContent.words})</span>}
-                    {hasGen?`Generado · ${sec.generated.conceptMap?.length||0} conceptos`:sec.extractedContent?'Extraído — listo para generar':'Sin generar'}
+                    {hasGen?`Generado · ${sec.generated.conceptMap?.length||0} conceptos`:sec.text?.trim()?'Texto pegado — listo para generar':'Sin generar'}
                     {score!==null&&<span style={{color:scoreColor,fontWeight:700}}> · {score}%</span>}
                     {sec.pageStart&&<span style={{color:T.dim}}> · pp.{sec.pageStart}{sec.pageEnd?'-'+sec.pageEnd:''}</span>}
                   </div>
@@ -4331,68 +4292,21 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
               {/* Expanded section content */}
               {isOpen&&(
                 <div style={{borderTop:`1px solid ${T.border}`,padding:'14px 16px'}}>
-                  {/* Section-level content: extract + unify + generate */}
+                  {/* Section-level content: text + generate */}
                   {!hasGen&&(
                     <div style={{marginBottom:(sec.subsections||[]).length?12:0}}>
-                      {/* Extraction status */}
-                      {sec.extractedContent?(
-                        <div style={{marginBottom:8,padding:'6px 10px',background:T.blueS,borderRadius:6,border:`0.5px solid ${T.blue}`,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                          <span style={{fontSize:10,color:T.blueText}}>✓ Contenido extraído · {sec.extractedContent.words} palabras · {fmtDate(sec.extractedContent.date)}</span>
-                          <button onClick={()=>{const n=sections.map((s,i)=>i===idx?{...s,extractedContent:null}:s);save({...data,sections:n});}}
-                            style={{fontSize:9,background:'none',border:`0.5px solid ${T.border}`,borderRadius:4,padding:'1px 6px',cursor:'pointer',color:T.dim,fontFamily:FONT}}>Regenerar</button>
-                        </div>
-                      ):(sec.text?.trim()&&(
-                        <div style={{marginBottom:8,display:'flex',gap:6,alignItems:'center'}}>
-                          <button onClick={()=>extractSectionContent(idx)} disabled={extractingIdx!=null}
-                            style={{fontSize:10,background:extractingIdx===idx?T.surface:T.blueS,border:`0.5px solid ${extractingIdx===idx?T.border:T.blue}`,borderRadius:6,padding:'4px 10px',cursor:extractingIdx!=null?'wait':'pointer',color:extractingIdx===idx?T.dim:T.blueText,fontWeight:600,fontFamily:FONT}}>
-                            {extractingIdx===idx?'⏳ Extrayendo...':'📄 Extraer contenido'}
-                          </button>
-                          <span style={{fontSize:9,color:T.dim}}>sin extraer</span>
-                        </div>
-                      ))}
-                      {/* Unification status */}
-                      {sec.unified?(
-                        <div style={{marginBottom:10,padding:'8px 12px',background:T.greenS,borderRadius:8,border:`0.5px solid ${T.green}`}}>
-                          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                            <span style={{fontSize:11,color:T.green,fontWeight:600}}>✓ Contenido unificado · {sec.unified.sources?.join('+')} · {fmtDate(sec.unified.date)}</span>
-                            <button onClick={()=>{const n=sections.map((s,i)=>i===idx?{...s,unified:null}:s);save({...data,sections:n});}}
-                              style={{fontSize:9,background:'none',border:`0.5px solid ${T.border}`,borderRadius:4,padding:'2px 6px',cursor:'pointer',color:T.dim,fontFamily:FONT}}>Regenerar</button>
-                          </div>
-                          {sec.unified.contradictions?.length>0&&<div style={{fontSize:10,color:T.amber,marginTop:4}}>⚠ {sec.unified.contradictions.length} contradicciones detectadas</div>}
-                          <div style={{fontSize:11,color:T.text,marginTop:6,maxHeight:100,overflow:'auto',lineHeight:1.5}}>{sec.unified.text?.slice(0,300)}...</div>
-                        </div>
-                      ):(
-                        <div style={{marginBottom:10}}>
-                          {hasBothSources(sec)&&(
-                            <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8}}>
-                              <button onClick={()=>unifySection(idx)} disabled={unifyingIdx!=null}
-                                style={{background:unifyingIdx===idx?T.surface:T.tealS,border:`0.5px solid ${unifyingIdx===idx?T.border:T.teal}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:unifyingIdx!=null?'wait':'pointer',color:unifyingIdx===idx?T.dim:T.tealText,fontFamily:FONT}}>
-                                {unifyingIdx===idx?'⏳ Unificando...':'🔀 Unificar Tietz + Henry'}
-                              </button>
-                              <span style={{fontSize:10,color:T.dim}}>Tietz: {getTietzText(sec).split(/\s+/).length} pal · Henry: {getHenryText(sec).split(/\s+/).length} pal</span>
-                            </div>
-                          )}
-                          {!hasBothSources(sec)&&sec.text?.trim()&&(
-                            <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8}}>
-                              <button onClick={()=>unifySection(idx)} disabled={unifyingIdx!=null}
-                                style={{background:T.tealS,border:`0.5px solid ${T.teal}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:'pointer',color:T.tealText,fontFamily:FONT}}>
-                                ✓ Preparar contenido
-                              </button>
-                              <span style={{fontSize:10,color:T.dim}}>Una sola fuente — se prepara sin unificación</span>
-                            </div>
-                          )}
-                          <textarea value={sec.text||''} onChange={e=>updateSectionText(idx,e.target.value)}
-                            placeholder="Pega el texto de esta sección..."
-                            style={{width:'100%',minHeight:80,background:T.card,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'8px 10px',fontSize:11,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box'}}/>
-                        </div>
-                      )}
-                      {/* Generate button — requires unified or single-source text */}
+                      <div style={{marginBottom:10}}>
+                        <textarea value={sec.text||''} onChange={e=>updateSectionText(idx,e.target.value)}
+                          placeholder="Pega el texto de esta sección..."
+                          style={{width:'100%',minHeight:80,background:T.card,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'8px 10px',fontSize:11,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box'}}/>
+                      </div>
+                      {/* Generate button */}
                       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-                        <button onClick={()=>generateSection(idx)} disabled={genIdx!=null||(!sec.unified&&hasBothSources(sec))}
-                          style={{background:genIdx===idx?T.amberS:(!sec.unified&&hasBothSources(sec))?T.surface:T.purple,color:genIdx===idx?T.amberText:(!sec.unified&&hasBothSources(sec))?T.dim:'#000',border:'none',borderRadius:8,padding:'8px 20px',fontSize:12,fontWeight:600,cursor:genIdx!=null||(!sec.unified&&hasBothSources(sec))?'not-allowed':'pointer',fontFamily:FONT}}>
-                          {genIdx===idx?`⏳ ${genStep}`:(!sec.unified&&hasBothSources(sec))?'Unifica el contenido primero':'🧠 Generar aprendizaje'}
+                        <button onClick={()=>generateSection(idx)} disabled={genIdx!=null||!sec.text?.trim()}
+                          style={{background:genIdx===idx?T.amberS:!sec.text?.trim()?T.surface:T.purple,color:genIdx===idx?T.amberText:!sec.text?.trim()?T.dim:'#000',border:'none',borderRadius:8,padding:'8px 20px',fontSize:12,fontWeight:600,cursor:genIdx!=null||!sec.text?.trim()?'not-allowed':'pointer',fontFamily:FONT}}>
+                          {genIdx===idx?`⏳ ${genStep}`:!sec.text?.trim()?'Pega texto primero':'🧠 Generar aprendizaje'}
                         </button>
-                        {(()=>{const txt=sec.extractedContent?.text||sec.unified?.text||sec.text||'';const wc=txt.split(/\s+/).length;if(wc<10)return null;const sz=wc<=1500?{t:'25-30',p:8,f:10,c:2}:wc<=4000?{t:'40-45',p:12,f:15,c:3}:wc<=8000?{t:'55-65',p:18,f:20,c:4}:{t:'75-90',p:20,f:25,c:5};return <span style={{fontSize:10,color:T.muted}}>{wc} pal · ~{sz.t} min · {sz.p} preg · {sz.f} FC · {sz.c} casos</span>;})()}
+                        {(()=>{const txt=sec.text||'';const wc=txt.split(/\s+/).length;if(wc<10)return null;const sz=wc<=1500?{t:'25-30',p:8,f:10,c:2}:wc<=4000?{t:'40-45',p:12,f:15,c:3}:wc<=8000?{t:'55-65',p:18,f:20,c:4}:{t:'75-90',p:20,f:25,c:5};return <span style={{fontSize:10,color:T.muted}}>{wc} pal · ~{sz.t} min · {sz.p} preg · {sz.f} FC · {sz.c} casos</span>;})()}
                       </div>
                       {genIdx===idx&&genPct>0&&<div style={{marginTop:8}}><PBar pct={genPct} color={T.purple} height={3}/></div>}
                       {genError&&(genIdx===idx||genIdx===null)&&<div style={{marginTop:6,fontSize:11,color:T.red,background:T.redS,padding:'6px 10px',borderRadius:6}}>{genError}</div>}
@@ -4480,31 +4394,59 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
   const pKey=phaseKey||idx;
   const onSaveProg=(key,val)=>saveSectionProgress(idx,key,val,subIdx);
 
-  // ── Session timer — auto-pause on tab switch ────────────────────────────
-  const [elapsed,setElapsed]=useState(gen.progress?.sessionTime||0);
+  // ── Session timer — persists across unmount/remount via global Map ───────
+  const timerKey=`${topic}::${subIdx!=null?`${idx}-${subIdx}`:idx}`;
+  const postTestDone=gen.progress?.postTest?.completed;
+
+  // Initialize global timer entry on first mount (or restore existing)
+  if(!_sessionTimers.has(timerKey)){
+    const saved=gen.progress?.sessionTime||0;
+    _sessionTimers.set(timerKey,{startTs:Date.now()-saved*1000,pausedAt:null,accumulated:0});
+  }
+
+  const getElapsed=()=>{
+    const t=_sessionTimers.get(timerKey);
+    if(!t)return 0;
+    if(postTestDone)return gen.progress?.sessionTime||Math.floor((Date.now()-t.startTs-t.accumulated)/1000);
+    if(t.pausedAt)return Math.floor((t.pausedAt-t.startTs-t.accumulated)/1000);
+    return Math.floor((Date.now()-t.startTs-t.accumulated)/1000);
+  };
+
+  const [elapsed,setElapsed]=useState(getElapsed);
   const timerRef=useRef(null);
-  const startTimeRef=useRef(Date.now()-elapsed*1000);
+
   useEffect(()=>{
-    const tick=()=>setElapsed(Math.floor((Date.now()-startTimeRef.current)/1000));
+    if(postTestDone){setElapsed(getElapsed());return;}
+    const tick=()=>setElapsed(getElapsed());
     timerRef.current=setInterval(tick,1000);
-    const onVis=()=>{if(document.hidden)clearInterval(timerRef.current);else{startTimeRef.current=Date.now()-elapsed*1000;timerRef.current=setInterval(tick,1000);}};
+    const onVis=()=>{
+      const t=_sessionTimers.get(timerKey);if(!t)return;
+      if(document.hidden){
+        clearInterval(timerRef.current);
+        t.pausedAt=Date.now();
+      }else{
+        if(t.pausedAt){t.accumulated+=(Date.now()-t.pausedAt);t.pausedAt=null;}
+        timerRef.current=setInterval(tick,1000);
+      }
+    };
     document.addEventListener('visibilitychange',onVis);
     return()=>{clearInterval(timerRef.current);document.removeEventListener('visibilitychange',onVis);};
-  },[]);
+  },[postTestDone,timerKey]);
+
   // Save time when posttest completes
-  const saveTime=useCallback(()=>{
+  const savedTimeRef=useRef(false);
+  useEffect(()=>{
+    if(!postTestDone||savedTimeRef.current)return;
+    savedTimeRef.current=true;
+    const finalElapsed=getElapsed();
     const sec=sections[idx];if(!sec?.generated)return;
     const timeKey=`study_time_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}_${sec.id||sec.title}`;
     const prev=load(timeKey,[]);
-    prev.push({seconds:elapsed,date:new Date().toISOString()});
+    prev.push({seconds:finalElapsed,date:new Date().toISOString()});
     save(timeKey,prev);
-    // Also save to section progress
-    onSaveProg('sessionTime',elapsed);
-  },[elapsed,idx,topic,sections]);
-  // Auto-save time when posttest completes
-  const postTestDone=gen.progress?.postTest?.completed;
-  const savedTimeRef=useRef(false);
-  useEffect(()=>{if(postTestDone&&!savedTimeRef.current){savedTimeRef.current=true;saveTime();}},[postTestDone]);
+    onSaveProg('sessionTime',finalElapsed);
+    _sessionTimers.delete(timerKey); // Clean up — session is done
+  },[postTestDone]);
 
   const fmtTimer=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
 
