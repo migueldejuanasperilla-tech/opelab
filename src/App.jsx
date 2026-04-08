@@ -796,6 +796,15 @@ export default function App(){
   };
 
   // ── Active review session ─────────────────────────────────────────────────
+  if(activeReview&&activeReview.showDiary) return(
+    <LearningDiary topic={activeReview.topic} onComplete={(diary)=>{
+      // Save diary to localStorage
+      const diaries=load('olab_diaries',[]);
+      diaries.push({...diary,topic:activeReview.topic,date:new Date().toISOString()});
+      save('olab_diaries',diaries.slice(-100));
+      markReviewDone();
+    }}/>
+  );
   if(activeReview) return(
     <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14}}>
       <div style={{maxWidth:700,margin:'0 auto',padding:'32px 24px'}}>
@@ -831,7 +840,9 @@ export default function App(){
                   }
                   saveLearningData(activeReview.topic,updatedLd);
                 }
-                markReviewDone();
+                // Show learning diary before closing
+                setActiveReview(prev=>({...prev,showDiary:true,results:newResults}));
+                return;
               }else{
                 setActiveReview(prev=>({...prev,currentItem:nextItem,results:newResults}));
               }
@@ -1008,6 +1019,74 @@ function Ajustes({apiKey,onSave}){
       </div>
       <div style={{background:T.blueS,border:'1px solid #1a2a3a',borderRadius:10,padding:'14px 18px',fontSize:13,color:T.blueText,lineHeight:1.6}}>
         <strong>Privacidad:</strong> la API key se guarda únicamente en <code style={{fontSize:11,background:'#1a2a3a',padding:'1px 4px',borderRadius:3}}>localStorage</code> de tu navegador. No se envía a ningún servidor excepto a la API de Anthropic cuando generas preguntas.
+      </div>
+    </div>
+  );
+}
+
+// ── LearningDiary — End-of-session reflection ───────────────────────────────
+function LearningDiary({topic,onComplete}){
+  const [step,setStep]=useState(0);
+  const [answers,setAnswers]=useState({important:null,unclear:null,difficulty:null});
+
+  const concepts=['Valores de referencia','Mecanismos fisiopatológicos','Criterios diagnósticos','Técnicas analíticas','Correlación clínico-patológica'];
+  const unclearOpts=['Mecanismos complejos','Valores numéricos','Diagnóstico diferencial','Interferencias analíticas','Interpretación de resultados'];
+
+  if(step===0) return(
+    <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <div style={{maxWidth:480,padding:'0 24px',textAlign:'center'}}>
+        <div style={{fontSize:28,marginBottom:12}}>📔</div>
+        <h2 style={{fontSize:18,fontWeight:700,color:T.text,marginBottom:6}}>Diario de aprendizaje</h2>
+        <div style={{fontSize:12,color:T.dim,marginBottom:20,lineHeight:1.6}}>3 preguntas rápidas para consolidar lo aprendido en {topic.split('.')[0]}.</div>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12}}>¿Qué es lo más importante que has aprendido hoy?</div>
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {concepts.map(c=>(
+            <button key={c} onClick={()=>{setAnswers(a=>({...a,important:c}));setStep(1);}}
+              style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'10px 14px',fontSize:12,cursor:'pointer',color:T.text,fontFamily:FONT,textAlign:'left'}}>{c}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  if(step===1) return(
+    <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <div style={{maxWidth:480,padding:'0 24px',textAlign:'center'}}>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12}}>¿Qué concepto sigue sin estar claro?</div>
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {unclearOpts.map(c=>(
+            <button key={c} onClick={()=>{setAnswers(a=>({...a,unclear:c}));setStep(2);}}
+              style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'10px 14px',fontSize:12,cursor:'pointer',color:T.text,fontFamily:FONT,textAlign:'left'}}>{c}</button>
+          ))}
+          <button onClick={()=>{setAnswers(a=>({...a,unclear:'ninguno'}));setStep(2);}}
+            style={{background:T.greenS,border:`0.5px solid ${T.green}`,borderRadius:8,padding:'10px 14px',fontSize:12,cursor:'pointer',color:T.green,fontFamily:FONT,fontWeight:600}}>Todo claro</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if(step===2) return(
+    <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <div style={{maxWidth:480,padding:'0 24px',textAlign:'center'}}>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12}}>¿Cómo de difícil ha sido esta sesión?</div>
+        <div style={{display:'flex',gap:10,justifyContent:'center',marginBottom:20}}>
+          {[1,2,3,4,5].map(n=>(
+            <button key={n} onClick={()=>{setAnswers(a=>({...a,difficulty:n}));setStep(3);}}
+              style={{width:48,height:48,borderRadius:'50%',background:answers.difficulty===n?T.amber:T.surface,border:`0.5px solid ${answers.difficulty===n?T.amber:T.border}`,fontSize:18,fontWeight:700,color:answers.difficulty===n?'#000':T.text,cursor:'pointer',fontFamily:FONT}}>{n}</button>
+          ))}
+        </div>
+        <div style={{fontSize:10,color:T.dim}}>1 = Muy fácil · 5 = Muy difícil</div>
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{minHeight:'100vh',background:T.bg,color:T.text,fontFamily:FONT,fontSize:14,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <div style={{maxWidth:480,padding:'0 24px',textAlign:'center'}}>
+        <div style={{fontSize:40,marginBottom:12}}>✅</div>
+        <h2 style={{fontSize:18,fontWeight:700,color:T.green,marginBottom:8}}>Sesión completada</h2>
+        <div style={{fontSize:12,color:T.dim,marginBottom:20}}>Tu reflexión se ha guardado. {answers.unclear!=='ninguno'?`"${answers.unclear}" se añadirá a repasos prioritarios.`:''}</div>
+        <button onClick={()=>onComplete(answers)} style={{background:T.green,color:'#000',border:'none',borderRadius:8,padding:'12px 28px',fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Continuar</button>
       </div>
     </div>
   );
@@ -1529,17 +1608,27 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
                 ))}
               </div>
             )}
-            {/* Blind spots */}
-            {blindSpots.length>0&&(
-              <div>
-                <div style={{fontSize:11,fontWeight:700,color:T.red,marginBottom:4}}>⚠ Puntos ciegos (alta confianza + fallo)</div>
-                {blindSpots.map((b,i)=>(
-                  <div key={i} style={{fontSize:11,color:T.text,padding:'3px 0'}}>
-                    {b.topic} · {b.section}: Pre {b.pre}% → Post {b.post}%
+            {/* Blind spots — from pre/post + certainty data */}
+            {(()=>{
+              const certHist=load('olab_certainty_hist',[]);
+              const certBlindSpots=certHist.filter(h=>h.certainty==='seguro'&&!h.correct);
+              const certCount=certBlindSpots.length;
+              return(
+                <>
+                {(blindSpots.length>0||certCount>0)&&(
+                  <div>
+                    <div style={{fontSize:11,fontWeight:700,color:T.red,marginBottom:4}}>⚠ Puntos ciegos</div>
+                    {blindSpots.map((b,i)=>(
+                      <div key={i} style={{fontSize:11,color:T.text,padding:'3px 0'}}>
+                        {b.topic} · {b.section}: Pre {b.pre}% → Post {b.post}%
+                      </div>
+                    ))}
+                    {certCount>0&&<div style={{fontSize:11,color:T.red,padding:'3px 0'}}>{certCount} respuestas marcadas "Seguro" pero falladas (certeza alta + error)</div>}
                   </div>
-                ))}
-              </div>
-            )}
+                )}
+                </>
+              );
+            })()}
           </Card>
         );
       })()}
@@ -3065,7 +3154,7 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
       {curPhase===8&&<InteractiveQuestionsPhase data={gen.phases.interactive||{}}/>}
       {curPhase===9&&(
         <div>
-          <QuizPhase questions={gen.phases.postTest} title="Post-Test (25)" progress={gen.progress?.postTest} onSaveProgress={p=>onSaveProg('postTest',p)} color={T.red}/>
+          <QuizPhase questions={gen.phases.postTest} title="Post-Test (25)" progress={gen.progress?.postTest} onSaveProgress={p=>onSaveProg('postTest',p)} color={T.red} isPostTest={true}/>
           {gen.progress?.preTest?.completed&&gen.progress?.postTest?.completed&&(
             <Card style={{padding:'12px 16px',marginTop:10,borderLeft:`3px solid ${T.green}`}}>
               <div style={{fontSize:11,fontWeight:600,color:T.text,marginBottom:4}}>📊 Pre vs Post</div>
@@ -3098,78 +3187,154 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
 }
 
 // ── Quiz Phase (Pre-Test / Post-Test) ───────────────────────────────────────
-function QuizPhase({questions,title,progress,onSaveProgress,color}){
+function QuizPhase({questions,title,progress,onSaveProgress,color,isPostTest,prediction,onPrediction}){
   const [current,setCurrent]=useState(0);
   const [answers,setAnswers]=useState(progress?.answers||{});
   const [showResult,setShowResult]=useState(!!progress?.completed);
   const [revealed,setRevealed]=useState({});
+  const [certainty,setCertainty]=useState(progress?.certainty||{}); // {qIdx: 'seguro'|'dudoso'|'adivinando'}
+  const [predSlider,setPredSlider]=useState(prediction||5);
+  const [predSet,setPredSet]=useState(!!progress?.completed);
 
-  if(!Array.isArray(questions)||questions.length===0) return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay preguntas disponibles.</div>;
+  if(!Array.isArray(questions)||questions.length===0) return <div style={{color:T.dim,textAlign:'center',padding:40}}>No hay preguntas disponibles.</div>;
+
+  // Pedagogical intro texts
+  const introText=title.includes('Pre-Test')
+    ?'Responde antes de estudiar — aunque no sepas, tu cerebro entrará en modo búsqueda activa y retendrá mejor lo que leas a continuación.'
+    :title.includes('Post-Test')
+    ?'Evalúa tu comprensión real — las preguntas son de aplicación en contexto nuevo para medir si realmente has integrado el conocimiento.'
+    :null;
 
   const total=questions.length;
   const answered=Object.keys(answers).length;
   const correct=Object.entries(answers).filter(([i,a])=>a===questions[parseInt(i)]?.correct).length;
 
+  // Certainty analysis
+  const certAnalysis=useMemo(()=>{
+    const r={solid:0,blindSpot:0,unstable:0,lucky:0};
+    Object.entries(answers).forEach(([i,a])=>{
+      const ok=a===questions[parseInt(i)]?.correct;
+      const cert=certainty[i];
+      if(cert==='seguro'&&ok)r.solid++;
+      else if(cert==='seguro'&&!ok)r.blindSpot++;
+      else if(cert==='dudoso'&&ok)r.unstable++;
+      else if(cert==='adivinando'&&ok)r.lucky++;
+    });
+    return r;
+  },[answers,certainty,questions]);
+
   const finish=()=>{
     const score=Math.round(correct/total*100);
     setShowResult(true);
-    onSaveProgress?.({answers,completed:true,score,correct,total});
+    // Save certainty data with progress
+    const certData={certainty,analysis:certAnalysis};
+    onSaveProgress?.({answers,completed:true,score,correct,total,...certData,prediction:isPostTest?predSlider:undefined});
+    // Save certainty history to localStorage
+    const hist=load('olab_certainty_hist',[]);
+    Object.entries(certainty).forEach(([i,c])=>{
+      const q=questions[parseInt(i)];if(!q)return;
+      hist.push({qId:q.id,certainty:c,correct:answers[i]===q.correct,date:new Date().toISOString().slice(0,10),tipo:q.tipo});
+    });
+    save('olab_certainty_hist',hist.slice(-500));
   };
 
-  if(showResult) return(
-    <Card style={{padding:'24px',textAlign:'center'}}>
-      <div style={{fontSize:48,marginBottom:12}}>{correct/total>=0.7?'🎉':correct/total>=0.5?'💪':'📚'}</div>
-      <div style={{fontSize:22,fontWeight:700,color:correct/total>=0.7?T.green:correct/total>=0.5?T.amber:T.red}}>{Math.round(correct/total*100)}%</div>
-      <div style={{fontSize:14,color:T.text,marginBottom:8}}>{correct} de {total} correctas</div>
-      <div style={{fontSize:12,color:T.muted,marginBottom:16}}>{title}</div>
-      <button onClick={()=>{setAnswers({});setShowResult(false);setCurrent(0);setRevealed({});onSaveProgress?.(null);}} style={{background:T.card,border:`1px solid ${T.border2}`,borderRadius:7,padding:'8px 18px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>🔄 Repetir</button>
+  // Prediction screen for post-test
+  if(isPostTest&&!predSet&&!progress?.completed) return(
+    <Card style={{padding:'28px',textAlign:'center'}}>
+      <div style={{fontSize:18,fontWeight:700,color:T.text,marginBottom:8}}>¿Qué nota esperas?</div>
+      <div style={{fontSize:12,color:T.dim,marginBottom:16,lineHeight:1.6,maxWidth:400,margin:'0 auto 16px'}}>Predice tu resultado antes de empezar. Compararemos tu predicción con el resultado real.</div>
+      <div style={{fontSize:48,fontWeight:700,color:T.amber,marginBottom:8}}>{predSlider}</div>
+      <input type="range" min={0} max={10} step={0.5} value={predSlider} onChange={e=>setPredSlider(parseFloat(e.target.value))} style={{width:'80%',maxWidth:300,accentColor:T.amber,marginBottom:16}}/>
+      <div><button onClick={()=>{setPredSet(true);onPrediction?.(predSlider);}} style={{background:T.amber,color:'#000',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Empezar Post-Test →</button></div>
     </Card>
   );
 
-  const q=questions[current];
-  if(!q)return null;
+  if(showResult){
+    const pct=Math.round(correct/total*100);
+    const nota10=(correct/total*10).toFixed(1);
+    return(
+      <Card style={{padding:'24px',textAlign:'center'}}>
+        <div style={{fontSize:48,marginBottom:12}}>{pct>=70?'🎉':pct>=50?'💪':'📚'}</div>
+        <div style={{fontSize:22,fontWeight:700,color:pct>=70?T.green:pct>=50?T.amber:T.red}}>{pct}%</div>
+        <div style={{fontSize:14,color:T.text,marginBottom:4}}>{correct} de {total} correctas</div>
+        <div style={{fontSize:12,color:T.muted,marginBottom:12}}>{title}</div>
+        {/* Prediction comparison for post-test */}
+        {isPostTest&&predSlider!=null&&(
+          <div style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'12px 16px',marginBottom:12,display:'inline-block'}}>
+            <div style={{display:'flex',gap:16,alignItems:'center',justifyContent:'center'}}>
+              <div><div style={{fontSize:18,fontWeight:700,color:T.amber}}>{predSlider}</div><div style={{fontSize:10,color:T.dim}}>Predicción</div></div>
+              <span style={{color:T.dim}}>vs</span>
+              <div><div style={{fontSize:18,fontWeight:700,color:pct>=70?T.green:T.red}}>{nota10}</div><div style={{fontSize:10,color:T.dim}}>Real</div></div>
+            </div>
+            {predSlider-parseFloat(nota10)>2&&<div style={{fontSize:11,color:T.amber,marginTop:6}}>⚠ Tiendes a sobreestimar tu dominio — repasa antes de dar un tema por aprendido</div>}
+          </div>
+        )}
+        {/* Certainty analysis */}
+        {(certAnalysis.blindSpot>0||certAnalysis.unstable>0)&&(
+          <div style={{marginBottom:12,fontSize:11,textAlign:'left',background:T.bg,borderRadius:8,padding:'10px 14px',border:`0.5px solid ${T.border}`}}>
+            {certAnalysis.solid>0&&<div style={{color:T.green}}>✓ {certAnalysis.solid} sólidas (seguro + acierto)</div>}
+            {certAnalysis.blindSpot>0&&<div style={{color:T.red}}>⚠ {certAnalysis.blindSpot} puntos ciegos (seguro + fallo)</div>}
+            {certAnalysis.unstable>0&&<div style={{color:T.amber}}>~ {certAnalysis.unstable} inestables (dudoso + acierto)</div>}
+            {certAnalysis.lucky>0&&<div style={{color:T.dim}}>🎲 {certAnalysis.lucky} suerte (adivinando + acierto)</div>}
+          </div>
+        )}
+        <button onClick={()=>{setAnswers({});setShowResult(false);setCurrent(0);setRevealed({});setCertainty({});setPredSet(false);onSaveProgress?.(null);}} style={{background:T.card,border:`0.5px solid ${T.border}`,borderRadius:7,padding:'8px 18px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>🔄 Repetir</button>
+      </Card>
+    );
+  }
+
+  const q=questions[current];if(!q)return null;
   const isRevealed=revealed[current];
+  const hasCertainty=certainty[current]!=null;
 
   return(
     <div>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-        <span style={{fontSize:13,fontWeight:600,color:T.text}}>{title} — Pregunta {current+1}/{total}</span>
-        <span style={{fontSize:12,color:T.muted}}>{answered}/{total} respondidas</span>
+      {introText&&current===0&&!Object.keys(answers).length&&(
+        <div style={{marginBottom:12,padding:'10px 14px',background:T.surface,borderRadius:8,border:`0.5px solid ${T.border}`,borderLeft:`2px solid ${color||T.blue}`}}>
+          <div style={{fontSize:11,color:T.muted,lineHeight:1.6}}>{introText}</div>
+        </div>
+      )}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <span style={{fontSize:13,fontWeight:600,color:T.text}}>{title} — {current+1}/{total}</span>
+        <span style={{fontSize:12,color:T.muted}}>{answered}/{total}</span>
       </div>
-      <PBar pct={answered/total*100} color={color||T.blue}/>
-      <Card style={{padding:'20px',marginTop:12}}>
-        <div style={{fontSize:13,color:T.text,lineHeight:1.7,marginBottom:16,fontWeight:500}}>{q.question}</div>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+      <PBar pct={answered/total*100} color={color||T.blue} height={3}/>
+      <Card style={{padding:'18px',marginTop:10}}>
+        <div style={{fontSize:13,color:T.text,lineHeight:1.7,marginBottom:14,fontWeight:500}}>{q.question}</div>
+        {/* Certainty selector — before answering */}
+        {!isRevealed&&!hasCertainty&&(
+          <div style={{marginBottom:12,padding:'8px 12px',background:T.bg,borderRadius:8,border:`0.5px solid ${T.border}`}}>
+            <div style={{fontSize:10,color:T.dim,marginBottom:6}}>Marca tu certeza antes de responder — detecta puntos ciegos</div>
+            <div style={{display:'flex',gap:6}}>
+              {[{v:'seguro',l:'Seguro',c:T.green},{v:'dudoso',l:'Dudoso',c:T.amber},{v:'adivinando',l:'Adivinando',c:T.red}].map(({v,l,c})=>(
+                <button key={v} onClick={()=>setCertainty(prev=>({...prev,[current]:v}))}
+                  style={{flex:1,padding:'5px 8px',fontSize:11,borderRadius:6,cursor:'pointer',background:c+'15',border:`0.5px solid ${c}`,color:c,fontWeight:600,fontFamily:FONT}}>{l}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {hasCertainty&&!isRevealed&&<div style={{fontSize:10,color:T.dim,marginBottom:8}}>Certeza: {certainty[current]}</div>}
+        {/* Options */}
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
           {(q.options||[]).map((opt,j)=>{
-            const isSelected=answers[current]===j;
-            const isCorrect=j===q.correct;
-            const showFb=isRevealed;
-            let bg=T.card,border=T.border,col=T.text;
-            if(showFb&&isCorrect){bg=T.greenS;border=T.green;col=T.greenText;}
-            else if(showFb&&isSelected&&!isCorrect){bg=T.redS;border=T.red;col=T.redText;}
-            else if(isSelected){bg=T.blueS;border=T.blue;col=T.blueText;}
-            return(
-              <button key={j} onClick={()=>{if(!isRevealed){setAnswers(prev=>({...prev,[current]:j}));setRevealed(prev=>({...prev,[current]:true}));}}}
-                disabled={isRevealed} style={{background:bg,border:`1px solid ${border}`,borderRadius:8,padding:'10px 14px',fontSize:12,textAlign:'left',cursor:isRevealed?'default':'pointer',color:col,fontFamily:FONT,transition:'all 0.15s'}}>
-                {opt}
-              </button>
-            );
+            const isSel=answers[current]===j;const isOk=j===q.correct;
+            let bg=T.card,bdr=T.border,col=T.text;
+            if(isRevealed&&isOk){bg=T.greenS;bdr=T.green;col=T.greenText;}
+            else if(isRevealed&&isSel&&!isOk){bg=T.redS;bdr=T.red;col=T.redText;}
+            else if(isSel){bg=T.blueS;bdr=T.blue;col=T.blueText;}
+            return <button key={j} onClick={()=>{if(!isRevealed&&hasCertainty){setAnswers(prev=>({...prev,[current]:j}));setRevealed(prev=>({...prev,[current]:true}));}}}
+              disabled={isRevealed||!hasCertainty} style={{background:bg,border:`0.5px solid ${bdr}`,borderRadius:8,padding:'9px 12px',fontSize:12,textAlign:'left',cursor:isRevealed||!hasCertainty?'default':'pointer',color:col,fontFamily:FONT,opacity:!hasCertainty?0.5:1}}>{opt}</button>;
           })}
         </div>
         {isRevealed&&q.explanation&&(
-          <div style={{marginTop:12,padding:'10px 14px',background:T.blueS,borderRadius:8,fontSize:12,color:T.blueText,lineHeight:1.6,borderLeft:`3px solid ${T.blue}`}}>
-            💡 {q.explanation}
-          </div>
+          <div style={{marginTop:10,padding:'8px 12px',background:T.blueS,borderRadius:8,fontSize:11,color:T.blueText,lineHeight:1.6,borderLeft:`2px solid ${T.blue}`}}>💡 {q.explanation}</div>
         )}
-        <div style={{display:'flex',justifyContent:'space-between',marginTop:16}}>
-          <button onClick={()=>setCurrent(Math.max(0,current-1))} disabled={current===0}
-            style={{background:'none',border:`1px solid ${T.border}`,borderRadius:6,padding:'6px 14px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>← Anterior</button>
-          {current===total-1&&answered>=total?(
-            <button onClick={finish} style={{background:color||T.blue,color:'#000',border:'none',borderRadius:6,padding:'6px 18px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>Ver resultado</button>
-          ):(
-            <button onClick={()=>setCurrent(Math.min(total-1,current+1))}
-              style={{background:'none',border:`1px solid ${T.border}`,borderRadius:6,padding:'6px 14px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>Siguiente →</button>
-          )}
+        <div style={{display:'flex',justifyContent:'space-between',marginTop:14}}>
+          <button onClick={()=>setCurrent(Math.max(0,current-1))} disabled={current===0} style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'5px 12px',fontSize:12,cursor:current===0?'not-allowed':'pointer',color:T.muted,fontFamily:FONT}}>←</button>
+          {current===total-1&&answered>=total
+            ?<button onClick={finish} style={{background:color||T.blue,color:'#000',border:'none',borderRadius:6,padding:'5px 16px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>Ver resultado</button>
+            :<button onClick={()=>setCurrent(Math.min(total-1,current+1))} style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'5px 12px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>→</button>
+          }
         </div>
       </Card>
     </div>
@@ -3229,10 +3394,18 @@ function GuidedReadingPhase({sections}){
 function FlashcardsPhase({cards,onDominatedChange,onSm2Update}){
   const [current,setCurrent]=useState(0);
   const [flipped,setFlipped]=useState(false);
-  const [ratings,setRatings]=useState({}); // {cardIdx: quality 0-5}
-  const [fcSr,setFcSr]=useState({}); // SM-2 state per card index
+  const [ratings,setRatings]=useState({});
+  const [fcSr,setFcSr]=useState({});
+  const [showIntro,setShowIntro]=useState(true);
 
-  if(!Array.isArray(cards)||cards.length===0) return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay flashcards disponibles.</div>;
+  if(!Array.isArray(cards)||cards.length===0) return <div style={{color:T.dim,textAlign:'center',padding:40}}>No hay flashcards disponibles.</div>;
+  if(showIntro&&Object.keys(ratings).length===0) return(
+    <Card style={{padding:'20px',textAlign:'center'}}>
+      <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:8}}>🃏 Flashcards</div>
+      <div style={{fontSize:12,color:T.dim,lineHeight:1.6,maxWidth:400,margin:'0 auto 16px'}}>Intenta recordar antes de voltear — el esfuerzo de recuperación, aunque falle, fortalece la memoria más que releer.</div>
+      <button onClick={()=>setShowIntro(false)} style={{background:T.green,color:'#000',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Empezar →</button>
+    </Card>
+  );
 
   const card=cards[current];
   const rated=Object.keys(ratings).length;
@@ -3296,6 +3469,15 @@ function ClinicalCasesPhase({cases,onScoreChange}){
   const [currentCase,setCurrentCase]=useState(0);
   const [selectedOpt,setSelectedOpt]=useState({});
   const [revealed,setRevealed]=useState({});
+  const [showIntro,setShowIntro]=useState(true);
+
+  if(showIntro&&!Object.keys(revealed).length&&Array.isArray(cases)&&cases.length>0) return(
+    <Card style={{padding:'20px',textAlign:'center'}}>
+      <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:8}}>🔬 Casos de laboratorio</div>
+      <div style={{fontSize:12,color:T.dim,lineHeight:1.6,maxWidth:400,margin:'0 auto 16px'}}>Desarrolla tu razonamiento completo antes de ver la solución — aplicar el conocimiento a un caso nuevo es la prueba definitiva de que lo has aprendido.</div>
+      <button onClick={()=>setShowIntro(false)} style={{background:T.orange,color:'#000',border:'none',borderRadius:8,padding:'10px 24px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Empezar →</button>
+    </Card>
+  );
 
   if(!Array.isArray(cases)||cases.length===0) return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay casos clínicos disponibles.</div>;
 
