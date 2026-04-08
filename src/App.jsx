@@ -3711,85 +3711,60 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     setUnifyAllRunning(false);
   };
 
-  // ── Content extraction per section from stored raw PDF text ─────────────
+  // ── Content extraction: 1 API call per section, no chunks ──────────────
   const [extractingAll,setExtractingAll]=useState(false);
   const [extractingIdx,setExtractingIdx]=useState(null);
   const [extractCancel,setExtractCancel]=useState(false);
-  const [extractEta,setExtractEta]=useState('');
 
   const loadRawText=async(source)=>{
     const key=`raw_text_${source}_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}`;
     return await idbLoad(key);
   };
 
-  // Chunk text into ~8000-word segments with 500-word overlap
-  const chunkLarge=(text)=>{
-    const words=text.split(/\s+/);
-    if(words.length<=9000)return[text];
-    const chunks=[];const sz=8000;const ol=500;
-    for(let i=0;i<words.length;i+=sz-ol){
-      chunks.push(words.slice(i,i+sz).join(' '));
-      if(i+sz>=words.length)break;
-    }
-    return chunks;
-  };
+  // Trim text to ~15000 tokens (~60000 chars) to stay within API input limits
+  const trimForApi=(text)=>text.length>60000?text.slice(0,60000):text;
 
-  // Cached raw text — loaded once per extractAll run
-  const rawCacheRef=useRef({tietz:null,henry:null,loaded:false});
-
-  const extractSingleSection=async(idx,rawCombined)=>{
+  const extractSectionContent=async(idx,rawText)=>{
     const sec=sections[idx];
     if(sec.extractedContent)return;
-    const subsStr=(sec.subsections||[]).map(s=>s.title).join(', ');
-    const chunks=chunkLarge(rawCombined);
-    const allExtracts=[];
-
-    for(let ci=0;ci<chunks.length;ci++){
-      const raw=await callClaude(
-        `Del siguiente texto de libro médico, extrae TODA la información relacionada con "${sec.title}"${subsStr?` (incluye: ${subsStr})`:''}.`+
-        ` Copia el contenido relevante de forma exhaustiva sin resumir.`+
-        ` Incluye todos los valores numéricos, mecanismos, criterios diagnósticos y notas clínicas relacionados.`+
-        ` Responde en español. Responde SOLO con JSON puro.\n\n`+
-        `{"content":"texto completo extraído"}\n\nTEXTO:\n${chunks[ci]}`,8192);
-      const cleaned=raw.replace(/```json|```/g,'').trim();
-      const jIdx=cleaned.indexOf('{');
-      let extracted;
-      try{const p=JSON.parse(jIdx>=0?cleaned.slice(jIdx):cleaned);extracted=p.content||p.extractedText||cleaned;}
-      catch{extracted=cleaned;}
-      if(extracted?.length>50)allExtracts.push(extracted);
-    }
-
-    let combined=allExtracts.join('\n\n');
-    if(allExtracts.length>1){
-      const sentences=combined.split(/(?<=[.!?])\s+/);
-      const seen=new Set();
-      combined=sentences.filter(s=>{const k=s.trim().toLowerCase().slice(0,60);if(seen.has(k))return false;seen.add(k);return true;}).join(' ');
-    }
-
-    const words=combined.split(/\s+/).length;
-    console.log(`[Extract] "${sec.title}": ${words} words from ${chunks.length} chunk(s)`);
-    // Save immediately — this is the checkpoint
-    const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:combined,date:new Date().toISOString(),words,source:'auto'}}:s);
-    await save({...data,sections:updSections});
-  };
-
-  const extractSectionContent=async(idx)=>{
     setExtractingIdx(idx);
     try{
-      const tietzRaw=await loadRawText('tietz');
-      const henryRaw=await loadRawText('henry');
-      const combinedRaw=[tietzRaw||'',henryRaw||''].filter(Boolean).join('\n\n');
-      if(!combinedRaw.trim()){
-        const ownText=sections[idx].unified?.text||sections[idx].text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'')||'';
-        if(ownText.trim().length>100){
-          const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:ownText,date:new Date().toISOString(),words:ownText.split(/\s+/).length,source:'propio'}}:s);
+      // Use provided rawText or load from IndexedDB
+      let chapText=rawText;
+      if(!chapText){
+        const t=await loadRawText('tietz');
+        const h=await loadRawText('henry');
+        chapText=[t||'',h||''].filter(Boolean).join('\n\n');
+      }
+      if(!chapText?.trim()){
+        // Fallback to section's own text
+        const own=sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'')||'';
+        if(own.length>100){
+          const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:own,date:new Date().toISOString(),words:own.split(/\s+/).length}}:s);
           await save({...data,sections:updSections});
           setExtractingIdx(null);return;
         }
         throw new Error('No hay texto. Extrae los PDFs primero.');
       }
-      await extractSingleSection(idx,combinedRaw);
-    }catch(e){console.error(`[Extract] Error:`,e.message);setGenError(`Error: ${e.message}`);}
+
+      const subsStr=(sec.subsections||[]).map(s=>s.title).join(', ');
+      // Single API call with full chapter text (trimmed to API limit)
+      const raw=await callClaude(
+        `Del siguiente texto, extrae TODA la información relacionada con "${sec.title}"${subsStr?` (incluye: ${subsStr})`:''}.`+
+        ` Sé exhaustivo, no resumas, incluye todos los valores numéricos y mecanismos.`+
+        ` Responde en español.\n\nTEXTO:\n${trimForApi(chapText)}`,4096);
+
+      // Parse — accept both JSON and plain text responses
+      let extracted=raw;
+      const cleaned=raw.replace(/```json|```/g,'').trim();
+      const jIdx=cleaned.indexOf('{');
+      if(jIdx>=0){try{const p=JSON.parse(cleaned.slice(jIdx));extracted=p.content||p.extractedText||p.text||cleaned;}catch{}}
+
+      const words=extracted.split(/\s+/).length;
+      console.log(`[Extract] "${sec.title}": ${words} words`);
+      const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:extracted,date:new Date().toISOString(),words}}:s);
+      await save({...data,sections:updSections});
+    }catch(e){console.error(`[Extract] "${sec.title}":`,e.message);setGenError(`Error: ${e.message}`);}
     setExtractingIdx(null);
   };
 
@@ -3797,43 +3772,32 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     setExtractingAll(true);setExtractCancel(false);
     const startTime=Date.now();
 
-    // Load raw text once
-    const tietzRaw=await loadRawText('tietz');
-    const henryRaw=await loadRawText('henry');
-    const combinedRaw=[tietzRaw||'',henryRaw||''].filter(Boolean).join('\n\n');
-    if(!combinedRaw.trim()){alert('Primero sube y procesa el PDF en la tab Temario.');setExtractingAll(false);return;}
+    // Load raw text once for all sections
+    const t=await loadRawText('tietz');
+    const h=await loadRawText('henry');
+    const chapText=[t||'',h||''].filter(Boolean).join('\n\n');
+    if(!chapText.trim()){alert('Primero sube y procesa el PDF en la tab Temario.');setExtractingAll(false);return;}
 
     const toExtract=sections.map((s,i)=>({s,i})).filter(({s})=>!s.extractedContent);
-    const totalChunks=chunkLarge(combinedRaw).length;
-    const estSeconds=toExtract.length*totalChunks*8+toExtract.length; // ~8s per API call + 1s pause
-    setExtractEta(`~${Math.ceil(estSeconds/60)} min`);
+    const total=toExtract.length;
 
-    // Process in batches of 3 sections in parallel
-    const batchSize=3;
-    for(let b=0;b<toExtract.length;b+=batchSize){
+    for(let j=0;j<total;j++){
       if(extractCancel)break;
-      const batch=toExtract.slice(b,b+batchSize);
-      const batchEnd=Math.min(b+batchSize,toExtract.length);
-      setGenStep(`Extrayendo secciones ${b+1}-${batchEnd} de ${toExtract.length}...`);
-      setGenPct(Math.round(b/toExtract.length*100));
-
-      // Update ETA based on actual speed
+      const{s,i}=toExtract[j];
+      // ETA
       const elapsed=(Date.now()-startTime)/1000;
-      if(b>0){const rate=elapsed/b;const remaining=(toExtract.length-b)*rate;setExtractEta(`~${Math.ceil(remaining/60)} min restantes`);}
+      const eta=j>0?Math.ceil((elapsed/j)*(total-j)/60):Math.ceil(total*3/60);
+      setGenStep(`Extrayendo: ${s.title} (${j+1}/${total}) · ~${eta} min`);
+      setGenPct(Math.round(j/total*100));
 
-      // Run batch in parallel
-      await Promise.all(batch.map(async({s,i})=>{
-        try{await extractSingleSection(i,combinedRaw);}
-        catch(e){console.error(`[Extract] "${s.title}":`,e.message);}
-      }));
+      await extractSectionContent(i,chapText);
 
-      // 1s pause between batches
-      if(b+batchSize<toExtract.length)await new Promise(r=>setTimeout(r,1000));
+      // 1s pause between sections
+      if(j<total-1)await new Promise(r=>setTimeout(r,1000));
     }
 
-    setGenStep(extractCancel?'Cancelado — puedes reanudar luego':'');
+    setGenStep(extractCancel?'Cancelado — puedes reanudar':'');
     setGenPct(extractCancel?0:100);
-    setExtractEta('');
     setExtractingAll(false);
   };
 
@@ -4163,15 +4127,14 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
                 </button>
               )}
               <span style={{fontSize:11,color:T.blueText}}>{sections.filter(s=>s.extractedContent).length}/{sections.length} extraídas</span>
-              {extractEta&&<span style={{fontSize:10,color:T.dim}}>{extractEta}</span>}
             </div>
             {extractingAll&&(
               <div style={{marginTop:6}}>
                 <PBar pct={genPct} color={T.blue} height={3}/>
-                <div style={{fontSize:10,color:T.dim,marginTop:3}}>{genStep} · 3 secciones en paralelo</div>
+                <div style={{fontSize:10,color:T.dim,marginTop:3}}>{genStep}</div>
               </div>
             )}
-            {!extractingAll&&<div style={{fontSize:10,color:T.dim,marginTop:4}}>Busca en los PDFs el contenido de cada sección. Procesa 3 en paralelo. Se puede cancelar y reanudar.</div>}
+            {!extractingAll&&<div style={{fontSize:10,color:T.dim,marginTop:4}}>1 llamada por sección · ~1 min para todo el capítulo · se puede cancelar y reanudar</div>}
           </div>
         )}
         {sections.some(s=>s.generated)&&!data.notes?.length&&(
