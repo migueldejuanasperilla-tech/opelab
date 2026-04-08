@@ -730,7 +730,7 @@ export default function App(){
         const oldMastery=oldLd?getLearningStatus(oldLd).mastery:0;
         const newMastery=getLearningStatus(data).mastery;
         const oldLvl=getMasteryLevel(oldMastery);const newLvl=getMasteryLevel(newMastery);
-        if(newLvl.name!==oldLvl.name&&newMastery>oldMastery){setLevelUpMsg({topic:topic.split('.').slice(0,1).join('.'),oldLevel:oldLvl.name,newLevel:newLvl.name,emoji:newLvl.emoji});setTimeout(()=>setLevelUpMsg(null),4000);}
+        if(newLvl.name!==oldLvl.name&&newMastery>oldMastery){setLevelUpMsg({topic:topic.split('.').slice(0,1).join('.'),oldLevel:oldLvl.name,newLevel:newLvl.name,emoji:newLvl.emoji});setTimeout(()=>setLevelUpMsg(null),3000);}
         return{...prev,[topic]:data};
       });
       setStreakData(updateStreak());
@@ -1050,19 +1050,13 @@ export default function App(){
           <div style={{fontSize:9,color:T.dim,marginTop:4}}>Toca para cerrar</div>
         </div>
       ))}
-      {/* Level-up celebration overlay */}
+      {/* Level-up toast notification */}
       {levelUpMsg&&(
-        <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.7)',backdropFilter:'blur(4px)'}} onClick={()=>setLevelUpMsg(null)}>
-          <div style={{background:T.surface,border:`0.5px solid ${T.border}`,borderRadius:16,padding:'40px 48px',textAlign:'center',maxWidth:400}}>
-            <div style={{fontSize:56,marginBottom:12}}>{levelUpMsg.emoji}</div>
-            <div style={{fontSize:20,fontWeight:700,color:T.text,marginBottom:4}}>¡Nivel alcanzado!</div>
-            <div style={{fontSize:14,color:T.muted,marginBottom:12}}>{levelUpMsg.topic}</div>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:12,marginBottom:16}}>
-              <span style={{fontSize:12,color:T.dim}}>{levelUpMsg.oldLevel}</span>
-              <span style={{color:T.green,fontSize:16}}>→</span>
-              <span style={{fontSize:14,fontWeight:700,color:T.green}}>{levelUpMsg.newLevel}</span>
-            </div>
-            <div style={{fontSize:12,color:T.dim}}>Toca para continuar</div>
+        <div onClick={()=>setLevelUpMsg(null)} style={{position:'fixed',top:16,right:16,zIndex:200,background:T.surface,border:`1px solid ${T.green}`,borderRadius:12,padding:'12px 18px',boxShadow:sh.lg,cursor:'pointer',animation:'fadeIn 250ms ease-in-out',maxWidth:300,display:'flex',alignItems:'center',gap:10}}>
+          <span style={{fontSize:28}}>{levelUpMsg.emoji}</span>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:T.text}}>¡Nivel alcanzado!</div>
+            <div style={{fontSize:11,color:T.muted}}>{levelUpMsg.topic} → <span style={{color:T.green,fontWeight:700}}>{levelUpMsg.newLevel}</span></div>
           </div>
         </div>
       )}
@@ -5333,34 +5327,34 @@ function ConceptMapPhase({concepts,relations}){
 }} /* end ConceptMapPhase dead code */
 
 // ── Interactive Questions Phase (sequences, classification, matching, etc.) ─
-function InteractiveQuestionsPhase({data}){
-  const [tab,setTab]=useState('sequences');
+function InteractiveQuestionsPhase({data:rawData}){
+  // Guard: ensure data is a valid object
+  const data=(rawData&&typeof rawData==='object'&&!Array.isArray(rawData))?rawData:{};
   const [revealed,setRevealed]=useState({});
   const [userOrder,setUserOrder]=useState({});
   const [dragFrom,setDragFrom]=useState(null);
-  const [dragOver,setDragOver]=useState(null);
-  // Classification state
-  const [clAssignments,setClAssignments]=useState({}); // {clIdx: {itemIdx: categoryIdx}}
-  // Matching state
-  const [matchSelLeft,setMatchSelLeft]=useState({}); // {matchIdx: leftIdx}
-  const [matchPairs,setMatchPairs]=useState({}); // {matchIdx: [[leftIdx,rightIdx],...]}
-  // Error state
-  const [errorSel,setErrorSel]=useState({}); // {errorIdx: selectedOptionIdx}
-  // Pattern state
-  const [patternSel,setPatternSel]=useState({}); // {patternIdx: selectedIdx}
+  const [dragNode,setDragNode]=useState(null); // drop target index for visual feedback
+  const [clAssignments,setClAssignments]=useState({});
+  const [matchSelLeft,setMatchSelLeft]=useState({});
+  const [matchPairs,setMatchPairs]=useState({});
+  const [errorSel,setErrorSel]=useState({});
+  const [patternSel,setPatternSel]=useState({});
 
   const tabs=[
-    {id:'sequences',label:'Ordenar',count:(data.sequences||[]).length},
-    {id:'classifications',label:'Clasificar',count:(data.classifications||[]).length},
-    {id:'matching',label:'Emparejar',count:(data.matching||[]).length},
-    {id:'errors',label:'Error',count:(data.errors||[]).length},
-    {id:'progressiveCases',label:'Progresivo',count:(data.progressiveCases||[]).length},
-    {id:'patterns',label:'Patrones',count:(data.patterns||[]).length},
+    {id:'sequences',label:'Ordenar',count:Array.isArray(data.sequences)?data.sequences.length:0},
+    {id:'classifications',label:'Clasificar',count:Array.isArray(data.classifications)?data.classifications.length:0},
+    {id:'matching',label:'Emparejar',count:Array.isArray(data.matching)?data.matching.length:0},
+    {id:'errors',label:'Error',count:Array.isArray(data.errors)?data.errors.length:0},
+    {id:'progressiveCases',label:'Progresivo',count:Array.isArray(data.progressiveCases)?data.progressiveCases.length:0},
+    {id:'patterns',label:'Patrones',count:Array.isArray(data.patterns)?data.patterns.length:0},
   ].filter(t=>t.count>0);
+
+  // Default tab to first available (not hardcoded 'sequences')
+  const [tab,setTab]=useState(tabs[0]?.id||'sequences');
 
   if(!tabs.length) return <div style={{color:T.dim,textAlign:'center',padding:40}}>Sin preguntas interactivas. Regenera la sección.</div>;
 
-  const activeItems=data[tab]||[];
+  const activeItems=Array.isArray(data[tab])?data[tab]:[];
 
   return(
     <div>
@@ -5442,12 +5436,12 @@ function InteractiveQuestionsPhase({data}){
             <div style={{display:'flex',gap:10,marginBottom:10}}>
               {(cl.categories||[]).map((cat,catIdx)=>{
                 const catItems=(cl.items||[]).map((it,idx)=>({...it,idx})).filter(it=>assignments[it.idx]===catIdx);
-                const isDropTarget=dragFrom!=null&&dragOver===`cl-${ci}-${catIdx}`;
+                const isDropTarget=dragFrom!=null&&dragNode===`cl-${ci}-${catIdx}`;
                 return(
                   <div key={catIdx}
-                    onDragOver={e=>{e.preventDefault();setDragOver(`cl-${ci}-${catIdx}`);}}
-                    onDragLeave={()=>setDragOver(null)}
-                    onDrop={e=>{e.preventDefault();if(dragFrom!=null)setClAssignments(p=>({...p,[ci]:{...(p[ci]||{}),[dragFrom]:catIdx}}));setDragFrom(null);setDragOver(null);}}
+                    onDragOver={e=>{e.preventDefault();setDragNode(`cl-${ci}-${catIdx}`);}}
+                    onDragLeave={()=>setDragNode(null)}
+                    onDrop={e=>{e.preventDefault();if(dragFrom!=null)setClAssignments(p=>({...p,[ci]:{...(p[ci]||{}),[dragFrom]:catIdx}}));setDragFrom(null);setDragNode(null);}}
                     style={{flex:1,background:isDropTarget?T.tealS:T.bg,border:`1px solid ${isDropTarget?T.teal:T.border}`,borderRadius:8,padding:'10px',minHeight:70,transition:'all 200ms ease-in-out'}}>
                     <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:6}}>{cat}</div>
                     {catItems.map(it=>(
