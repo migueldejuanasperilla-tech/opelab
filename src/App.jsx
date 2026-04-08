@@ -2583,7 +2583,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
   // ── Confirm sections and save ───────────────────────────────────────────
   const confirmSections=async()=>{
     if(!editingSections||!editSource)return;
-    const sourceLabel=editSource==='tietz'?'Tietz':'Henry';
+    const sourceLabel=editSource==='ambos'?'Tietz+Henry':editSource==='tietz'?'Tietz':'Henry';
 
     // 1. Save raw extraction to localStorage for persistence
     const result={sections:editingSections,processedAt:new Date().toISOString()};
@@ -3001,8 +3001,39 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
           </div>
           <div style={{fontSize:10,color:T.dim,marginBottom:8}}>{treeNodes.filter(n=>n.level===1).length} secciones principales · {treeNodes.filter(n=>n.level>1).length} subsecciones</div>
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-            {pdfData.tietz&&<button onClick={()=>applyTreeToText('tietz')} style={{background:T.blueS,border:`0.5px solid ${T.blue}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:'pointer',color:T.blueText,fontFamily:FONT}}>📘 Aplicar a Tietz</button>}
-            {pdfData.henry&&<button onClick={()=>applyTreeToText('henry')} style={{background:T.amberS,border:`0.5px solid ${T.amber}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:'pointer',color:T.amberText,fontFamily:FONT}}>📙 Aplicar a Henry</button>}
+            <button onClick={async()=>{
+              const sources=[];
+              if(pdfData.tietz)sources.push('tietz');
+              if(pdfData.henry)sources.push('henry');
+              if(!sources.length){alert('Extrae al menos un PDF primero.');return;}
+              // Apply to first source, which opens the review screen
+              // The review screen's confirmSections handles creating in Aprendizaje
+              await applyTreeToText(sources[0]);
+              // If both sources exist, merge the second into editingSections
+              if(sources.length>1){
+                const pdfResult2=pdfData[sources[1]];
+                if(pdfResult2?.sections){
+                  const fullText2=pdfResult2.sections.map(s=>s.text).join('\n\n');
+                  const flat2=fullText2.split('\n').map(text=>({text,page:0}));
+                  const titles2=treeNodes.filter(n=>n.level===1).map(n=>n.title);
+                  const pos2=findTitlePositions(flat2,titles2);
+                  const secs2=splitTextAtTitles(flat2,titles2,pos2);
+                  // Merge second source text into editingSections
+                  setEditingSections(prev=>{
+                    if(!prev)return prev;
+                    return prev.map(sec=>{
+                      const match=secs2.find(s2=>s2.title===sec.title);
+                      if(match)return{...sec,text:sec.text+'\n\n'+match.text,words:sec.words+match.words};
+                      return sec;
+                    });
+                  });
+                  setEditSource('ambos');
+                }
+              }
+            }} disabled={!pdfData.tietz&&!pdfData.henry}
+              style={{background:T.green,color:'#000',border:'none',borderRadius:8,padding:'6px 18px',fontSize:12,fontWeight:700,cursor:!pdfData.tietz&&!pdfData.henry?'not-allowed':'pointer',fontFamily:FONT}}>
+              ✓ Confirmar estructura
+            </button>
             <button onClick={()=>setTreeNodes([])} style={{fontSize:11,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Reiniciar</button>
           </div>
         </div>
@@ -3059,7 +3090,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
     return(
     <Card style={{padding:'16px 18px',marginBottom:16}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-        <div style={{fontSize:13,fontWeight:700,color:T.text}}>{editingSections.length} secciones — {editSource==='tietz'?'📘 Tietz':'📙 Henry'}</div>
+        <div style={{fontSize:13,fontWeight:700,color:T.text}}>{editingSections.length} secciones — {editSource==='ambos'?'📘📙 Tietz + Henry':editSource==='tietz'?'📘 Tietz':'📙 Henry'}</div>
         <div style={{display:'flex',gap:6}}>
           <button onClick={()=>{setEditingSections(null);setEditSource(null);}} style={{fontSize:11,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Cancelar</button>
           <button onClick={confirmSections} style={{fontSize:11,background:T.green,color:'#000',border:'none',borderRadius:6,padding:'4px 14px',cursor:'pointer',fontWeight:700,fontFamily:FONT}}>✓ Confirmar</button>
