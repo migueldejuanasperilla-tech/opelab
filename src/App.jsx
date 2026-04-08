@@ -2298,13 +2298,13 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
   const [editSource,setEditSource]=useState(null); // 'tietz'|'henry'
 
   // ── Extract text from PDF locally using pdf.js ───────────────────────────
-  const extractPdfText=async(blob)=>{
+  const extractPdfText=async(blob,fileLabel)=>{
     const buf=await blob.arrayBuffer();
     const pdf=await pdfjsLib.getDocument({data:buf}).promise;
     const totalPages=pdf.numPages;
     const pages=[];
     for(let p=1;p<=totalPages;p++){
-      setProgress(prev=>({...prev,step:`Extrayendo página ${p} de ${totalPages}...`,pct:Math.round(p/totalPages*80)}));
+      setProgress(prev=>({...prev,detail:`${fileLabel||'PDF'} · página ${p}/${totalPages}`}));
       const page=await pdf.getPage(p);
       const content=await page.getTextContent();
       // Group items by approximate Y position to reconstruct lines
@@ -2352,41 +2352,48 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
     const key=topicPdfKey(topic+'§'+source);
     const files=pdfMeta[key]||[];
     if(!files.length)return;
-    setProcessing(source);setProgress({step:'Cargando PDF...',pct:0,detail:''});
+    setProcessing(source);setProgress({step:'Cargando PDFs...',pct:0,detail:`${files.length} archivo${files.length>1?'s':''}`});
+
     try{
-      const blob=await idbLoad(topicFilePdfKey(topic+'§'+source,files[0].id));
-      if(!blob)throw new Error('PDF no encontrado en almacenamiento');
+      // Phase 1: Extract text from ALL PDFs of this source, sequentially
+      const allPages=[];
+      let totalPagesAll=0;
+      for(let fi=0;fi<files.length;fi++){
+        const f=files[fi];
+        setProgress({step:`Extrayendo ${f.name} (${fi+1}/${files.length})...`,pct:Math.round(fi/files.length*75),detail:`${f.pages||'?'} páginas`});
+        const blob=await idbLoad(topicFilePdfKey(topic+'§'+source,f.id));
+        if(!blob){console.warn(`[PdfProc] PDF not found: ${f.name}`);continue;}
+        const file=blob instanceof File?blob:new File([blob],f.name,{type:'application/pdf'});
+        const{pages,totalPages}=await extractPdfText(file,f.name);
+        // Offset page numbers to be sequential across files
+        const offset=totalPagesAll;
+        pages.forEach(p=>{p.pageNum+=offset;});
+        allPages.push(...pages);
+        totalPagesAll+=totalPages;
+      }
 
-      // Phase 1: Local text extraction (no API calls)
-      const{pages,totalPages}=await extractPdfText(blob instanceof File?blob:new File([blob],files[0].name,{type:'application/pdf'}));
+      if(!allPages.length)throw new Error('No se pudo extraer texto de ningún PDF');
 
-      // Phase 2: Detect sections locally
-      setProgress({step:'Detectando secciones...',pct:85,detail:`${totalPages} páginas extraídas`});
-      const rawSections=detectSections(pages);
+      // Phase 2: Detect sections on unified text
+      setProgress({step:'Detectando secciones en texto unificado...',pct:80,detail:`${totalPagesAll} páginas totales de ${files.length} archivo${files.length>1?'s':''}`});
+      const rawSections=detectSections(allPages);
 
-      // Phase 3: One API call to refine section titles in Spanish
-      setProgress({step:'Refinando títulos de sección con IA...',pct:90,detail:`${rawSections.length} secciones detectadas`});
-      const summary=rawSections.map(s=>`"${s.title}" (${s.text.slice(0,150).replace(/\n/g,' ')}...)`).join('\n');
+      // Phase 3: One API call to refine titles
+      setProgress({step:'Refinando títulos con IA...',pct:90,detail:`${rawSections.length} secciones detectadas`});
+      const summary=rawSections.map(s=>`"${s.title}" (${s.text.slice(0,120).replace(/\n/g,' ')}...)`).join('\n');
       try{
         const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:2048,messages:[{role:'user',content:`Responde SOLO con JSON puro, sin markdown.\n\nEstas son secciones detectadas de un capítulo de "${topic}" (${source==='tietz'?'Tietz':'Henry'}). Refina los títulos al español y limpia nombres.\n\n${summary}\n\n{"titles":[${rawSections.map((_,i)=>`"título refinado ${i+1}"`).join(',')}]}`}]})});
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:2048,messages:[{role:'user',content:`Responde SOLO con JSON puro, sin markdown.\n\nSecciones de un capítulo de "${topic}" (${source==='tietz'?'Tietz':'Henry'}). Refina títulos al español.\n\n${summary}\n\n{"titles":[${rawSections.map(()=>'"título"').join(',')}]}`}]})});
         if(res.ok){
           const d=await res.json();
-          const text=(d.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
-          // Clean # lines
+          const text=(d.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'');
           const cleaned=text.split('\n').filter(l=>!/^\s*#/.test(l)).join('\n').trim();
-          const idx=cleaned.indexOf('{');
-          const jsonStr=idx>=0?cleaned.slice(idx):cleaned;
-          try{
-            const parsed=JSON.parse(jsonStr);
-            const titles=parsed.titles||[];
-            titles.forEach((t,i)=>{if(t&&rawSections[i])rawSections[i].title=t;});
-          }catch{}
+          const jIdx=cleaned.indexOf('{');
+          try{const parsed=JSON.parse(jIdx>=0?cleaned.slice(jIdx):cleaned);(parsed.titles||[]).forEach((t,i)=>{if(t&&rawSections[i])rawSections[i].title=t;});}catch{}
         }
-      }catch{}// Non-critical — raw titles are still usable
+      }catch{}
 
-      setProgress({step:'Listo para revisar',pct:100,detail:`${rawSections.length} secciones · ${totalPages} páginas`});
-      // Show sections for user review
+      setProgress({step:'Listo para revisar',pct:100,detail:`${rawSections.length} secciones · ${totalPagesAll} páginas · ${files.length} PDFs`});
       setEditingSections(rawSections.map(s=>({title:s.title,text:s.text,pageStart:s.pageStart,pageEnd:s.pageEnd,words:s.text.split(/\s+/).length})));
       setEditSource(source);
     }catch(e){
@@ -2699,13 +2706,13 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
         {hasTietzPdf&&(
           <button onClick={()=>processPdf('tietz')} disabled={!!processing}
             style={{background:tietzDone?T.greenS:T.blueS,border:`0.5px solid ${tietzDone?T.green:T.blue}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:tietzDone?T.green:T.blueText,fontFamily:FONT}}>
-            {tietzDone?`✓ Tietz (${pdfData.tietz.sections.length} sec)`:processing==='tietz'?'⏳ Extrayendo...':'📘 Extraer Tietz'}
+            {tietzDone?`✓ Tietz (${pdfData.tietz.sections.length} sec · ${(pdfMeta[topicPdfKey(topic+'§tietz')]||[]).length} PDFs)`:processing==='tietz'?'⏳ Extrayendo...':'📘 Extraer Tietz'}
           </button>
         )}
         {hasHenryPdf&&(
           <button onClick={()=>processPdf('henry')} disabled={!!processing}
             style={{background:henryDone?T.greenS:T.amberS,border:`0.5px solid ${henryDone?T.green:T.amber}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:henryDone?T.green:T.amberText,fontFamily:FONT}}>
-            {henryDone?`✓ Henry (${pdfData.henry.sections.length} sec)`:processing==='henry'?'⏳ Extrayendo...':'📙 Extraer Henry'}
+            {henryDone?`✓ Henry (${pdfData.henry.sections.length} sec · ${(pdfMeta[topicPdfKey(topic+'§henry')]||[]).length} PDFs)`:processing==='henry'?'⏳ Extrayendo...':'📙 Extraer Henry'}
           </button>
         )}
       </div>
