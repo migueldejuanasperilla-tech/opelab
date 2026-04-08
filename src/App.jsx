@@ -2330,6 +2330,108 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
     return{pages,totalPages,bookmarks};
   };
 
+  // ── Find all title positions in flat text array in a single pass ────────
+  // ── Find title positions: scan flat lines, match titles IN ORDER ────────
+  // Key fix: each title is searched only AFTER the previous one's position,
+  // preventing early substring matches from pulling text from wrong sections.
+  const findTitlePositions=(flat,titles)=>{
+    const positions=new Map();
+    const titleNorms=titles.map(t=>(typeof t==='string'?t:t).toLowerCase().trim());
+    let searchFrom=0; // enforce forward-only matching
+
+    for(let ti=0;ti<titleNorms.length;ti++){
+      const tn=titleNorms[ti];
+      if(tn.length<2)continue;
+      let bestIdx=-1;
+      // Pass 1: exact line match or startsWith (strongest signal)
+      for(let li=searchFrom;li<flat.length;li++){
+        const lineN=flat[li].text.toLowerCase().trim();
+        if(lineN===tn||(lineN.startsWith(tn)&&lineN.length<tn.length+30)){
+          bestIdx=li;break;
+        }
+      }
+      // Pass 2: short line contains title (heading-like)
+      if(bestIdx<0){
+        for(let li=searchFrom;li<flat.length;li++){
+          if(flat[li].text.length<120&&flat[li].text.toLowerCase().includes(tn)){
+            bestIdx=li;break;
+          }
+        }
+      }
+      // Pass 3: partial match (first 15 chars) — last resort
+      if(bestIdx<0&&tn.length>4){
+        const partial=tn.slice(0,15);
+        for(let li=searchFrom;li<flat.length;li++){
+          if(flat[li].text.length<120&&flat[li].text.toLowerCase().includes(partial)){
+            bestIdx=li;break;
+          }
+        }
+      }
+      if(bestIdx>=0){
+        positions.set(ti,bestIdx);
+        console.log(`[FindTitle] "${titleNorms[ti]}" → line ${bestIdx} (page ${flat[bestIdx]?.page||'?'}): "${flat[bestIdx]?.text.slice(0,60)}"`);
+        searchFrom=bestIdx+1;
+      }else{
+        console.warn(`[FindTitle] "${titleNorms[ti]}" → NOT FOUND (searched from line ${searchFrom})`);
+      }
+    }
+    return positions;
+  };
+
+  // ── Split flat text between consecutive title positions ────────────────
+  // Each section gets text from its title line to the line BEFORE the next title.
+  // No section can overlap with another. Total words = document words.
+  const splitTextAtTitles=(flat,titles,positions)=>{
+    const indexed=titles.map((t,i)=>({title:typeof t==='string'?t:t,idx:i,pos:positions.get(i)??-1}));
+    const found=indexed.filter(t=>t.pos>=0).sort((a,b)=>a.pos-b.pos);
+    // Dedupe: two titles at same line → keep first
+    const deduped=[];
+    for(const t of found){
+      if(deduped.length&&deduped[deduped.length-1].pos===t.pos)continue;
+      deduped.push(t);
+    }
+
+    // Log title positions
+    const totalDocWords=flat.map(l=>l.text).join(' ').split(/\s+/).length;
+    console.log(`[Split] Document: ${flat.length} lines, ${totalDocWords} words, ${titles.length} titles requested, ${deduped.length} found`);
+    const notFound=indexed.filter(t=>t.pos<0);
+    if(notFound.length)console.warn(`[Split] Titles NOT FOUND: ${notFound.map(t=>'"'+t.title+'"').join(', ')}`);
+
+    const sections=[];
+    for(let i=0;i<deduped.length;i++){
+      const start=deduped[i].pos;
+      const end=i<deduped.length-1?deduped[i+1].pos:flat.length;
+      if(end<=start){console.warn(`[Split] Skipping "${deduped[i].title}": start=${start} >= end=${end}`);continue;}
+      const lines=flat.slice(start,end);
+      const txt=lines.map(l=>l.text).join('\n');
+      const words=txt.split(/\s+/).length;
+      sections.push({
+        title:deduped[i].title,text:txt,words,
+        pageStart:lines[0]?.page||1,
+        pageEnd:lines[lines.length-1]?.page||1,
+        _end:end
+      });
+      console.log(`[Split] Section ${i+1}: "${deduped[i].title}" → lines ${start}-${end-1} (${words} words, pp.${lines[0]?.page||'?'}-${lines[lines.length-1]?.page||'?'})`);
+    }
+
+    // Validation
+    const totalSecWords=sections.reduce((a,s)=>a+s.words,0);
+    console.log(`[Split] Total: ${sections.length} sections, ${totalSecWords} words (doc has ${totalDocWords})`);
+    if(totalSecWords>totalDocWords*1.1)console.error(`[Split] BUG: Section words (${totalSecWords}) EXCEED doc words (${totalDocWords}) by ${Math.round((totalSecWords/totalDocWords-1)*100)}%`);
+    for(const s of sections){
+      if(s.words>totalDocWords){
+        console.error(`[Split] BUG: Section "${s.title}" has ${s.words} words — MORE than entire document (${totalDocWords})`);
+      }
+    }
+    // Check no gaps or overlaps between consecutive sections
+    for(let i=1;i<deduped.length;i++){
+      const prevEnd=i>0&&sections[i-1]?sections[i-1]._end:0;
+      const curStart=deduped[i].pos;
+      if(curStart!==prevEnd&&sections[i-1])console.warn(`[Split] Gap between "${sections[i-1]?.title}" (ends at ${prevEnd}) and "${deduped[i].title}" (starts at ${curStart}): ${curStart-prevEnd} lines`);
+    }
+    return sections;
+  };
+
   // ── Balance sections: merge small (<500 words), split large (>15000) ────
   const balanceSections=(sections)=>{
     const balanced=[];
@@ -2353,25 +2455,10 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
     // Priority 1: Use PDF bookmarks if available (most reliable)
     if(allBookmarks?.length>=2&&allBookmarks.length<=25){
       const level1=allBookmarks.filter(b=>b.level===1);
-      const titles=(level1.length>=2?level1:allBookmarks).slice(0,25);
-      // Split text at bookmark titles
+      const titles=(level1.length>=2?level1:allBookmarks).slice(0,25).map(b=>b.title);
       const flat=pages.flatMap(p=>p.lines.map(l=>({text:l.text,page:p.pageNum})));
-      const sections=[];
-      for(let i=0;i<titles.length;i++){
-        const tn=titles[i].title.toLowerCase();
-        let start=flat.findIndex(l=>l.text.toLowerCase().includes(tn));
-        if(start<0)start=flat.findIndex(l=>l.text.toLowerCase().includes(tn.slice(0,20)));
-        if(start<0)start=sections.length?sections[sections.length-1]._end||0:0;
-        let end=flat.length;
-        if(i<titles.length-1){
-          const nxt=titles[i+1].title.toLowerCase();
-          const ni=flat.findIndex((l,j)=>j>start&&l.text.toLowerCase().includes(nxt));
-          if(ni>start)end=ni;
-        }
-        const txt=flat.slice(start,end).map(l=>l.text).join('\n');
-        sections.push({title:titles[i].title,text:txt,pageStart:flat[start]?.page||1,pageEnd:flat[Math.min(end-1,flat.length-1)]?.page||1,words:txt.split(/\s+/).length,_end:end});
-      }
-      // Balance sizes
+      const positions=findTitlePositions(flat,titles);
+      const sections=splitTextAtTitles(flat,titles,positions);
       return balanceSections(sections);
     }
 
@@ -2426,25 +2513,11 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
     }
     if(!level1.length)level1=[{text:'Capítulo completo',page:1,level:1}];
 
-    // Step 4: Split text at level-1 titles (subsections fold in as continuous text)
+    // Step 4: Split text at level-1 titles using robust position finder
     const flat=pages.flatMap(p=>p.lines.map(l=>({text:l.text,page:p.pageNum})));
-    const sections=[];
-    for(let i=0;i<level1.length;i++){
-      const title=level1[i].text;
-      const titleN=title.toLowerCase().trim();
-      let start=flat.findIndex(l=>l.text.toLowerCase().includes(titleN));
-      if(start<0)start=flat.findIndex(l=>l.text.toLowerCase().includes(titleN.slice(0,Math.min(20,titleN.length))));
-      if(start<0)start=sections.length?sections[sections.length-1]._end||0:0;
-      let end=flat.length;
-      if(i<level1.length-1){
-        const nxt=level1[i+1].text.toLowerCase().trim();
-        const nxtIdx=flat.findIndex((l,j)=>j>start&&(l.text.toLowerCase().includes(nxt)||l.text.toLowerCase().includes(nxt.slice(0,20))));
-        if(nxtIdx>start)end=nxtIdx;
-      }
-      const txt=flat.slice(start,end).map(l=>l.text).join('\n');
-      const words=txt.split(/\s+/).length;
-      sections.push({title,text:txt,pageStart:flat[start]?.page||1,pageEnd:flat[Math.min(end-1,flat.length-1)]?.page||1,words,_end:end});
-    }
+    const titles=level1.map(h=>h.text);
+    const positions=findTitlePositions(flat,titles);
+    const sections=splitTextAtTitles(flat,titles,positions);
 
     // Step 5: Enforce size bounds
     return balanceSections(sections);
@@ -2841,41 +2914,29 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
 
   // Apply tree structure to extracted PDF text and create sections
   const applyTreeToText=async(source)=>{
-    // Get level-1 nodes as main sections
     const mainSections=treeNodes.filter(n=>n.level===1);
     if(!mainSections.length){alert('Define al menos una sección de nivel 1.');return;}
 
-    // Get extracted text
     const pdfResult=pdfData[source];
     if(!pdfResult?.sections){alert(`Primero extrae el PDF de ${source==='tietz'?'Tietz':'Henry'}.`);return;}
+
+    // Build flat line array from extracted PDF pages
     const fullText=pdfResult.sections.map(s=>s.text).join('\n\n');
+    const flat=fullText.split('\n').map((text,i)=>({text,page:0}));
 
-    // Split text at each level-1 title
-    const sections=[];
-    for(let i=0;i<mainSections.length;i++){
-      const title=mainSections[i].title;
-      const titleN=title.toLowerCase();
-      // Collect subsection titles for this main section
-      const mainIdx=treeNodes.indexOf(mainSections[i]);
-      const nextMainIdx=i<mainSections.length-1?treeNodes.indexOf(mainSections[i+1]):treeNodes.length;
-      const subsections=treeNodes.slice(mainIdx+1,nextMainIdx).filter(n=>n.level>1);
+    // Use shared functions: find positions, then split
+    const titles=mainSections.map(n=>n.title);
+    const positions=findTitlePositions(flat,titles);
+    const rawSections=splitTextAtTitles(flat,titles,positions);
 
-      // Find text boundaries
-      let startPos=fullText.toLowerCase().indexOf(titleN);
-      if(startPos<0)startPos=fullText.toLowerCase().indexOf(titleN.slice(0,20));
-      if(startPos<0)startPos=i===0?0:sections.length?fullText.length*i/mainSections.length:0;
-      let endPos=fullText.length;
-      if(i<mainSections.length-1){
-        const nextT=mainSections[i+1].title.toLowerCase();
-        const ni=fullText.toLowerCase().indexOf(nextT,startPos+1);
-        if(ni>startPos)endPos=ni;
-      }
-      const sectionText=fullText.slice(startPos,endPos);
-      sections.push({
-        title,text:sectionText,words:sectionText.split(/\s+/).length,
-        subsectionTitles:subsections.map(s=>s.title),pageStart:0,pageEnd:0
-      });
-    }
+    // Attach subsection info from tree
+    const sections=rawSections.map(sec=>{
+      const mainNode=treeNodes.find(n=>n.level===1&&n.title===sec.title);
+      const mainIdx=mainNode?treeNodes.indexOf(mainNode):-1;
+      const nextMainIdx=mainIdx>=0?treeNodes.findIndex((n,i)=>i>mainIdx&&n.level===1):-1;
+      const subsections=mainIdx>=0?treeNodes.slice(mainIdx+1,nextMainIdx>0?nextMainIdx:treeNodes.length).filter(n=>n.level>1):[];
+      return{...sec,subsectionTitles:subsections.map(s=>s.title)};
+    });
 
     setEditingSections(sections);
     setEditSource(source);
@@ -2967,10 +3028,34 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
     setEditingSections(newSections);
   };
 
-  // Section review/edit screen with bar chart
+  // Merge two adjacent sections
+  const mergeSections=(idx,direction)=>{
+    const targetIdx=direction==='prev'?idx-1:idx+1;
+    if(targetIdx<0||targetIdx>=editingSections.length)return;
+    const n=[...editingSections];
+    const a=n[Math.min(idx,targetIdx)],b=n[Math.max(idx,targetIdx)];
+    const merged={...a,title:a.title+' / '+b.title,text:a.text+'\n\n'+b.text,words:a.words+b.words,pageEnd:Math.max(a.pageEnd||0,b.pageEnd||0)};
+    n.splice(Math.min(idx,targetIdx),2,merged);
+    setEditingSections(n);
+  };
+
+  // Size validation by level
+  const getSizeStatus=(words,level)=>{
+    const ranges={1:{min:5000,max:20000},2:{min:2000,max:8000},3:{min:500,max:3000}};
+    const r=ranges[level||1]||ranges[1];
+    if(words<300)return{color:T.red,label:'Muy corta',status:'red'};
+    if(words>20000)return{color:T.red,label:'Muy larga',status:'red'};
+    if(words<r.min)return{color:T.amber,label:'Corta',status:'yellow'};
+    if(words>r.max)return{color:T.amber,label:'Larga',status:'yellow'};
+    return{color:T.green,label:'Óptima',status:'green'};
+  };
+
+  // Section review/edit screen with validation
   if(editingSections) {
     const maxWords=Math.max(...editingSections.map(s=>s.words),1);
-    const avgWords=Math.round(editingSections.reduce((a,s)=>a+s.words,0)/editingSections.length);
+    const totalWords=editingSections.reduce((a,s)=>a+s.words,0);
+    const avgWords=Math.round(totalWords/editingSections.length);
+    const redSections=editingSections.filter(s=>{const st=getSizeStatus(s.words,s.level||1);return st.status==='red';});
     return(
     <Card style={{padding:'16px 18px',marginBottom:16}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
@@ -2980,28 +3065,37 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
           <button onClick={confirmSections} style={{fontSize:11,background:T.green,color:'#000',border:'none',borderRadius:6,padding:'4px 14px',cursor:'pointer',fontWeight:700,fontFamily:FONT}}>✓ Confirmar</button>
         </div>
       </div>
-      <div style={{fontSize:10,color:T.dim,marginBottom:8}}>Media: {avgWords} palabras/sección. Edita títulos, elimina o divide secciones demasiado largas.</div>
-      <div style={{display:'flex',flexDirection:'column',gap:3}}>
+      <div style={{display:'flex',flexDirection:'column',gap:3,marginBottom:10}}>
         {editingSections.map((sec,i)=>{
           const pct=Math.round(sec.words/maxWords*100);
-          const tooSmall=sec.words<500;const tooBig=sec.words>15000;
-          const barColor=tooBig?T.red:tooSmall?T.amber:T.green;
+          const sz=getSizeStatus(sec.words,sec.level||1);
+          const isVerySmall=sec.words<300;
+          const isVeryBig=sec.words>20000;
           return(
-            <div key={i} style={{background:T.bg,borderRadius:6,border:`0.5px solid ${tooBig||tooSmall?barColor:T.border}`,overflow:'hidden'}}>
-              <div style={{display:'flex',alignItems:'center',gap:6,padding:'5px 8px'}}>
-                <span style={{fontSize:9,color:T.dim,fontWeight:700,minWidth:16}}>{i+1}</span>
+            <div key={i} style={{background:T.bg,borderRadius:6,border:`0.5px solid ${sz.status==='red'?sz.color:sz.status==='yellow'?sz.color:T.border}`,overflow:'hidden'}}>
+              <div style={{display:'flex',alignItems:'center',gap:4,padding:'5px 8px'}}>
+                <span style={{fontSize:9,color:T.dim,fontWeight:700,minWidth:14}}>{i+1}</span>
                 <input value={sec.title} onChange={e=>{const n=[...editingSections];n[i]={...n[i],title:e.target.value};setEditingSections(n);}}
                   style={{flex:1,background:'transparent',color:T.text,border:'none',fontSize:11,fontWeight:600,outline:'none',fontFamily:FONT,minWidth:0}}/>
-                <span style={{fontSize:9,color:barColor,fontWeight:700,flexShrink:0}}>{sec.words.toLocaleString()}</span>
-                <span style={{fontSize:8,color:T.dim,flexShrink:0}}>pp.{sec.pageStart}-{sec.pageEnd}</span>
-                {tooBig&&<button onClick={()=>splitSection(i)} title="Dividir sección" style={{background:T.redS,border:`0.5px solid ${T.red}`,borderRadius:4,padding:'1px 6px',fontSize:9,cursor:'pointer',color:T.red,fontWeight:700,fontFamily:FONT}}>✂</button>}
-                <button onClick={()=>setEditingSections(editingSections.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:11,padding:'0 2px'}}>×</button>
+                <span style={{fontSize:8,color:sz.color,fontWeight:700,flexShrink:0,background:sz.color+'18',padding:'1px 4px',borderRadius:3}}>{sec.words.toLocaleString()} · {sz.label}</span>
+                <span style={{fontSize:8,color:T.dim,flexShrink:0}}>pp.{sec.pageStart||'?'}-{sec.pageEnd||'?'}</span>
+                {isVeryBig&&<button onClick={()=>splitSection(i)} title="Dividir" style={{background:T.redS,border:`0.5px solid ${T.red}`,borderRadius:4,padding:'1px 5px',fontSize:8,cursor:'pointer',color:T.red,fontWeight:700,fontFamily:FONT}}>✂</button>}
+                {isVerySmall&&i>0&&<button onClick={()=>mergeSections(i,'prev')} title="Fusionar con anterior" style={{background:T.amberS,border:`0.5px solid ${T.amber}`,borderRadius:4,padding:'1px 5px',fontSize:8,cursor:'pointer',color:T.amberText,fontWeight:700,fontFamily:FONT}}>←⊕</button>}
+                {isVerySmall&&i<editingSections.length-1&&<button onClick={()=>mergeSections(i,'next')} title="Fusionar con siguiente" style={{background:T.amberS,border:`0.5px solid ${T.amber}`,borderRadius:4,padding:'1px 5px',fontSize:8,cursor:'pointer',color:T.amberText,fontWeight:700,fontFamily:FONT}}>⊕→</button>}
+                <button onClick={()=>setEditingSections(editingSections.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:10,padding:'0 2px'}}>×</button>
               </div>
-              {/* Size bar */}
-              <div style={{height:3,background:T.border}}><div style={{height:'100%',width:`${pct}%`,background:barColor,borderRadius:2}}/></div>
+              <div style={{height:3,background:T.border}}><div style={{height:'100%',width:`${pct}%`,background:sz.color,borderRadius:2}}/></div>
             </div>
           );
         })}
+      </div>
+      {/* Summary */}
+      <div style={{padding:'8px 10px',background:T.surface,borderRadius:6,border:`0.5px solid ${T.border}`,fontSize:10,color:T.dim,display:'flex',gap:12,flexWrap:'wrap'}}>
+        <span>{editingSections.length} secciones</span>
+        <span>{totalWords.toLocaleString()} palabras totales</span>
+        <span>Media: {avgWords.toLocaleString()} pal/sec</span>
+        {redSections.length>0&&<span style={{color:T.red,fontWeight:700}}>⚠ {redSections.length} secciones necesitan atención</span>}
+        {redSections.length===0&&<span style={{color:T.green}}>✓ Todas las secciones en rango aceptable</span>}
       </div>
     </Card>
   );}
@@ -3496,6 +3590,73 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     save(updated);
   };
 
+  // ── Unification system ────────────────────────────────────────────────────
+  const [unifyingIdx,setUnifyingIdx]=useState(null);
+  const [unifyAllRunning,setUnifyAllRunning]=useState(false);
+
+  const hasBothSources=(sec)=>{
+    const t=sec.text||'';
+    return t.includes('[Fuente: Tietz]')&&t.includes('[Fuente: Henry]');
+  };
+
+  const getTietzText=(sec)=>{
+    const m=sec.text?.match(/\[Fuente: Tietz\]\s*([\s\S]*?)(?=\[Fuente: Henry\]|$)/);
+    return m?m[1].trim():'';
+  };
+  const getHenryText=(sec)=>{
+    const m=sec.text?.match(/\[Fuente: Henry\]\s*([\s\S]*?)(?=\[Fuente: Tietz\]|$)/);
+    return m?m[1].trim():'';
+  };
+
+  const unifySection=async(idx)=>{
+    const sec=sections[idx];
+    if(sec.unified)return; // already done
+    const tietzT=getTietzText(sec);
+    const henryT=getHenryText(sec);
+    const singleSource=sec.text&&!hasBothSources(sec);
+    // If only one source, just clean and use it directly
+    if(singleSource){
+      const cleanText=sec.text.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'').trim();
+      const updSections=sections.map((s,i)=>i===idx?{...s,unified:{text:cleanText,date:new Date().toISOString(),sources:sec.text.includes('[Fuente: Tietz]')?['tietz']:['henry']}}:s);
+      await save({...data,sections:updSections});
+      return;
+    }
+    if(!tietzT&&!henryT)return;
+
+    setUnifyingIdx(idx);
+    try{
+      const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:`Eres experto en bioquímica clínica. IDIOMA: Todo en español. Responde SOLO con JSON puro.\n\nUnifica el contenido de dos fuentes (Tietz y Henry) para la sección "${sec.title}". Reglas:\n- Información idéntica → conserva una vez\n- Información complementaria → conserva ambas\n- Contradicciones → marca con [CONTRADICCIÓN] y conserva ambas versiones\n- Traduce todo al español\n\nTIETZ:\n${tietzT.slice(0,12000)}\n\nHENRY:\n${henryT.slice(0,12000)}\n\n{"unifiedText":"texto unificado completo","contradictions":["contradicción 1 si existe"]}`}]})});
+      if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      const d=await res.json();
+      let text=(d.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'');
+      text=text.split('\n').filter(l=>!/^\s*#/.test(l)).join('\n').trim();
+      const jIdx=text.indexOf('{');
+      const parsed=JSON.parse(jIdx>=0?text.slice(jIdx):text);
+      const unifiedText=parsed.unifiedText||parsed.text||text;
+      const contradictions=parsed.contradictions||[];
+
+      const updSections=sections.map((s,i)=>i===idx?{...s,unified:{text:unifiedText,date:new Date().toISOString(),sources:['tietz','henry'],contradictions}}:s);
+      await save({...data,sections:updSections});
+    }catch(e){console.error('[Unify] Error:',e.message);}
+    setUnifyingIdx(null);
+  };
+
+  const unifyAll=async()=>{
+    setUnifyAllRunning(true);
+    for(let i=0;i<sections.length;i++){
+      if(sections[i].unified)continue;
+      if(!sections[i].text?.trim())continue;
+      setGenStep(`Unificando sección ${i+1}/${sections.length}: ${sections[i].title}`);
+      setGenPct(Math.round(i/sections.length*100));
+      await unifySection(i);
+      // Delay between calls
+      if(i<sections.length-1)await new Promise(r=>setTimeout(r,3000));
+    }
+    setGenStep('');setGenPct(0);
+    setUnifyAllRunning(false);
+  };
+
   // ── API caller with retries and truncation detection ────────────────────
   const callClaude=async(prompt,maxTokens=4096,retries=3)=>{
     for(let attempt=1;attempt<=retries;attempt++){
@@ -3542,13 +3703,17 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   const generateSection=async(idx,subIdx)=>{
     const sec=sections[idx];
     const sub=subIdx!=null?sec.subsections?.[subIdx]:null;
-    const targetText=sub?sub.text:sec.text;
+    // Use unified text if available, otherwise raw text
+    const targetText=sub?sub.text:(sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,''));
     const targetTitle=sub?`${sec.title} > ${sub.title}`:sec.title;
     if(!targetText?.trim()){setGenError('Pega texto primero.');return;}
     setGenIdx(subIdx!=null?`${idx}-${subIdx}`:idx);setGenError('');setGenPct(0);
 
     const SYS='Eres un experto en bioquímica clínica (FEA Lab. Clínico, SESCAM 2025). IDIOMA: Todo en español. Responde SOLO con JSON válido.';
-    const CTX=`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"\n\nTEXTO:\n${targetText.slice(0,25000)}`;
+    // If text >5000 words, process concept extraction in chunks of ~4000 words
+    const textWords=targetText.split(/\s+/).length;
+    const needsChunking=textWords>5000;
+    const CTX=needsChunking?`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"`:`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"\n\nTEXTO:\n${targetText.slice(0,25000)}`;
     const TRANSFER='NUNCA preguntes lo que dice el texto. SIEMPRE presenta el concepto en contexto clínico NUEVO.';
     const CALIB=getDiffCalibration();
     const now=new Date();
@@ -3576,10 +3741,28 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     };
 
     // Phase 1: Concepts (required — abort if fails)
-    const concepts=await runPhase('1/10 Extrayendo conceptos',5,async()=>{
-      const raw=await callClaude(`${SYS}\n\nExtrae información clave.\n\n${CTX}\n\nJSON:\n{"concepts":[{"t":"título","d":"descripción breve","cat":"concept|value|mechanism|clinical"}]}\n\nSé exhaustivo.`);
-      const p=JSON.parse(repairJSON(raw));
-      conceptList=p.concepts||p;
+    const concepts=await runPhase(needsChunking?`1/10 Extrayendo conceptos (${Math.ceil(textWords/4000)} chunks)`:'1/10 Extrayendo conceptos',5,async()=>{
+      if(needsChunking){
+        // Split text into ~4000-word chunks at paragraph boundaries
+        const paras=targetText.split(/\n\n+/);
+        const chunks=[];let cur=[];let cw=0;
+        for(const p of paras){const wc=p.split(/\s+/).length;if(cw+wc>4000&&cur.length){chunks.push(cur.join('\n\n'));cur=[p];cw=wc;}else{cur.push(p);cw+=wc;}}
+        if(cur.length)chunks.push(cur.join('\n\n'));
+        console.log(`[OPELab] Chunking: ${textWords} words → ${chunks.length} chunks`);
+        const allConcepts=[];
+        for(let ci=0;ci<chunks.length;ci++){
+          setGenStep(`1/10 Extrayendo conceptos (chunk ${ci+1}/${chunks.length})...`);
+          const raw=await callClaude(`${SYS}\n\nExtrae información clave.\n\n${CTX}\n\nTEXTO (parte ${ci+1}/${chunks.length}):\n${chunks[ci]}\n\nJSON:\n{"concepts":[{"t":"título","d":"descripción breve","cat":"concept|value|mechanism|clinical"}]}\n\nSé exhaustivo.`);
+          const p=JSON.parse(repairJSON(raw));
+          const c=p.concepts||p;
+          if(Array.isArray(c))allConcepts.push(...c);
+        }
+        conceptList=allConcepts;
+      }else{
+        const raw=await callClaude(`${SYS}\n\nExtrae información clave.\n\n${CTX}\n\nJSON:\n{"concepts":[{"t":"título","d":"descripción breve","cat":"concept|value|mechanism|clinical"}]}\n\nSé exhaustivo.`);
+        const p=JSON.parse(repairJSON(raw));
+        conceptList=p.concepts||p;
+      }
       cMap=JSON.stringify(Array.isArray(conceptList)?conceptList.slice(0,60):[]);
       return conceptList;
     });
@@ -3773,7 +3956,17 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
           </div>
         </div>
         {sections.length>0&&<PBar pct={ls.coverage} color={ls.color}/>}
-        {sections.length===0&&<div style={{fontSize:12,color:T.muted,lineHeight:1.6}}>Añade secciones del tema y pega el texto de cada una. Cada sección genera sus propias 6 fases de aprendizaje.</div>}
+        {sections.length===0&&<div style={{fontSize:12,color:T.muted,lineHeight:1.6}}>Añade secciones del tema y pega el texto de cada una. Cada sección genera sus propias fases de aprendizaje.</div>}
+        {/* Unify all button */}
+        {sections.length>0&&sections.some(s=>s.text?.trim()&&!s.unified)&&(
+          <div style={{marginTop:8,display:'flex',gap:6,alignItems:'center'}}>
+            <button onClick={unifyAll} disabled={unifyAllRunning}
+              style={{fontSize:11,background:unifyAllRunning?T.surface:T.tealS,border:`0.5px solid ${unifyAllRunning?T.border:T.teal}`,borderRadius:6,padding:'4px 12px',cursor:unifyAllRunning?'wait':'pointer',color:unifyAllRunning?T.dim:T.tealText,fontWeight:600,fontFamily:FONT}}>
+              {unifyAllRunning?`⏳ ${genStep||'Unificando...'}`:'🔀 Unificar todo el tema'}
+            </button>
+            <span style={{fontSize:10,color:T.dim}}>{sections.filter(s=>s.unified).length}/{sections.length} unificadas</span>
+          </div>
+        )}
         {sections.some(s=>s.generated)&&!data.notes?.length&&(
           <div style={{marginTop:8,fontSize:11,color:T.teal}}>Genera apuntes del tema desde la pestaña Apuntes para sintetizar todo el contenido.</div>
         )}
@@ -3804,7 +3997,8 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,fontWeight:600,color:T.text}}>{sec.title}</div>
                   <div style={{fontSize:10,color:T.muted}}>
-                    {(()=>{const hasTietz=sec.text?.includes('[Fuente: Tietz]');const hasHenry=sec.text?.includes('[Fuente: Henry]');const src=hasTietz&&hasHenry?'Tietz+Henry':hasTietz?'Tietz':hasHenry?'Henry':null;return src?<span style={{color:T.teal,marginRight:4}}>{src}</span>:null;})()}
+                    {(()=>{const hasTietz=sec.text?.includes('[Fuente: Tietz]');const hasHenry=sec.text?.includes('[Fuente: Henry]');const src=hasTietz&&hasHenry?'T+H':hasTietz?'T':hasHenry?'H':null;return src?<span style={{color:T.teal,marginRight:4}}>{src}</span>:null;})()}
+                    {sec.unified&&<span style={{color:T.green,marginRight:4}}>✓U</span>}
                     {hasGen?`Generado · ${sec.generated.conceptMap?.length||0} conceptos`:'Sin generar'}
                     {score!==null&&<span style={{color:scoreColor,fontWeight:700}}> · {score}%</span>}
                     {sec.pageStart&&<span style={{color:T.dim}}> · pp.{sec.pageStart}{sec.pageEnd?'-'+sec.pageEnd:''}</span>}
@@ -3818,21 +4012,55 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
               {/* Expanded section content */}
               {isOpen&&(
                 <div style={{borderTop:`1px solid ${T.border}`,padding:'14px 16px'}}>
-                  {/* Section-level content generation */}
+                  {/* Section-level content: unify + generate */}
                   {!hasGen&&(
                     <div style={{marginBottom:(sec.subsections||[]).length?12:0}}>
-                      <textarea value={sec.text||''} onChange={e=>updateSectionText(idx,e.target.value)}
-                        placeholder="Pega aquí el texto de esta sección del capítulo..."
-                        style={{width:'100%',minHeight:120,background:T.card,color:T.text,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 12px',fontSize:12,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box',marginBottom:10}}/>
+                      {/* Unification status */}
+                      {sec.unified?(
+                        <div style={{marginBottom:10,padding:'8px 12px',background:T.greenS,borderRadius:8,border:`0.5px solid ${T.green}`}}>
+                          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                            <span style={{fontSize:11,color:T.green,fontWeight:600}}>✓ Contenido unificado · {sec.unified.sources?.join('+')} · {fmtDate(sec.unified.date)}</span>
+                            <button onClick={()=>{const n=sections.map((s,i)=>i===idx?{...s,unified:null}:s);save({...data,sections:n});}}
+                              style={{fontSize:9,background:'none',border:`0.5px solid ${T.border}`,borderRadius:4,padding:'2px 6px',cursor:'pointer',color:T.dim,fontFamily:FONT}}>Regenerar</button>
+                          </div>
+                          {sec.unified.contradictions?.length>0&&<div style={{fontSize:10,color:T.amber,marginTop:4}}>⚠ {sec.unified.contradictions.length} contradicciones detectadas</div>}
+                          <div style={{fontSize:11,color:T.text,marginTop:6,maxHeight:100,overflow:'auto',lineHeight:1.5}}>{sec.unified.text?.slice(0,300)}...</div>
+                        </div>
+                      ):(
+                        <div style={{marginBottom:10}}>
+                          {hasBothSources(sec)&&(
+                            <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8}}>
+                              <button onClick={()=>unifySection(idx)} disabled={unifyingIdx!=null}
+                                style={{background:unifyingIdx===idx?T.surface:T.tealS,border:`0.5px solid ${unifyingIdx===idx?T.border:T.teal}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:unifyingIdx!=null?'wait':'pointer',color:unifyingIdx===idx?T.dim:T.tealText,fontFamily:FONT}}>
+                                {unifyingIdx===idx?'⏳ Unificando...':'🔀 Unificar Tietz + Henry'}
+                              </button>
+                              <span style={{fontSize:10,color:T.dim}}>Tietz: {getTietzText(sec).split(/\s+/).length} pal · Henry: {getHenryText(sec).split(/\s+/).length} pal</span>
+                            </div>
+                          )}
+                          {!hasBothSources(sec)&&sec.text?.trim()&&(
+                            <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8}}>
+                              <button onClick={()=>unifySection(idx)} disabled={unifyingIdx!=null}
+                                style={{background:T.tealS,border:`0.5px solid ${T.teal}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:'pointer',color:T.tealText,fontFamily:FONT}}>
+                                ✓ Preparar contenido
+                              </button>
+                              <span style={{fontSize:10,color:T.dim}}>Una sola fuente — se prepara sin unificación</span>
+                            </div>
+                          )}
+                          <textarea value={sec.text||''} onChange={e=>updateSectionText(idx,e.target.value)}
+                            placeholder="Pega el texto de esta sección..."
+                            style={{width:'100%',minHeight:80,background:T.card,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'8px 10px',fontSize:11,fontFamily:FONT,resize:'vertical',outline:'none',boxSizing:'border-box'}}/>
+                        </div>
+                      )}
+                      {/* Generate button — requires unified or single-source text */}
                       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-                        <button onClick={()=>generateSection(idx)} disabled={genIdx!=null||!sec.text?.trim()}
-                          style={{background:genIdx===idx?T.amberS:(!sec.text?.trim()?T.card:T.purple),color:genIdx===idx?T.amberText:(!sec.text?.trim()?T.dim:'#fff'),border:'none',borderRadius:8,padding:'8px 20px',fontSize:12,fontWeight:600,cursor:genIdx!=null||!sec.text?.trim()?'not-allowed':'pointer',fontFamily:FONT}}>
-                          {genIdx===idx?`⏳ ${genStep}`:'🧠 Generar (20 pre + 25 post + 25 FC + 5 casos)'}
+                        <button onClick={()=>generateSection(idx)} disabled={genIdx!=null||(!sec.unified&&hasBothSources(sec))}
+                          style={{background:genIdx===idx?T.amberS:(!sec.unified&&hasBothSources(sec))?T.surface:T.purple,color:genIdx===idx?T.amberText:(!sec.unified&&hasBothSources(sec))?T.dim:'#000',border:'none',borderRadius:8,padding:'8px 20px',fontSize:12,fontWeight:600,cursor:genIdx!=null||(!sec.unified&&hasBothSources(sec))?'not-allowed':'pointer',fontFamily:FONT}}>
+                          {genIdx===idx?`⏳ ${genStep}`:(!sec.unified&&hasBothSources(sec))?'Unifica el contenido primero':'🧠 Generar aprendizaje'}
                         </button>
-                        {sec.text?.trim()&&<span style={{fontSize:11,color:T.muted}}>{sec.text.trim().split(/\s+/).length} palabras</span>}
+                        {sec.text?.trim()&&<span style={{fontSize:10,color:T.muted}}>{(sec.unified?.text||sec.text).split(/\s+/).length} pal</span>}
                       </div>
-                      {genIdx===idx&&<div style={{marginTop:10}}><div style={{background:T.border,borderRadius:4,height:4}}><div style={{background:T.purple,width:`${genPct}%`,height:'100%',borderRadius:4,transition:'width 0.3s'}}/></div></div>}
-                      {genError&&genIdx===idx&&<div style={{marginTop:8,fontSize:11,color:T.red}}>{genError}</div>}
+                      {genIdx===idx&&<div style={{marginTop:8}}><PBar pct={genPct} color={T.purple} height={3}/></div>}
+                      {genError&&genIdx===idx&&<div style={{marginTop:6,fontSize:11,color:T.red}}>{genError}</div>}
                     </div>
                   )}
 
