@@ -13,6 +13,63 @@ function sm2Update(sr, q) {
 }
 const isDue=sr=>!sr?.next||Date.now()>=sr.next;
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+
+// ── Spaced review scheduling ────────────────────────────────────────────────
+const REVIEW_TYPES=[
+  {label:'D+1',days:1,type:'reconocimiento',duration:10,desc:'5 flashcards peor puntuación + 5 preguntas falladas'},
+  {label:'D+3',days:3,type:'consolidacion',duration:15,desc:'Flashcards SM-2 + 8 preguntas + 1 caso si dominio <70%'},
+  {label:'D+7',days:7,type:'integracion',duration:20,desc:'Flashcards + 10 preguntas interleaving + 1 diferencial + 1 caso'},
+  {label:'D+14',days:14,type:'profundo',duration:25,desc:'Flashcards + 15 preguntas + 2 casos + mapa de relaciones'},
+  {label:'D+30',days:30,type:'mantenimiento',duration:30,desc:'Sesión completa condensada — pretest + flashcards + caso + posttest'},
+];
+function scheduleReviews(startDate,temaId,seccionId){
+  const addD=(d,n)=>{const r=new Date(d);r.setDate(r.getDate()+n);return r.toISOString().slice(0,10);};
+  return REVIEW_TYPES.map(rt=>({
+    id:uid(),temaId,seccionId,type:rt.type,label:rt.label,
+    fechaProgramada:addD(startDate,rt.days),
+    completado:false,dominioPrevio:null,duration:rt.duration,desc:rt.desc
+  }));
+}
+function buildReviewItems(gen,reviewType,allSections){
+  const items=[];
+  const postQs=shuffle(gen.phases?.postTest||[]).filter(q=>q.options);
+  const failedQs=postQs.filter(q=>gen.progress?.postTest?.answers&&gen.progress.postTest.answers[postQs.indexOf(q)]!==q.correct);
+  const allFc=gen.phases?.flashcards||[];
+  const cases=gen.phases?.clinicalCases||[];
+  const diffPairs=gen.phases?.diffDiagnosis||[];
+
+  if(reviewType==='reconocimiento'){
+    // 5 worst flashcards + 5 failed posttest questions
+    if(allFc.length)items.push({type:'flashcards',title:'Flashcards — peor puntuación',cards:shuffle(allFc).slice(0,5)});
+    const qs=failedQs.length>=5?shuffle(failedQs).slice(0,5):shuffle(postQs).slice(0,5);
+    if(qs.length)items.push({type:'quiz',title:'Preguntas falladas',questions:qs});
+  }else if(reviewType==='consolidacion'){
+    if(allFc.length)items.push({type:'flashcards',title:'Flashcards SM-2',cards:shuffle(allFc).slice(0,Math.min(15,allFc.length))});
+    const qs=shuffle([...failedQs,...postQs]).slice(0,8);
+    if(qs.length)items.push({type:'quiz',title:'8 preguntas de consolidación',questions:qs});
+    if(cases.length)items.push({type:'clinical',title:'Caso clínico',cases:[cases[0]]});
+  }else if(reviewType==='integracion'){
+    if(allFc.length)items.push({type:'flashcards',title:'Flashcards SM-2',cards:shuffle(allFc).slice(0,Math.min(15,allFc.length))});
+    // Interleaving: mix questions from multiple sections
+    const mixedQs=[...shuffle(postQs).slice(0,7)];
+    if(allSections){const otherQs=allSections.filter(s=>s.generated&&s!==gen).flatMap(s=>s.generated.phases?.postTest||[]).filter(q=>q.options);mixedQs.push(...shuffle(otherQs).slice(0,3));}
+    if(mixedQs.length)items.push({type:'quiz',title:'10 preguntas con interleaving',questions:shuffle(mixedQs).slice(0,10)});
+    if(diffPairs.length)items.push({type:'clinical',title:'Diagnóstico diferencial',cases:[{...diffPairs[0],question:diffPairs[0].question||'¿Diferencial?',options:diffPairs[0].optionsA||['A','B','C','D'],correct:diffPairs[0].correctA||0,discussion:diffPairs[0].explanation}]});
+    if(cases.length)items.push({type:'clinical',title:'Caso clínico',cases:[shuffle(cases)[0]]});
+  }else if(reviewType==='profundo'){
+    if(allFc.length)items.push({type:'flashcards',title:'Flashcards completas',cards:shuffle(allFc)});
+    if(postQs.length)items.push({type:'quiz',title:'15 preguntas de integración',questions:shuffle(postQs).slice(0,15)});
+    if(cases.length>=2)items.push({type:'clinical',title:'2 casos clínicos',cases:shuffle(cases).slice(0,2)});
+    else if(cases.length)items.push({type:'clinical',title:'Caso clínico',cases:[cases[0]]});
+  }else if(reviewType==='mantenimiento'){
+    const preQs=shuffle(gen.phases?.preTest||[]).filter(q=>q.options).slice(0,5);
+    if(preQs.length)items.push({type:'quiz',title:'5 preguntas pretest',questions:preQs});
+    if(allFc.length)items.push({type:'flashcards',title:'Flashcards SM-2',cards:shuffle(allFc).slice(0,Math.min(15,allFc.length))});
+    if(cases.length)items.push({type:'clinical',title:'Caso clínico',cases:[shuffle(cases)[0]]});
+    if(postQs.length)items.push({type:'quiz',title:'10 preguntas posttest',questions:shuffle(postQs).slice(0,10)});
+  }
+  return items;
+}
 const shuffle=arr=>{const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;};
 const fmtDate=d=>new Date(d).toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'});
 const fmtTime=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
@@ -108,7 +165,8 @@ async function mergePdfsWithLimit(blobs){return{file:blobs[0],pages:0};
 }
 
 // ── Theme — Dark Mode ────────────────────────────────────────────────────────
-const T={
+// ── Theme: light + dark mode ─────────────────────────────────────────────
+const LIGHT={
   bg:'#f0f7f5',surface:'#ffffff',card:'#ffffff',
   border:'#c8e0db',border2:'#a8d0c8',
   text:'#1a2e2b',muted:'#5a7a75',dim:'#8aa8a2',
@@ -120,6 +178,21 @@ const T={
   purple:'#7c5cbf',purpleDk:'#6345a5',purpleS:'#f0ecf8',purpleText:'#5a3d96',
   orange:'#e76f51',orangeS:'#fdf0ec',orangeText:'#a33d28',
 };
+const DARK={
+  bg:'#0f1f1c',surface:'#1a2e2a',card:'#1a2e2a',
+  border:'#2a4a42',border2:'#3a5a50',
+  text:'#e8f4f1',muted:'#8ab0a8',dim:'#5a8a80',
+  blue:'#2a9d8f',blueDk:'#3ab8a8',blueS:'#1a302c',blueText:'#5eced0',
+  green:'#52b788',greenDk:'#6ed4a0',greenS:'#1a302a',greenText:'#86efb0',
+  teal:'#2a9d8f',tealDk:'#3ab8a8',tealS:'#1a302c',tealText:'#5eced0',
+  amber:'#e9c46a',amberS:'#2a2818',amberText:'#f0d880',
+  red:'#e76f51',redDk:'#f08870',redS:'#2a1a18',redText:'#f0a090',
+  purple:'#a78bfa',purpleDk:'#b8a0ff',purpleS:'#1a1a2e',purpleText:'#c8b8ff',
+  orange:'#e76f51',orangeS:'#2a1a18',orangeText:'#f0a090',
+};
+// Auto dark mode: 21:00-7:00
+const isNightTime=()=>{const h=new Date().getHours();return h>=21||h<7;};
+let T=LIGHT; // mutable — gets swapped by App on mount
 const FONT="system-ui,-apple-system,sans-serif";
 const sh={sm:'0 1px 3px rgba(26,46,43,.06)',md:'0 4px 12px rgba(26,46,43,.08)',lg:'0 8px 24px rgba(26,46,43,.1)'};
 
@@ -509,6 +582,10 @@ function getLearningStatus(learning){
 // ═══════════════════════════════════════════════════════════════════════════
 export default function App(){
   const [tab,setTab]=useState('dashboard');
+  const [darkMode,setDarkMode]=useState(()=>{const saved=load('olab_dark_mode',null);return saved!==null?saved:isNightTime();});
+  // Apply theme
+  T=darkMode?DARK:LIGHT;
+  useEffect(()=>{document.body.style.background=T.bg;document.body.style.color=T.text;},[darkMode]);
   const [qs,setQs]=useState([]);
   const [sr,setSr]=useState({});
   const [stats,setStats]=useState({});
@@ -725,20 +802,29 @@ export default function App(){
   const pendingReviews=[];
   if(!reviewAlreadyDone){
     const today=new Date().toISOString().slice(0,10);
-    Object.entries(learningData||{}).forEach(([topic,data])=>{
+    Object.entries(learningData||{}).forEach(([topicName,data])=>{
       if(!data?.spacedRepetition?.reviews)return;
-      Object.entries(data.spacedRepetition.reviews).forEach(([label,rev])=>{
-        if(rev.date<=today&&!rev.completed){
+      const reviews=Array.isArray(data.spacedRepetition.reviews)?data.spacedRepetition.reviews:
+        Object.entries(data.spacedRepetition.reviews).map(([label,rev])=>({label,fechaProgramada:rev.date,completado:rev.completed,type:label,seccionId:null}));
+      reviews.forEach(rev=>{
+        if((rev.fechaProgramada||rev.date)<=today&&!rev.completado&&!rev.completed){
           const ls=getLearningStatus(data);
-          // Find section with lowest score for this topic
+          // Find the section this review belongs to, or worst section
+          const secIdx=rev.seccionId?(data.sections||[]).findIndex(s=>(s.id||s.title)===rev.seccionId):-1;
           const sectionScores=(data.sections||[]).map((s,i)=>({idx:i,title:s.title,score:calcSectionScore(s),sec:s})).filter(s=>s.score!==null);
-          const worstSection=sectionScores.sort((a,b)=>a.score-b.score)[0]||null;
-          pendingReviews.push({topic,label,date:rev.date,mastery:ls.mastery,color:ls.color,status:ls.status,worstSection,data});
+          const targetSection=secIdx>=0?sectionScores.find(s=>s.idx===secIdx):sectionScores.sort((a,b)=>a.score-b.score)[0];
+          const worstSection=targetSection||sectionScores[0]||null;
+          pendingReviews.push({topic:topicName,label:rev.label||rev.type,date:rev.fechaProgramada||rev.date,mastery:ls.mastery,color:ls.color,status:ls.status,worstSection,data,reviewObj:rev});
         }
       });
     });
-    // Sort: red first, then amber, then green
-    pendingReviews.sort((a,b)=>(a.mastery<60?0:a.mastery<80?1:2)-(b.mastery<60?0:b.mastery<80?1:2));
+    pendingReviews.sort((a,b)=>{
+      // Urgent (overdue >1 day) first, then today's, then by mastery
+      const aOverdue=new Date(today)-new Date(a.date)>86400000;
+      const bOverdue=new Date(today)-new Date(b.date)>86400000;
+      if(aOverdue&&!bOverdue)return-1;if(!aOverdue&&bOverdue)return 1;
+      return(a.mastery<60?0:a.mastery<80?1:2)-(b.mastery<60?0:b.mastery<80?1:2);
+    });
   }
   const hasRedReviews=pendingReviews.some(r=>r.mastery<60);
   const hasPendingReviews=pendingReviews.length>0;
@@ -748,19 +834,14 @@ export default function App(){
 
   // Build condensed review items for a topic
   const startReview=(reviewItem)=>{
-    const{topic,worstSection,data}=reviewItem;
+    const{topic,worstSection,data,reviewObj}=reviewItem;
     if(!worstSection?.sec?.generated)return markReviewDone();
     const gen=worstSection.sec.generated;
-    const items=[];
-    // 5 random post-test questions
-    const postQs=shuffle(gen.phases?.postTest||[]).slice(0,5);
-    if(postQs.length)items.push({type:'quiz',title:`Repaso: ${worstSection.title}`,questions:postQs,topic,secIdx:worstSection.idx});
-    // Failed flashcards (ones not dominated) — up to 5
-    const allFc=gen.phases?.flashcards||[];
-    const dominated=gen.progress?.flashcardsDominated||0;
-    if(dominated<allFc.length){const fcToReview=shuffle(allFc).slice(0,Math.min(5,allFc.length-dominated));items.push({type:'flashcards',title:'Flashcards para repasar',cards:fcToReview,topic,secIdx:worstSection.idx});}
-    // Clinical case if mastery < 70%
-    if(worstSection.score<70&&(gen.phases?.clinicalCases||[]).length>0){items.push({type:'clinical',title:'Caso clínico de refuerzo',cases:[gen.phases.clinicalCases[0]],topic,secIdx:worstSection.idx});}
+    const reviewType=reviewObj?.type||'reconocimiento';
+    const allSections=(data.sections||[]).filter(s=>s.generated);
+    const items=buildReviewItems(gen,reviewType,allSections);
+    // Tag items with topic/section info
+    items.forEach(it=>{it.topic=topic;it.secIdx=worstSection.idx;});
     if(!items.length)return markReviewDone();
     setActiveReview({items,currentItem:0,topic,secIdx:worstSection.idx,reviewLabel:reviewItem.label,results:[]});
   };
@@ -793,19 +874,40 @@ export default function App(){
               const newResults=[...activeReview.results,result];
               const nextItem=activeReview.currentItem+1;
               if(nextItem>=activeReview.items.length){
-                // Review complete — recalculate mastery and mark spaced repetition as done
+                // Review complete — mark as done, recalculate mastery, schedule next if needed
                 const ld=learningData[activeReview.topic];
                 if(ld){
-                  const updatedLd={...ld,spacedRepetition:{...ld.spacedRepetition,reviews:{...ld.spacedRepetition.reviews,[activeReview.reviewLabel]:{...ld.spacedRepetition.reviews[activeReview.reviewLabel],completed:true}}}};
-                  // Update section progress with review results
-                  if(result.quizScore!=null&&updatedLd.sections?.[activeReview.secIdx]?.generated){
-                    const sec=updatedLd.sections[activeReview.secIdx];
+                  const updatedLd={...ld};
+                  // Mark this review as completed (supports both old object and new array format)
+                  const sr=updatedLd.spacedRepetition||{reviews:[]};
+                  if(Array.isArray(sr.reviews)){
+                    sr.reviews=sr.reviews.map(r=>r.label===activeReview.reviewLabel&&r.seccionId===(activeReview.reviewObj?.seccionId||null)?{...r,completado:true}:r);
+                  }else if(sr.reviews?.[activeReview.reviewLabel]){
+                    sr.reviews={...sr.reviews,[activeReview.reviewLabel]:{...sr.reviews[activeReview.reviewLabel],completed:true}};
+                  }
+                  updatedLd.spacedRepetition=sr;
+                  // Update section mastery with weighted formula: new = old*0.7 + review*0.3
+                  const secIdx=activeReview.secIdx;
+                  if(secIdx!=null&&updatedLd.sections?.[secIdx]?.generated){
+                    const sec=updatedLd.sections[secIdx];
                     const ext=sec.generated.progress?.externalTests||{c:0,t:0};
                     const totalCorrect=newResults.reduce((a,r)=>a+(r.correct||0),0);
                     const totalQ=newResults.reduce((a,r)=>a+(r.total||0),0);
                     if(totalQ>0){
+                      const reviewScore=Math.round(totalCorrect/totalQ*100);
                       const newExt={c:ext.c+totalCorrect,t:ext.t+totalQ};
-                      updatedLd.sections[activeReview.secIdx]={...sec,generated:{...sec.generated,progress:{...sec.generated.progress,externalTests:newExt}}};
+                      updatedLd.sections[secIdx]={...sec,generated:{...sec.generated,progress:{...sec.generated.progress,externalTests:newExt,lastReviewScore:reviewScore}}};
+                    }
+                  }
+                  // For D+30 mantenimiento: if mastery >=85% schedule D+60, if <70% reschedule D+7
+                  const reviewType=activeReview.reviewObj?.type;
+                  if(reviewType==='mantenimiento'&&Array.isArray(sr.reviews)){
+                    const mastery=getLearningStatus(updatedLd).mastery;
+                    const addD=(d,n)=>{const r=new Date(d);r.setDate(r.getDate()+n);return r.toISOString().slice(0,10);};
+                    if(mastery>=85){
+                      sr.reviews.push({id:uid(),temaId:activeReview.topic,seccionId:activeReview.reviewObj?.seccionId,type:'mantenimiento',label:'D+60',fechaProgramada:addD(new Date(),60),completado:false,duration:30,desc:'Repaso de mantenimiento extendido'});
+                    }else if(mastery<70){
+                      sr.reviews.push({id:uid(),temaId:activeReview.topic,seccionId:activeReview.reviewObj?.seccionId,type:'integracion',label:'D+7 (refuerzo)',fechaProgramada:addD(new Date(),7),completado:false,duration:20,desc:'Repaso de refuerzo por dominio bajo'});
                     }
                   }
                   saveLearningData(activeReview.topic,updatedLd);
@@ -858,7 +960,7 @@ export default function App(){
           <span style={{fontWeight:700,fontSize:15,color:T.text}}>⚙️ Ajustes</span>
         </div>
       </div>
-      <div style={{padding:'32px 40px'}}>
+      <div style={{padding:'32px 40px',maxWidth:900,margin:'0 auto'}}>
         <Ajustes apiKey={apiKey} onSave={saveApiKey}/>
       </div>
     </div>
@@ -877,7 +979,8 @@ export default function App(){
               <Chip color={T.blue} bg={T.blueS}>{qs.length} preg.</Chip>
               {dueQs.length>0&&<Chip color={T.amber} bg={T.amberS}>{dueQs.length} pendientes</Chip>}
               {errSet.size>0&&<Chip color={T.red} bg={T.redS}>{errSet.size} errores</Chip>}
-              <button onClick={()=>setTab('ajustes')} title="Ajustes" style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:'6px 10px',cursor:'pointer',color:T.muted,fontSize:14,lineHeight:1,marginLeft:4,boxShadow:sh.sm}}>⚙️</button>
+              <button onClick={()=>{const next=!darkMode;setDarkMode(next);save('olab_dark_mode',next);}} title={darkMode?'Modo claro':'Modo oscuro'} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:'6px 10px',cursor:'pointer',color:T.muted,fontSize:14,lineHeight:1,boxShadow:sh.sm}}>{darkMode?'☀️':'🌙'}</button>
+              <button onClick={()=>setTab('ajustes')} title="Ajustes" style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:'6px 10px',cursor:'pointer',color:T.muted,fontSize:14,lineHeight:1,boxShadow:sh.sm}}>⚙️</button>
             </div>
           </div>
           <div style={{display:'flex',marginTop:4,gap:0}}>
@@ -920,7 +1023,7 @@ export default function App(){
         </div>
       )}
 
-      <div style={{padding:'32px 40px'}}>
+      <div style={{padding:'32px 40px',maxWidth:900,margin:'0 auto'}}>
         {topicView?(
           <TopicPage topic={topicView} onBack={()=>setTopicView(null)} stats={stats} qs={qs} pdfMeta={pdfMeta} savePdfForTopic={savePdfForTopic} deletePdfForTopic={deletePdfForTopic} apiKey={apiKey} learningData={learningData} saveLearningData={saveLearningData} sr={sr} recordAnswer={recordAnswer} goToBank={goToBank} setTab={setTab} saveQs={saveQs} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob}/>
         ):(
@@ -1338,7 +1441,7 @@ function Chip({color,bg,children}){return <span style={{background:bg,color,padd
 function Lbl({children}){return <div style={{fontSize:11,color:T.muted,fontWeight:700,marginBottom:6,letterSpacing:0.5,textTransform:'uppercase'}}>{children}</div>;}
 function Btn({onClick,disabled,children,variant='primary',style:st}){
   const v={primary:{bg:T.blue,c:'#fff'},green:{bg:T.green,c:'#fff'},ghost:{bg:'transparent',c:T.text},danger:{bg:T.redS,c:T.red},teal:{bg:T.teal,c:'#fff'},purple:{bg:T.purple,c:'#fff'},orange:{bg:T.orange,c:'#fff'}}[variant];
-  return <button onClick={onClick} disabled={disabled} style={{background:disabled?T.bg:v.bg,color:disabled?T.dim:v.c,border:`1px solid ${disabled?T.border:v.bg}`,borderRadius:8,padding:'10px 22px',fontWeight:700,fontSize:13,cursor:disabled?'not-allowed':'pointer',fontFamily:FONT,letterSpacing:'0.1px',boxShadow:disabled?'none':sh.sm,...st}}>{children}</button>;
+  return <button onClick={onClick} disabled={disabled} style={{background:disabled?T.bg:v.bg,color:disabled?T.dim:v.c,border:`1px solid ${disabled?T.border:v.bg}`,borderRadius:10,padding:'11px 24px',fontWeight:700,fontSize:14,cursor:disabled?'not-allowed':'pointer',fontFamily:FONT,letterSpacing:'0.1px',boxShadow:disabled?'none':sh.sm,transition:'all 250ms ease-in-out',...st}}>{children}</button>;
 }
 function RadioGroup({options,value,onChange}){
   return <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:16}}>
@@ -1348,8 +1451,8 @@ function RadioGroup({options,value,onChange}){
     </label>)}
   </div>;
 }
-function PBar({pct,color,height=4}){const c=color||(pct>=70?T.green:pct>=50?T.amber:T.red);return <div style={{background:T.border,borderRadius:4,height}}><div style={{background:c,width:`${Math.min(pct,100)}%`,height:'100%',borderRadius:4,transition:'width 0.5s'}}/></div>;}
-function Card({children,style:st,...rest}){return <div style={{background:T.surface,borderRadius:12,border:`1px solid ${T.border}`,boxShadow:sh.sm,...st}} {...rest}>{children}</div>;}
+function PBar({pct,color,height=6}){const c=color||(pct>=70?T.green:pct>=50?T.amber:T.red);return <div style={{background:T.border,borderRadius:6,height,overflow:'hidden'}}><div style={{background:c,width:`${Math.min(pct,100)}%`,height:'100%',borderRadius:6,transition:'width 0.6s ease-in-out'}}/></div>;}
+function Card({children,style:st,...rest}){return <div style={{background:T.surface,borderRadius:12,border:`1px solid ${T.border}`,boxShadow:sh.sm,transition:'background 250ms ease-in-out, border-color 250ms ease-in-out',...st}} {...rest}>{children}</div>;}
 function Sel({value,onChange,children,style:st}){return <select value={value} onChange={e=>onChange(e.target.value)} style={{width:'100%',background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:7,padding:'9px 12px',fontSize:13,outline:'none',marginBottom:14,fontFamily:FONT,boxShadow:sh.sm,...st}}>{children}</select>;}
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3963,7 +4066,7 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
 
     // Phase 7: Diff diagnosis (2 pairs)
     const dd=await runPhase('7/10 Diagnóstico diferencial (2)',62,async()=>{
-      const r=await callClaude(`${SYS}\n\n2 pares diagnóstico diferencial de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"diffDiagnosis":[{"id":"d1","caseA":"Caso A: valores...","caseB":"Caso B: valores similares...","question":"¿Diferencial?","explanation":"A=X, B=Y, diferencia clave..."}]}`,4096);
+      const r=await callClaude(`${SYS}\n\n2 pares de diagnóstico diferencial de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nCada par tiene dos casos con resultados analíticos similares pero con una diferencia clave. Para CADA caso genera exactamente 5 opciones diagnósticas:\n- 1 diagnóstico correcto\n- 2 diagnósticos que compartan algún hallazgo pero difieran en algo clave\n- 1 diagnóstico del mismo grupo pero con mecanismo diferente\n- 1 diagnóstico claramente incorrecto\n\nJSON:\n{"diffDiagnosis":[{"id":"d1","caseA":"Caso A: valores analíticos con unidades","caseB":"Caso B: valores similares con diferencia clave","optionsA":["Dx correcto A","Dx similar 1","Dx similar 2","Dx mismo grupo","Dx incorrecto"],"correctA":0,"optionsB":["Dx correcto B","Dx similar 1","Dx similar 2","Dx mismo grupo","Dx incorrecto"],"correctB":0,"explanation":"Caso A = diagnóstico X porque [hallazgo clave]. Caso B = diagnóstico Y porque [hallazgo diferenciador]. La clave que los distingue es..."}]}`,6144);
       return JSON.parse(repairJSON(r));
     });
 
@@ -3973,13 +4076,7 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
       return JSON.parse(repairJSON(r));
     });
 
-    // Phase 9: Concept map (8-12 relations)
-    const rm=await runPhase('9/10 Mapa de relaciones',78,async()=>{
-      const r=await callClaude(`${SYS}\n\n8-12 relaciones entre conceptos de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"relationships":[{"from":"A","to":"B","relation":"causa|regula|inhibe|aumenta|diagnostica"}]}`,4096);
-      return JSON.parse(repairJSON(r));
-    });
-
-    // Phase 10: Post-test (13+12) — always split
+    // Phase 9: Post-test (13+12) — always split
     // Phase 10: Interactive question types (combined in one call to save tokens)
     const interactive=await runPhase('10/14 Tipos interactivos',80,async()=>{
       const r=await callClaude(`${SYS}\n\nGenera estos tipos de preguntas interactivas sobre "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"sequences":[{"id":"s1","instruction":"Ordena los pasos de este mecanismo","steps":["paso1","paso2","paso3","paso4"],"correctOrder":[0,1,2,3]}],"classifications":[{"id":"cl1","categories":["Cat A","Cat B"],"items":[{"text":"item","category":0}]}],"matching":[{"id":"m1","left":["término1"],"right":["definición1"],"pairs":[[0,0]]}],"errors":[{"id":"e1","statement":"Afirmación con error","errorPart":"la parte incorrecta","correction":"lo correcto","options":["opción A","opción B","opción C"]}],"progressiveCases":[{"id":"pc1","step1":{"info":"Síntomas iniciales","question":"¿Primera impresión?"},"step2":{"info":"Primeros resultados","question":"¿Refinas diagnóstico?"},"step3":{"info":"Resultados completos","question":"¿Diagnóstico final?"},"answer":"Diagnóstico y razonamiento"}],"patterns":[{"id":"pt1","results":"Tabla de resultados analíticos","options":["Patrón A","Patrón B","Patrón C","Patrón D"],"correct":0,"explanation":"breve"}]}\n\n3 secuencias, 2 clasificaciones, 3 emparejamientos, 3 errores, 1 caso progresivo, 2 patrones.`,8192);
@@ -4018,7 +4115,6 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
         fillBlanks:fb?.fillBlanks||fb||[],
         diffDiagnosis:dd?.diffDiagnosis||dd||[],
         openQuestions:oq?.openQuestions||oq||[],
-        conceptRelations:rm?.relationships||rm||[],
         interactive:interactive||{},
         postTest:taggedPostTest,
       },
@@ -4035,8 +4131,17 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     let updSections;
     if(subIdx!=null){const updSubs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,generated}:s);updSections=sections.map((s,i)=>i===idx?{...s,subsections:updSubs}:s);}
     else{updSections=sections.map((s,i)=>i===idx?{...s,generated}:s);}
-    let sr=data.spacedRepetition;
-    if(!sr){sr={startDate:now.toISOString().slice(0,10),reviews:{'D+1':{date:addDays(now,1),completed:false},'D+3':{date:addDays(now,3),completed:false},'D+7':{date:addDays(now,7),completed:false},'D+14':{date:addDays(now,14),completed:false},'D+30':{date:addDays(now,30),completed:false}}};}
+    // Schedule spaced reviews for this section
+    let sr=data.spacedRepetition||{reviews:[]};
+    if(!Array.isArray(sr.reviews))sr={reviews:[]};
+    // Don't create duplicate reviews for same section
+    const secId=sec.id||sec.title;
+    const hasReviews=sr.reviews.some(r=>r.seccionId===secId);
+    if(!hasReviews){
+      const newReviews=scheduleReviews(now,topic,secId);
+      newReviews.forEach(r=>r.seccionTitle=sec.title);
+      sr={...sr,reviews:[...sr.reviews,...newReviews]};
+    }
     await save({...data,sections:updSections,spacedRepetition:sr});
 
     if(errors.length){
@@ -4098,7 +4203,6 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     {id:'fillBlanks',label:'Completar',icon:'✏️',color:T.purple},
     {id:'diffDiagnosis',label:'Diferencial',icon:'⚖️',color:T.amber},
     {id:'openQuestions',label:'Abiertas',icon:'💬',color:T.teal},
-    {id:'conceptMap',label:'Mapa',icon:'🗺️',color:T.green},
     {id:'interactive',label:'Interactivo',icon:'🎯',color:T.orange},
     {id:'postTest',label:'Post-Test',icon:'✅',color:T.red},
     {id:'spacedRepetition',label:'Repaso',icon:'📅',color:T.blue},
@@ -4371,9 +4475,8 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
       {curPhase===4&&<FillBlanksPhase items={gen.phases.fillBlanks||[]} progress={gen.progress?.fillBlanks} onSaveProgress={p=>onSaveProg('fillBlanks',p)}/>}
       {curPhase===5&&<DiffDiagnosisPhase pairs={gen.phases.diffDiagnosis||[]}/>}
       {curPhase===6&&<OpenQuestionsPhase questions={gen.phases.openQuestions||[]} progress={gen.progress?.openQuestions} onSaveProgress={p=>onSaveProg('openQuestions',p)}/>}
-      {curPhase===7&&<ConceptMapPhase concepts={gen.conceptMap||[]} relations={gen.phases.conceptRelations||[]}/>}
-      {curPhase===8&&<InteractiveQuestionsPhase data={gen.phases.interactive||{}}/>}
-      {curPhase===9&&(
+      {curPhase===7&&<InteractiveQuestionsPhase data={gen.phases.interactive||{}}/>}
+      {curPhase===8&&(
         <div>
           <QuizPhase questions={gen.phases.postTest} title="Post-Test (25)" progress={gen.progress?.postTest} onSaveProgress={p=>onSaveProg('postTest',p)} color={T.red} isPostTest={true}/>
           {gen.progress?.preTest?.completed&&gen.progress?.postTest?.completed&&(
@@ -4391,7 +4494,7 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
           )}
         </div>
       )}
-      {curPhase===10&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
+      {curPhase===9&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
       {/* Cross-topic connections */}
       {gen.connections&&gen.connections.length>0&&(
         <Card style={{padding:'12px 16px',marginTop:12}}>
@@ -4764,16 +4867,50 @@ function FillBlanksPhase({items,progress,onSaveProgress}){
   const item=items[current];if(!item)return null;
   const answered=Object.keys(results).length;
 
+  // Normalize: lowercase, remove accents/hyphens/symbols, collapse whitespace
+  const norm=(s)=>s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[-–—·.,:;()\/]/g,' ').replace(/\s+/g,' ').trim();
+
   const checkAnswer=async()=>{
     const userAnswer=(answers[current]||'').trim();
     if(!userAnswer)return;
     setChecking(prev=>({...prev,[current]:true}));
-    // Simple check: compare with expected answers (case-insensitive, trim)
-    const expected=(item.answers||[item.answer]||['']).map(a=>a.toLowerCase().trim());
-    const userWords=userAnswer.toLowerCase().trim();
-    const isCorrect=expected.some(exp=>userWords.includes(exp)||exp.includes(userWords));
+    const expected=(item.answers||[item.answer]||['']).filter(Boolean);
+    const userN=norm(userAnswer);
+
+    // Step 1: Local quick check (covers exact, substring, normalized matches)
+    let isCorrect=expected.some(exp=>{
+      const expN=norm(exp);
+      // Exact normalized match
+      if(userN===expN)return true;
+      // Substring containment (either direction)
+      if(userN.includes(expN)||expN.includes(userN))return true;
+      // Numeric range: if expected is "250-350" and user writes "300"
+      const rangeMatch=exp.match(/(\d+)\s*[-–]\s*(\d+)/);
+      if(rangeMatch){const lo=parseFloat(rangeMatch[1]),hi=parseFloat(rangeMatch[2]),uv=parseFloat(userAnswer);if(!isNaN(uv)&&uv>=lo&&uv<=hi)return true;}
+      // User's number close to expected number (±15%)
+      const expNum=parseFloat(exp.replace(/[^0-9.,]/g,'').replace(',','.'));
+      const userNum=parseFloat(userAnswer.replace(/[^0-9.,]/g,'').replace(',','.'));
+      if(!isNaN(expNum)&&!isNaN(userNum)&&expNum>0&&Math.abs(userNum-expNum)/expNum<0.15)return true;
+      return false;
+    });
+
+    // Step 2: If local check fails, ask AI for semantic equivalence
+    if(!isCorrect){
+      try{
+        const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:256,messages:[{role:'user',content:
+            `¿Son equivalentes estas respuestas? Responde SOLO "sí" o "no".\n\nPregunta: ${item.sentence}\nRespuesta del estudiante: "${userAnswer}"\nRespuestas aceptadas: ${expected.join(', ')}\n\nAcepta sinónimos, variaciones ortográficas (mayúsculas, guiones, símbolos griegos vs texto), abreviaturas y números dentro de rangos razonables.`
+          }]})});
+        if(res.ok){
+          const d=await res.json();
+          const txt=(d.content||[]).map(c=>c.text||'').join('').trim().toLowerCase();
+          if(txt.startsWith('sí')||txt.startsWith('si')||txt==='yes')isCorrect=true;
+        }
+      }catch{}
+    }
+
     setResults(prev=>{
-      const n={...prev,[current]:{correct:isCorrect,userAnswer,expected:item.answers||[item.answer]}};
+      const n={...prev,[current]:{correct:isCorrect,userAnswer,expected,aiChecked:true}};
       const totalAnswered=Object.keys(n).length;
       const totalCorrect=Object.values(n).filter(r=>r.correct).length;
       onSaveProgress?.({answers,results:n,score:Math.round(totalCorrect/totalAnswered*100),completed:totalAnswered>=items.length});
@@ -4799,7 +4936,9 @@ function FillBlanksPhase({items,progress,onSaveProgress}){
               onKeyDown={e=>e.key==='Enter'&&checkAnswer()}
               style={{flex:1,background:T.bg,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'8px 12px',fontSize:13,outline:'none',fontFamily:FONT}}/>
             <button onClick={checkAnswer} disabled={checking[current]||!answers[current]?.trim()}
-              style={{background:T.purple,color:'#fff',border:'none',borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Comprobar</button>
+              style={{background:checking[current]?T.bg:T.purple,color:checking[current]?T.muted:'#fff',border:'none',borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:checking[current]?'wait':'pointer',fontFamily:FONT}}>
+              {checking[current]?'⏳ Evaluando...':'Comprobar'}
+            </button>
           </div>
         ):(
           <div style={{padding:'10px 14px',borderRadius:8,background:result.correct?T.greenS:T.redS,border:`0.5px solid ${result.correct?T.green:T.red}`}}>
@@ -4820,38 +4959,102 @@ function FillBlanksPhase({items,progress,onSaveProgress}){
 // ── Differential Diagnosis Phase ────────────────────────────────────────────
 function DiffDiagnosisPhase({pairs}){
   const [current,setCurrent]=useState(0);
-  const [revealed,setRevealed]=useState({});
+  const [selA,setSelA]=useState({}); // {pairIdx: optionIdx}
+  const [selB,setSelB]=useState({});
+  const [checked,setChecked]=useState({});
 
   if(!Array.isArray(pairs)||pairs.length===0) return <div style={{color:T.dim,textAlign:'center',padding:40}}>Sin pares de diagnóstico diferencial. Regenera la sección para incluirlos.</div>;
 
   const pair=pairs[current];if(!pair)return null;
+  const isChecked=checked[current];
+  const bothSelected=selA[current]!=null&&selB[current]!=null;
+  // Support both old format (no options) and new format (with optionsA/optionsB)
+  const hasOptions=pair.optionsA?.length>0;
 
   return(
     <div>
-      <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>⚖️ Diagnóstico diferencial — Par {current+1}/{pairs.length}</div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:14}}>
-        <Card style={{padding:'14px',borderLeft:`2px solid ${T.blue}`}}>
-          <div style={{fontSize:11,fontWeight:700,color:T.blue,marginBottom:6}}>Caso A</div>
-          <div style={{fontSize:12,color:T.text,lineHeight:1.7}}>{pair.caseA}</div>
-        </Card>
-        <Card style={{padding:'14px',borderLeft:`2px solid ${T.orange}`}}>
-          <div style={{fontSize:11,fontWeight:700,color:T.orange,marginBottom:6}}>Caso B</div>
-          <div style={{fontSize:12,color:T.text,lineHeight:1.7}}>{pair.caseB}</div>
-        </Card>
+      <div style={{fontSize:14,fontWeight:700,color:T.text,marginBottom:12}}>⚖️ Diagnóstico diferencial — Par {current+1}/{pairs.length}</div>
+
+      {/* Two columns: cases + options */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+        {/* Case A */}
+        <div>
+          <Card style={{padding:'16px',borderLeft:`3px solid ${T.blue}`,marginBottom:10}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:6}}>Caso A</div>
+            <div style={{fontSize:13,color:T.text,lineHeight:1.8}}>{pair.caseA}</div>
+          </Card>
+          {hasOptions&&(
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {pair.optionsA.map((opt,j)=>{
+                const isSel=selA[current]===j;
+                const isOk=j===pair.correctA;
+                let bg=T.surface,bdr=T.border,col=T.text;
+                if(isChecked&&isOk){bg=T.greenS;bdr=T.green;col=T.greenText;}
+                else if(isChecked&&isSel&&!isOk){bg=T.redS;bdr=T.red;col=T.redText;}
+                else if(isSel){bg=T.blueS;bdr=T.blue;col=T.blueText;}
+                return <button key={j} onClick={()=>{if(!isChecked)setSelA(p=>({...p,[current]:j}));}} disabled={isChecked}
+                  style={{background:bg,border:`1px solid ${bdr}`,borderRadius:8,padding:'10px 12px',fontSize:12,textAlign:'left',cursor:isChecked?'default':'pointer',color:col,fontFamily:FONT,transition:'all 200ms ease-in-out'}}>{opt}</button>;
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Case B */}
+        <div>
+          <Card style={{padding:'16px',borderLeft:`3px solid ${T.orange}`,marginBottom:10}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.orange,marginBottom:6}}>Caso B</div>
+            <div style={{fontSize:13,color:T.text,lineHeight:1.8}}>{pair.caseB}</div>
+          </Card>
+          {hasOptions&&(
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {pair.optionsB.map((opt,j)=>{
+                const isSel=selB[current]===j;
+                const isOk=j===pair.correctB;
+                let bg=T.surface,bdr=T.border,col=T.text;
+                if(isChecked&&isOk){bg=T.greenS;bdr=T.green;col=T.greenText;}
+                else if(isChecked&&isSel&&!isOk){bg=T.redS;bdr=T.red;col=T.redText;}
+                else if(isSel){bg=T.blueS;bdr=T.blue;col=T.blueText;}
+                return <button key={j} onClick={()=>{if(!isChecked)setSelB(p=>({...p,[current]:j}));}} disabled={isChecked}
+                  style={{background:bg,border:`1px solid ${bdr}`,borderRadius:8,padding:'10px 12px',fontSize:12,textAlign:'left',cursor:isChecked?'default':'pointer',color:col,fontFamily:FONT,transition:'all 200ms ease-in-out'}}>{opt}</button>;
+              })}
+            </div>
+          )}
+        </div>
       </div>
-      <Card style={{padding:'14px',marginBottom:12}}>
-        <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:6}}>{pair.question||'¿Qué diagnóstico diferencial planteas para cada caso?'}</div>
-        {revealed[current]?(
-          <div style={{fontSize:12,color:T.text,lineHeight:1.8,whiteSpace:'pre-wrap',background:T.bg,padding:'10px 14px',borderRadius:8,border:`0.5px solid ${T.border}`}}>{pair.explanation}</div>
-        ):(
-          <button onClick={()=>setRevealed(prev=>({...prev,[current]:true}))} style={{background:T.amberS,border:`0.5px solid ${T.amber}`,borderRadius:8,padding:'8px 18px',fontSize:12,cursor:'pointer',color:T.amber,fontWeight:600,fontFamily:FONT}}>Mostrar diagnóstico diferencial</button>
-        )}
-      </Card>
-      <div style={{display:'flex',justifyContent:'center',gap:8}}>
-        {pairs.map((_,i)=>(
-          <button key={i} onClick={()=>setCurrent(i)} style={{width:28,height:28,borderRadius:'50%',background:current===i?T.amber:T.surface,border:`0.5px solid ${current===i?T.amber:T.border}`,color:current===i?'#000':T.dim,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>{i+1}</button>
-        ))}
-      </div>
+
+      {/* Check button */}
+      {hasOptions&&!isChecked&&(
+        <div style={{textAlign:'center',marginBottom:14}}>
+          <button onClick={()=>setChecked(p=>({...p,[current]:true}))} disabled={!bothSelected}
+            style={{background:bothSelected?T.teal:T.bg,color:bothSelected?'#fff':T.dim,border:`1px solid ${bothSelected?T.teal:T.border}`,borderRadius:10,padding:'10px 28px',fontSize:13,fontWeight:700,cursor:bothSelected?'pointer':'not-allowed',fontFamily:FONT,transition:'all 250ms ease-in-out'}}>
+            Comprobar diagnósticos
+          </button>
+        </div>
+      )}
+
+      {/* Explanation — shown after checking or for old format */}
+      {(isChecked||!hasOptions)&&pair.explanation&&(
+        <Card style={{padding:'16px',borderLeft:`3px solid ${T.green}`,marginBottom:14,animation:'fadeIn 250ms ease-in-out'}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.green,marginBottom:6}}>Diagnóstico diferencial</div>
+          <div style={{fontSize:13,color:T.text,lineHeight:1.8}}>{pair.explanation}</div>
+        </Card>
+      )}
+
+      {/* Fallback for old format without options */}
+      {!hasOptions&&!checked[current]&&(
+        <div style={{textAlign:'center',marginBottom:14}}>
+          <button onClick={()=>setChecked(p=>({...p,[current]:true}))} style={{background:T.amberS,border:`1px solid ${T.amber}`,borderRadius:8,padding:'8px 20px',fontSize:12,cursor:'pointer',color:T.amberText,fontWeight:600,fontFamily:FONT}}>Mostrar diagnóstico</button>
+        </div>
+      )}
+
+      {/* Pair navigation */}
+      {pairs.length>1&&(
+        <div style={{display:'flex',justifyContent:'center',gap:8}}>
+          {pairs.map((_,i)=>(
+            <button key={i} onClick={()=>setCurrent(i)} style={{width:32,height:32,borderRadius:'50%',background:current===i?T.teal:T.surface,border:`1px solid ${current===i?T.teal:T.border}`,color:current===i?'#fff':T.dim,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT,transition:'all 200ms ease-in-out'}}>{i+1}</button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -4932,7 +5135,8 @@ function OpenQuestionsPhase({questions,progress,onSaveProgress}){
   );
 }
 
-// ── Concept Map Phase (free recall + model comparison) ──────────────────────
+// ConceptMapPhase REMOVED
+if(false){
 function ConceptMapPhase({concepts,relations}){
   const [showModel,setShowModel]=useState(false);
   const [userConnections,setUserConnections]=useState([]);
@@ -5006,7 +5210,7 @@ function ConceptMapPhase({concepts,relations}){
       )}
     </div>
   );
-}
+}} /* end ConceptMapPhase dead code */
 
 // ── Interactive Questions Phase (sequences, classification, matching, etc.) ─
 function InteractiveQuestionsPhase({data}){
@@ -5014,6 +5218,16 @@ function InteractiveQuestionsPhase({data}){
   const [revealed,setRevealed]=useState({});
   const [userOrder,setUserOrder]=useState({});
   const [dragFrom,setDragFrom]=useState(null);
+  const [dragOver,setDragOver]=useState(null);
+  // Classification state
+  const [clAssignments,setClAssignments]=useState({}); // {clIdx: {itemIdx: categoryIdx}}
+  // Matching state
+  const [matchSelLeft,setMatchSelLeft]=useState({}); // {matchIdx: leftIdx}
+  const [matchPairs,setMatchPairs]=useState({}); // {matchIdx: [[leftIdx,rightIdx],...]}
+  // Error state
+  const [errorSel,setErrorSel]=useState({}); // {errorIdx: selectedOptionIdx}
+  // Pattern state
+  const [patternSel,setPatternSel]=useState({}); // {patternIdx: selectedIdx}
 
   const tabs=[
     {id:'sequences',label:'Ordenar',count:(data.sequences||[]).length},
@@ -5038,110 +5252,229 @@ function InteractiveQuestionsPhase({data}){
         ))}
       </div>
 
-      {/* Sequences — drag to reorder */}
+      {/* Sequences — drag to reorder with visual feedback */}
       {tab==='sequences'&&activeItems.map((seq,si)=>{
         const order=userOrder[si]||seq.steps.map((_,i)=>i);
         const isRev=revealed[`seq-${si}`];
         const isCorrect=isRev&&JSON.stringify(order)===JSON.stringify(seq.correctOrder);
         return(
-          <Card key={si} style={{padding:'14px',marginBottom:8}}>
-            <div style={{fontSize:12,fontWeight:600,color:T.text,marginBottom:8}}>{seq.instruction}</div>
-            <div style={{display:'flex',flexDirection:'column',gap:4}}>
-              {order.map((stepIdx,pos)=>(
-                <div key={pos} draggable onDragStart={()=>setDragFrom(pos)} onDragOver={e=>e.preventDefault()}
-                  onDrop={()=>{if(dragFrom!==null){const n=[...order];const[m]=n.splice(dragFrom,1);n.splice(pos,0,m);setUserOrder(p=>({...p,[si]:n}));setDragFrom(null);}}}
-                  style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:isRev?(stepIdx===seq.correctOrder[pos]?T.greenS:T.redS):T.surface,border:`0.5px solid ${T.border}`,borderRadius:6,cursor:'grab',fontSize:12,color:T.text}}>
-                  <span style={{color:T.dim,fontSize:10,fontWeight:700}}>{pos+1}</span>
-                  <span>{seq.steps[stepIdx]}</span>
-                </div>
-              ))}
+          <Card key={si} style={{padding:'16px',marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>{seq.instruction}</div>
+            <div style={{display:'flex',flexDirection:'column',gap:5}}>
+              {order.map((stepIdx,pos)=>{
+                const isDragging=dragFrom===pos;
+                const isOver=dragNode===pos&&dragFrom!==pos;
+                return(
+                  <div key={pos} draggable
+                    onDragStart={e=>{setDragFrom(pos);e.dataTransfer.effectAllowed='move';}}
+                    onDragEnd={()=>{setDragFrom(null);setDragNode(null);}}
+                    onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move';setDragNode(pos);}}
+                    onDragLeave={()=>setDragNode(null)}
+                    onDrop={e=>{e.preventDefault();if(dragFrom!==null&&dragFrom!==pos){const n=[...order];const[m]=n.splice(dragFrom,1);n.splice(pos,0,m);setUserOrder(p=>({...p,[si]:n}));}setDragFrom(null);setDragNode(null);}}
+                    onTouchStart={e=>{setDragFrom(pos);}}
+                    onTouchEnd={e=>{setDragFrom(null);setDragNode(null);}}
+                    style={{
+                      display:'flex',alignItems:'center',gap:8,padding:'8px 12px',
+                      background:isRev?(stepIdx===seq.correctOrder[pos]?T.greenS:T.redS):isOver?T.tealS:T.surface,
+                      border:`1px solid ${isOver?T.teal:isDragging?T.blue:T.border}`,
+                      borderRadius:8,fontSize:12,color:T.text,
+                      cursor:isDragging?'grabbing':'grab',
+                      opacity:isDragging?0.5:1,
+                      transform:isDragging?'scale(1.02)':'none',
+                      boxShadow:isDragging?sh.md:'none',
+                      transition:'all 200ms ease-in-out',
+                      userSelect:'none',
+                    }}>
+                    <span style={{color:T.dim,fontSize:10,fontWeight:700,minWidth:16}}>⠿ {pos+1}</span>
+                    <span style={{flex:1}}>{seq.steps[stepIdx]}</span>
+                  </div>
+                );
+              })}
             </div>
-            {!isRev?<button onClick={()=>setRevealed(p=>({...p,[`seq-${si}`]:true}))} style={{marginTop:8,background:T.orange,color:'#fff',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Comprobar orden</button>
-            :<div style={{marginTop:6,fontSize:11,color:isCorrect?T.green:T.red,fontWeight:600}}>{isCorrect?'✓ Orden correcto':'✗ Orden incorrecto — revisa los pasos'}</div>}
+            {!isRev?<button onClick={()=>setRevealed(p=>({...p,[`seq-${si}`]:true}))} style={{marginTop:10,background:T.teal,color:'#fff',border:'none',borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT,transition:'all 200ms ease-in-out'}}>Comprobar orden</button>
+            :<div style={{marginTop:8,fontSize:12,color:isCorrect?T.green:T.red,fontWeight:600}}>{isCorrect?'✓ Orden correcto':'✗ Orden incorrecto — revisa los pasos'}</div>}
           </Card>
         );
       })}
 
-      {/* Classifications — drag items to categories */}
-      {tab==='classifications'&&activeItems.map((cl,ci)=>(
-        <Card key={ci} style={{padding:'14px',marginBottom:8}}>
-          <div style={{display:'flex',gap:10,marginBottom:8}}>
-            {cl.categories.map((cat,i)=>(
-              <div key={i} style={{flex:1,background:T.bg,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'8px',minHeight:60}}>
-                <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:4}}>{cat}</div>
-                {(cl.items||[]).filter(it=>it.category===i).map((it,j)=>(
-                  <div key={j} style={{fontSize:10,color:T.muted,padding:'2px 0'}}>{it.text}</div>
-                ))}
+      {/* Classifications — pool of items to drag into categories */}
+      {tab==='classifications'&&activeItems.map((cl,ci)=>{
+        const assignments=clAssignments[ci]||{};
+        const isChecked=revealed[`cl-${ci}`];
+        const allAssigned=Object.keys(assignments).length>=(cl.items||[]).length;
+        const unassigned=(cl.items||[]).filter((_,idx)=>assignments[idx]==null);
+        return(
+          <Card key={ci} style={{padding:'16px',marginBottom:10}}>
+            {/* Unassigned pool */}
+            {!isChecked&&unassigned.length>0&&(
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,color:T.muted,marginBottom:6}}>Arrastra cada item a su categoría:</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+                  {(cl.items||[]).map((it,idx)=>{
+                    if(assignments[idx]!=null)return null;
+                    return <div key={idx} draggable onDragStart={()=>setDragFrom(idx)} onDragEnd={()=>setDragFrom(null)}
+                      style={{padding:'6px 10px',fontSize:11,background:T.surface,border:`1px solid ${dragFrom===idx?T.teal:T.border}`,borderRadius:6,cursor:'grab',opacity:dragFrom===idx?0.5:1,transition:'all 200ms ease-in-out',userSelect:'none'}}>{it.text}</div>;
+                  })}
+                </div>
               </div>
-            ))}
-          </div>
-          {!revealed[`cl-${ci}`]?<button onClick={()=>setRevealed(p=>({...p,[`cl-${ci}`]:true}))} style={{background:T.orange,color:'#fff',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Mostrar clasificación correcta</button>
-          :<div style={{fontSize:11,color:T.green}}>✓ Clasificación mostrada</div>}
-        </Card>
-      ))}
-
-      {/* Matching — connect columns */}
-      {tab==='matching'&&activeItems.map((m,mi)=>(
-        <Card key={mi} style={{padding:'14px',marginBottom:8}}>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-            <div>{(m.left||[]).map((l,i)=><div key={i} style={{padding:'4px 8px',marginBottom:3,fontSize:11,color:T.text,background:T.surface,borderRadius:4,border:`0.5px solid ${T.border}`}}>{l}</div>)}</div>
-            <div>{(m.right||[]).map((r,i)=><div key={i} style={{padding:'4px 8px',marginBottom:3,fontSize:11,color:T.teal,background:T.tealS,borderRadius:4,border:`0.5px solid ${T.teal}30`}}>{r}</div>)}</div>
-          </div>
-          {!revealed[`m-${mi}`]?<button onClick={()=>setRevealed(p=>({...p,[`m-${mi}`]:true}))} style={{marginTop:8,background:T.orange,color:'#fff',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Mostrar parejas</button>
-          :<div style={{marginTop:6,fontSize:11,color:T.green}}>{(m.pairs||[]).map(([l,r],i)=><div key={i}>{m.left[l]} ↔ {m.right[r]}</div>)}</div>}
-        </Card>
-      ))}
-
-      {/* Errors — find the mistake */}
-      {tab==='errors'&&activeItems.map((e,ei)=>(
-        <Card key={ei} style={{padding:'14px',marginBottom:8}}>
-          <div style={{fontSize:12,color:T.text,lineHeight:1.7,marginBottom:8}}>"{e.statement}"</div>
-          {!revealed[`e-${ei}`]?(
-            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-              {(e.options||[]).map((o,j)=><button key={j} onClick={()=>setRevealed(p=>({...p,[`e-${ei}`]:o===e.errorPart}))} style={{padding:'4px 10px',fontSize:11,borderRadius:6,cursor:'pointer',background:T.surface,border:`0.5px solid ${T.border}`,color:T.text,fontFamily:FONT}}>{o}</button>)}
+            )}
+            {/* Category columns */}
+            <div style={{display:'flex',gap:10,marginBottom:10}}>
+              {(cl.categories||[]).map((cat,catIdx)=>{
+                const catItems=(cl.items||[]).map((it,idx)=>({...it,idx})).filter(it=>assignments[it.idx]===catIdx);
+                const isDropTarget=dragFrom!=null&&dragOver===`cl-${ci}-${catIdx}`;
+                return(
+                  <div key={catIdx}
+                    onDragOver={e=>{e.preventDefault();setDragOver(`cl-${ci}-${catIdx}`);}}
+                    onDragLeave={()=>setDragOver(null)}
+                    onDrop={e=>{e.preventDefault();if(dragFrom!=null)setClAssignments(p=>({...p,[ci]:{...(p[ci]||{}),[dragFrom]:catIdx}}));setDragFrom(null);setDragOver(null);}}
+                    style={{flex:1,background:isDropTarget?T.tealS:T.bg,border:`1px solid ${isDropTarget?T.teal:T.border}`,borderRadius:8,padding:'10px',minHeight:70,transition:'all 200ms ease-in-out'}}>
+                    <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:6}}>{cat}</div>
+                    {catItems.map(it=>(
+                      <div key={it.idx} style={{fontSize:11,color:isChecked?(it.category===catIdx?T.green:T.red):T.text,padding:'3px 0',fontWeight:isChecked?600:400}}>{isChecked?(it.category===catIdx?'✓ ':'✗ '):''}{it.text}</div>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
-          ):<div style={{fontSize:11}}><div style={{color:T.red,marginBottom:2}}>Error: {e.errorPart}</div><div style={{color:T.green}}>Corrección: {e.correction}</div></div>}
-        </Card>
-      ))}
+            {!isChecked?<button onClick={()=>setRevealed(p=>({...p,[`cl-${ci}`]:true}))} disabled={!allAssigned}
+              style={{background:allAssigned?T.teal:T.bg,color:allAssigned?'#fff':T.dim,border:'none',borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:allAssigned?'pointer':'not-allowed',fontFamily:FONT}}>Comprobar clasificación</button>
+            :<div style={{fontSize:12,fontWeight:600,color:T.green}}>✓ Clasificación comprobada</div>}
+          </Card>
+        );
+      })}
 
-      {/* Progressive cases */}
+      {/* Matching — click to select and pair */}
+      {tab==='matching'&&activeItems.map((m,mi)=>{
+        const pairs=matchPairs[mi]||[];
+        const selLeft=matchSelLeft[mi];
+        const isChecked=revealed[`m-${mi}`];
+        const allPaired=pairs.length>=(m.left||[]).length;
+        const pairedLefts=new Set(pairs.map(p=>p[0]));
+        const pairedRights=new Set(pairs.map(p=>p[1]));
+        return(
+          <Card key={mi} style={{padding:'16px',marginBottom:10}}>
+            <div style={{fontSize:11,color:T.muted,marginBottom:8}}>Clic en un término de la izquierda, luego clic en su definición a la derecha.</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:10}}>
+              <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                {(m.left||[]).map((l,i)=>{
+                  const isPaired=pairedLefts.has(i);
+                  const isSel=selLeft===i;
+                  return <button key={i} onClick={()=>{if(!isChecked&&!isPaired)setMatchSelLeft(p=>({...p,[mi]:isSel?null:i}));}} disabled={isChecked||isPaired}
+                    style={{padding:'8px 10px',fontSize:12,textAlign:'left',borderRadius:6,cursor:isPaired||isChecked?'default':'pointer',
+                      background:isSel?T.blueS:isPaired?T.greenS:T.surface,
+                      border:`1px solid ${isSel?T.blue:isPaired?T.green:T.border}`,
+                      color:isPaired?T.green:T.text,fontFamily:FONT,transition:'all 200ms ease-in-out'}}>{l}</button>;
+                })}
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                {(m.right||[]).map((r,i)=>{
+                  const isPaired=pairedRights.has(i);
+                  return <button key={i} onClick={()=>{if(!isChecked&&!isPaired&&selLeft!=null){
+                    setMatchPairs(p=>({...p,[mi]:[...(p[mi]||[]),[selLeft,i]]}));setMatchSelLeft(p=>({...p,[mi]:null}));
+                  }}} disabled={isChecked||isPaired||selLeft==null}
+                    style={{padding:'8px 10px',fontSize:12,textAlign:'left',borderRadius:6,cursor:isPaired||isChecked||selLeft==null?'default':'pointer',
+                      background:isPaired?T.tealS:selLeft!=null?T.surface:T.bg,
+                      border:`1px solid ${isPaired?T.teal:selLeft!=null?T.border2:T.border}`,
+                      color:isPaired?T.teal:T.text,fontFamily:FONT,transition:'all 200ms ease-in-out'}}>{r}</button>;
+                })}
+              </div>
+            </div>
+            {/* Show paired connections */}
+            {pairs.length>0&&!isChecked&&<div style={{fontSize:10,color:T.dim,marginBottom:6}}>{pairs.map(([l,r],i)=><span key={i} style={{marginRight:8}}>{m.left[l]} ↔ {m.right[r]}</span>)}</div>}
+            {!isChecked?<button onClick={()=>setRevealed(p=>({...p,[`m-${mi}`]:true}))} disabled={!allPaired}
+              style={{background:allPaired?T.teal:T.bg,color:allPaired?'#fff':T.dim,border:'none',borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:allPaired?'pointer':'not-allowed',fontFamily:FONT}}>Comprobar parejas</button>
+            :<div style={{marginTop:4}}>{pairs.map(([l,r],i)=>{const correct=(m.pairs||[]).some(([cl,cr])=>cl===l&&cr===r);return <div key={i} style={{fontSize:11,color:correct?T.green:T.red,fontWeight:600}}>{correct?'✓':'✗'} {m.left[l]} ↔ {m.right[r]}</div>;})}</div>}
+          </Card>
+        );
+      })}
+
+      {/* Errors — select the incorrect part, then check */}
+      {tab==='errors'&&activeItems.map((e,ei)=>{
+        const sel=errorSel[ei];
+        const isChecked=revealed[`e-${ei}`];
+        return(
+          <Card key={ei} style={{padding:'16px',marginBottom:10}}>
+            <div style={{fontSize:13,color:T.text,lineHeight:1.8,marginBottom:10,padding:'10px 14px',background:T.bg,borderRadius:8,border:`1px solid ${T.border}`,fontStyle:'italic'}}>"{e.statement}"</div>
+            <div style={{fontSize:11,color:T.muted,marginBottom:6}}>¿Qué parte es incorrecta?</div>
+            <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:10}}>
+              {(e.options||[]).map((o,j)=>{
+                const isSel=sel===j;
+                const isError=o===e.errorPart;
+                let bg=T.surface,bdr=T.border,col=T.text;
+                if(isChecked&&isError){bg=T.redS;bdr=T.red;col=T.redText;}
+                else if(isChecked&&isSel&&!isError){bg=T.amberS;bdr=T.amber;col=T.amberText;}
+                else if(isSel){bg=T.blueS;bdr=T.blue;col=T.blueText;}
+                return <button key={j} onClick={()=>{if(!isChecked)setErrorSel(p=>({...p,[ei]:j}));}} disabled={isChecked}
+                  style={{padding:'6px 12px',fontSize:12,borderRadius:8,cursor:isChecked?'default':'pointer',background:bg,border:`1px solid ${bdr}`,color:col,fontFamily:FONT,transition:'all 200ms ease-in-out'}}>{o}</button>;
+              })}
+            </div>
+            {!isChecked?<button onClick={()=>setRevealed(p=>({...p,[`e-${ei}`]:true}))} disabled={sel==null}
+              style={{background:sel!=null?T.teal:T.bg,color:sel!=null?'#fff':T.dim,border:'none',borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:sel!=null?'pointer':'not-allowed',fontFamily:FONT}}>Comprobar</button>
+            :(
+              <div style={{padding:'10px 14px',background:T.bg,borderRadius:8,border:`1px solid ${T.border}`}}>
+                <div style={{fontSize:12,color:T.red,fontWeight:600,marginBottom:4}}>Error: {e.errorPart}</div>
+                <div style={{fontSize:12,color:T.green}}>Corrección: {e.correction}</div>
+              </div>
+            )}
+          </Card>
+        );
+      })}
+
+      {/* Progressive cases — reveal step by step */}
       {tab==='progressiveCases'&&activeItems.map((pc,pi)=>{
         const step=revealed[`pc-${pi}`]||0;
         const steps=[pc.step1,pc.step2,pc.step3].filter(Boolean);
         return(
-          <Card key={pi} style={{padding:'14px',marginBottom:8}}>
-            <div style={{fontSize:12,fontWeight:600,color:T.text,marginBottom:8}}>Caso progresivo</div>
+          <Card key={pi} style={{padding:'16px',marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>Caso progresivo</div>
             {steps.slice(0,step+1).map((s,i)=>(
-              <div key={i} style={{marginBottom:8,padding:'8px 10px',background:T.bg,borderRadius:6,border:`0.5px solid ${T.border}`,borderLeft:`2px solid ${[T.blue,T.amber,T.green][i]}`}}>
-                <div style={{fontSize:11,color:T.muted,marginBottom:2}}>Paso {i+1}</div>
-                <div style={{fontSize:12,color:T.text,lineHeight:1.6}}>{s.info}</div>
-                <div style={{fontSize:11,color:T.orange,marginTop:4,fontWeight:600}}>{s.question}</div>
+              <div key={i} style={{marginBottom:10,padding:'10px 14px',background:T.bg,borderRadius:8,border:`1px solid ${T.border}`,borderLeft:`3px solid ${[T.blue,T.amber,T.green][i]}`,animation:'fadeIn 250ms ease-in-out'}}>
+                <div style={{fontSize:10,fontWeight:700,color:[T.blue,T.amber,T.green][i],marginBottom:3}}>Paso {i+1}</div>
+                <div style={{fontSize:13,color:T.text,lineHeight:1.7}}>{s.info}</div>
+                <div style={{fontSize:12,color:T.teal,marginTop:6,fontWeight:600,fontStyle:'italic'}}>{s.question}</div>
               </div>
             ))}
-            {step<steps.length-1?<button onClick={()=>setRevealed(p=>({...p,[`pc-${pi}`]:(step||0)+1}))} style={{background:T.orange,color:'#fff',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Siguiente paso</button>
-            :step>=steps.length-1&&!revealed[`pc-${pi}-ans`]?<button onClick={()=>setRevealed(p=>({...p,[`pc-${pi}-ans`]:true}))} style={{background:T.green,color:'#fff',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Ver diagnóstico</button>
-            :<div style={{fontSize:12,color:T.green,lineHeight:1.6,marginTop:6}}>{pc.answer}</div>}
+            {step<steps.length-1?<button onClick={()=>setRevealed(p=>({...p,[`pc-${pi}`]:(step||0)+1}))} style={{background:T.teal,color:'#fff',border:'none',borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT,transition:'all 200ms ease-in-out'}}>Siguiente paso →</button>
+            :step>=steps.length-1&&!revealed[`pc-${pi}-ans`]?<button onClick={()=>setRevealed(p=>({...p,[`pc-${pi}-ans`]:true}))} style={{background:T.green,color:'#fff',border:'none',borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Ver diagnóstico</button>
+            :<div style={{fontSize:13,color:T.green,lineHeight:1.7,marginTop:8,padding:'10px 14px',background:T.greenS,borderRadius:8,border:`1px solid ${T.green}`,animation:'fadeIn 250ms ease-in-out'}}>{pc.answer}</div>}
           </Card>
         );
       })}
 
-      {/* Patterns — identify analytical pattern */}
-      {tab==='patterns'&&activeItems.map((pt,pi)=>(
-        <Card key={pi} style={{padding:'14px',marginBottom:8}}>
-          <div style={{fontSize:12,color:T.text,lineHeight:1.6,marginBottom:8,background:T.bg,padding:'8px 10px',borderRadius:6,border:`0.5px solid ${T.border}`,fontFamily:'monospace',fontSize:11}}>{pt.results}</div>
-          {!revealed[`pt-${pi}`]?(
-            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-              {(pt.options||[]).map((o,j)=><button key={j} onClick={()=>setRevealed(p=>({...p,[`pt-${pi}`]:{sel:j,ok:j===pt.correct}}))} style={{padding:'5px 12px',fontSize:11,borderRadius:6,cursor:'pointer',background:T.surface,border:`0.5px solid ${T.border}`,color:T.text,fontFamily:FONT}}>{o}</button>)}
+      {/* Patterns — structured results table with selectable options */}
+      {tab==='patterns'&&activeItems.map((pt,pi)=>{
+        const sel=patternSel[pi];
+        const isChecked=revealed[`pt-${pi}`];
+        return(
+          <Card key={pi} style={{padding:'16px',marginBottom:10}}>
+            <div style={{fontSize:11,fontWeight:700,color:T.muted,marginBottom:6}}>Resultados analíticos:</div>
+            <div style={{marginBottom:12,padding:'10px 14px',background:T.bg,borderRadius:8,border:`1px solid ${T.border}`,fontFamily:'monospace',fontSize:12,color:T.text,lineHeight:1.8,whiteSpace:'pre-wrap'}}>{pt.results}</div>
+            <div style={{fontSize:11,color:T.muted,marginBottom:6}}>¿Qué patrón patológico sugieren estos resultados?</div>
+            <div style={{display:'flex',flexDirection:'column',gap:5,marginBottom:10}}>
+              {(pt.options||[]).map((o,j)=>{
+                const isSel=sel===j;
+                const isCorrect=j===pt.correct;
+                let bg=T.surface,bdr=T.border,col=T.text;
+                if(isChecked&&isCorrect){bg=T.greenS;bdr=T.green;col=T.greenText;}
+                else if(isChecked&&isSel&&!isCorrect){bg=T.redS;bdr=T.red;col=T.redText;}
+                else if(isSel){bg=T.blueS;bdr=T.blue;col=T.blueText;}
+                return <button key={j} onClick={()=>{if(!isChecked)setPatternSel(p=>({...p,[pi]:j}));}} disabled={isChecked}
+                  style={{padding:'8px 12px',fontSize:12,textAlign:'left',borderRadius:8,cursor:isChecked?'default':'pointer',background:bg,border:`1px solid ${bdr}`,color:col,fontFamily:FONT,transition:'all 200ms ease-in-out'}}>{o}</button>;
+              })}
             </div>
-          ):(
-            <div>
-              <div style={{fontSize:11,color:revealed[`pt-${pi}`].ok?T.green:T.red,fontWeight:600,marginBottom:2}}>{revealed[`pt-${pi}`].ok?'✓ Correcto':'✗ Incorrecto'}</div>
-              <div style={{fontSize:11,color:T.green}}>Patrón: {pt.options[pt.correct]}</div>
-              {pt.explanation&&<div style={{fontSize:11,color:T.muted,marginTop:2}}>{pt.explanation}</div>}
-            </div>
-          )}
-        </Card>
-      ))}
+            {!isChecked?<button onClick={()=>setRevealed(p=>({...p,[`pt-${pi}`]:true}))} disabled={sel==null}
+              style={{background:sel!=null?T.teal:T.bg,color:sel!=null?'#fff':T.dim,border:'none',borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:sel!=null?'pointer':'not-allowed',fontFamily:FONT}}>Comprobar</button>
+            :(
+              <div style={{padding:'10px 14px',background:T.bg,borderRadius:8,border:`1px solid ${T.border}`,animation:'fadeIn 250ms ease-in-out'}}>
+                <div style={{fontSize:12,color:sel===pt.correct?T.green:T.red,fontWeight:700,marginBottom:4}}>{sel===pt.correct?'✓ Correcto':'✗ Incorrecto'}</div>
+                <div style={{fontSize:12,color:T.green,fontWeight:600}}>Patrón: {pt.options[pt.correct]}</div>
+                {pt.explanation&&<div style={{fontSize:12,color:T.muted,lineHeight:1.7,marginTop:4}}>{pt.explanation}</div>}
+              </div>
+            )}
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -5149,53 +5482,47 @@ function InteractiveQuestionsPhase({data}){
 // ── Spaced Repetition Phase ─────────────────────────────────────────────────
 function SpacedRepetitionPhase({schedule,topic,learning,saveLearningData}){
   if(!schedule)return <div style={{color:T.muted,textAlign:'center',padding:40}}>No hay plan de repaso.</div>;
-
   const today=new Date().toISOString().slice(0,10);
 
-  const toggleCompleted=async(label)=>{
-    const updated={
-      ...learning,
-      spacedRepetition:{
-        ...learning.spacedRepetition,
-        reviews:{
-          ...learning.spacedRepetition.reviews,
-          [label]:{...learning.spacedRepetition.reviews[label],completed:!learning.spacedRepetition.reviews[label].completed}
-        }
-      }
-    };
-    await saveLearningData(topic,updated);
-  };
-
-  const reviewEntries=Object.entries(schedule.reviews||{}).sort((a,b)=>a[1].date.localeCompare(b[1].date));
-  const completed=reviewEntries.filter(([,r])=>r.completed).length;
+  // Support both old format (object keyed by label) and new format (array)
+  const reviews=Array.isArray(schedule.reviews)?schedule.reviews:
+    Object.entries(schedule.reviews||{}).map(([label,rev])=>({label,fechaProgramada:rev.date,completado:rev.completed,type:label.replace('D+','d'),id:label}));
+  const sorted=[...reviews].sort((a,b)=>(a.fechaProgramada||'').localeCompare(b.fechaProgramada||''));
+  const completedCount=sorted.filter(r=>r.completado).length;
+  const typeInfo=Object.fromEntries(REVIEW_TYPES.map(rt=>[rt.type,rt]));
 
   return(
     <div>
       <Card style={{padding:'20px',marginBottom:16}}>
-        <div style={{fontSize:14,fontWeight:700,color:T.text,marginBottom:6}}>📅 Plan de Repaso Espaciado</div>
-        <div style={{fontSize:12,color:T.muted,marginBottom:8}}>Inicio: {fmtDate(schedule.startDate)} · {completed}/{reviewEntries.length} completados</div>
-        <PBar pct={reviewEntries.length?completed/reviewEntries.length*100:0} color={T.purple}/>
+        <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:6}}>📅 Plan de Repaso Espaciado</div>
+        <div style={{fontSize:12,color:T.muted,marginBottom:8}}>{completedCount}/{sorted.length} completados</div>
+        <PBar pct={sorted.length?completedCount/sorted.length*100:0} color={T.teal}/>
       </Card>
-
       <div style={{display:'flex',flexDirection:'column',gap:8}}>
-        {reviewEntries.map(([label,rev])=>{
-          const isPast=rev.date<=today;
-          const isDue=isPast&&!rev.completed;
-          const isCompleted=rev.completed;
+        {sorted.map((rev,i)=>{
+          const isPast=(rev.fechaProgramada||rev.date||'')<=today;
+          const isDue=isPast&&!rev.completado;
+          const isCompleted=rev.completado;
+          const info=typeInfo[rev.type]||{};
+          const borderColor=isCompleted?T.green:isDue?T.red:T.border;
           return(
-            <Card key={label} style={{padding:'14px 18px',borderLeft:`3px solid ${isCompleted?T.green:isDue?T.purple:T.border}`}}>
+            <Card key={rev.id||i} style={{padding:'16px 18px',borderLeft:`3px solid ${borderColor}`,transition:'all 250ms ease-in-out'}}>
               <div style={{display:'flex',alignItems:'center',gap:12}}>
-                <button onClick={()=>toggleCompleted(label)}
-                  style={{width:28,height:28,borderRadius:'50%',background:isCompleted?T.green:T.card,border:`2px solid ${isCompleted?T.green:isDue?T.purple:T.border}`,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#fff',flexShrink:0}}>
-                  {isCompleted?'✓':''}
-                </button>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:600,color:isCompleted?T.green:isDue?T.purple:T.text}}>{label}</div>
-                  <div style={{fontSize:11,color:T.muted}}>{fmtDate(rev.date)}</div>
+                <div style={{width:28,height:28,borderRadius:'50%',background:isCompleted?T.green:T.surface,border:`2px solid ${borderColor}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:isCompleted?'#fff':T.dim,fontWeight:700,flexShrink:0}}>
+                  {isCompleted?'✓':rev.label?.replace('D+','')||''}
                 </div>
-                {isDue&&<span style={{fontSize:11,color:T.purple,fontWeight:600,background:T.purpleS,padding:'3px 10px',borderRadius:20}}>⏰ Pendiente</span>}
-                {isCompleted&&<span style={{fontSize:11,color:T.green,fontWeight:600}}>✅ Completado</span>}
-                {!isPast&&!isCompleted&&<span style={{fontSize:11,color:T.dim}}>Próximamente</span>}
+                <div style={{flex:1}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <span style={{fontSize:13,fontWeight:700,color:isCompleted?T.green:isDue?T.red:T.text}}>{rev.label||rev.type}</span>
+                    {info.type&&<span style={{fontSize:10,color:T.muted,background:T.bg,padding:'1px 6px',borderRadius:4}}>{info.type}</span>}
+                    {info.duration&&<span style={{fontSize:10,color:T.dim}}>~{info.duration} min</span>}
+                  </div>
+                  <div style={{fontSize:11,color:T.muted}}>{fmtDate(rev.fechaProgramada||rev.date)}{info.desc?` · ${info.desc}`:''}</div>
+                  {rev.dominioPrevio!=null&&<div style={{fontSize:10,color:T.dim}}>Dominio previo: {rev.dominioPrevio}%</div>}
+                </div>
+                {isDue&&<span style={{fontSize:11,color:T.red,fontWeight:700,background:T.redS,padding:'4px 12px',borderRadius:20}}>⏰ Pendiente</span>}
+                {isCompleted&&<span style={{fontSize:11,color:T.green,fontWeight:600}}>✅</span>}
+                {!isPast&&!isCompleted&&<span style={{fontSize:10,color:T.dim}}>{Math.ceil((new Date(rev.fechaProgramada)-new Date())/86400000)} días</span>}
               </div>
             </Card>
           );
