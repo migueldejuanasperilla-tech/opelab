@@ -650,7 +650,7 @@ export default function App(){
   const [reviewDismissed,setReviewDismissed]=useState(false);
   const [activeReview,setActiveReview]=useState(null);
   const [streakData,setStreakData]=useState({current:0,max:0,lastDate:null});
-  const [levelUpMsg,setLevelUpMsg]=useState(null);
+  // levelUpMsg removed — level shown in semaphore/metrics only
   // ── Background jobs system — generations survive tab switches ──────────────
   const [bgJobs,setBgJobs]=useState(()=>load('olab_bgjobs',{})); // {jobId: {type,topic,status,step,pct,error,result}}
   const bgJobsRef=useRef({});
@@ -730,7 +730,8 @@ export default function App(){
         const oldMastery=oldLd?getLearningStatus(oldLd).mastery:0;
         const newMastery=getLearningStatus(data).mastery;
         const oldLvl=getMasteryLevel(oldMastery);const newLvl=getMasteryLevel(newMastery);
-        if(newLvl.name!==oldLvl.name&&newMastery>oldMastery){setLevelUpMsg({topic:topic.split('.').slice(0,1).join('.'),oldLevel:oldLvl.name,newLevel:newLvl.name,emoji:newLvl.emoji});setTimeout(()=>setLevelUpMsg(null),3000);}
+        // Level change logged silently — shown in semaphore/metrics
+        if(newLvl.name!==oldLvl.name&&newMastery>oldMastery)console.log(`[Level] ${topic.split('.')[0]}: ${oldLvl.name} → ${newLvl.name}`);
         return{...prev,[topic]:data};
       });
       setStreakData(updateStreak());
@@ -1050,16 +1051,6 @@ export default function App(){
           <div style={{fontSize:9,color:T.dim,marginTop:4}}>Toca para cerrar</div>
         </div>
       ))}
-      {/* Level-up toast notification */}
-      {levelUpMsg&&(
-        <div onClick={()=>setLevelUpMsg(null)} style={{position:'fixed',top:16,right:16,zIndex:200,background:T.surface,border:`1px solid ${T.green}`,borderRadius:12,padding:'12px 18px',boxShadow:sh.lg,cursor:'pointer',animation:'fadeIn 250ms ease-in-out',maxWidth:300,display:'flex',alignItems:'center',gap:10}}>
-          <span style={{fontSize:28}}>{levelUpMsg.emoji}</span>
-          <div>
-            <div style={{fontSize:13,fontWeight:700,color:T.text}}>¡Nivel alcanzado!</div>
-            <div style={{fontSize:11,color:T.muted}}>{levelUpMsg.topic} → <span style={{color:T.green,fontWeight:700}}>{levelUpMsg.newLevel}</span></div>
-          </div>
-        </div>
-      )}
 
       <div style={{padding:'32px 40px',maxWidth:900,margin:'0 auto'}}>
         {topicView?(
@@ -1873,25 +1864,6 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                             );})()}
                           </div>
                         </div>
-                        {hasPdfs&&(
-                          <div style={{paddingLeft:17,marginTop:5,display:'flex',flexWrap:'wrap',gap:4}}>
-                            {files.map(f=>{
-                              const isViewingThis=openPdf&&openPdf.topic===t&&openPdf.fileId===f.id;
-                              return(
-                                <div key={f.id} style={{display:'flex',alignItems:'center',gap:0,background:isViewingThis?T.green:T.greenS,borderRadius:6,overflow:'hidden',border:`1px solid ${isViewingThis?T.greenDk:'#b0d8c0'}`}}>
-                                  <button onClick={()=>setOpenPdf(isViewingThis?null:{topic:t,fileId:f.id,name:f.name})}
-                                    style={{background:'none',border:'none',cursor:'pointer',padding:'3px 8px',display:'flex',alignItems:'center',gap:4}}>
-                                    <span style={{fontSize:10,color:isViewingThis?'#fff':T.greenText,fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                                      {isViewingThis?'▼':'📄'} {f.name}
-                                    </span>
-                                    {f.pages&&<span style={{fontSize:9,color:isViewingThis?'#5a7a7588':T.muted}}>pp.{f.pages}</span>}
-                                  </button>
-                                  <button onClick={()=>deletePdfForTopic(t,f.id)} style={{background:'none',border:'none',borderLeft:`1px solid ${isViewingThis?T.greenDk:'#b0d8c0'}`,cursor:'pointer',color:isViewingThis?'#fff':T.dim,fontSize:12,padding:'3px 6px',lineHeight:1}}>×</button>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
                         {hasRefs&&(
                           <div style={{paddingLeft:17,marginTop:4,display:'flex',gap:5,flexWrap:'wrap'}}>
                             <span style={{fontSize:10,color:T.blueText,background:T.blueS,border:`1px solid ${T.border2}`,padding:'1px 7px',borderRadius:20,fontWeight:600}}>📘 Tietz {refs.tietz}</span>
@@ -1913,9 +1885,6 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                           </div>
                         );})()}
                         {/* PDF viewer inline */}
-                        {openPdf&&openPdf.topic===t&&(
-                          <PdfViewer key={openPdf.fileId} topic={t} fileId={openPdf.fileId} name={openPdf.name} onClose={()=>setOpenPdf(null)}/>
-                        )}
                       </div>
                     );
                   })}
@@ -4016,11 +3985,22 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     const SYS='Eres un experto en bioquímica clínica (FEA Lab. Clínico, SESCAM 2025). IDIOMA: Todo en español. Responde SOLO con JSON válido.';
     const textWords=targetText.split(/\s+/).length;
     const needsChunking=textWords>5000;
-    console.log(`[Generate] Starting "${targetTitle}" — ${textWords} words, chunking=${needsChunking}, source=${sec.extractedContent?'extracted':sec.unified?'unified':'raw'}`);
-    setGenStep(`Iniciando generación de "${targetTitle}" (${textWords} palabras)...`);
+
+    // Adaptive session sizing based on content length
+    const sizing=textWords<=1500?{pre:8,fc:10,cases:2,inter:3,post:8,fb:3,time:'25-30'}
+      :textWords<=4000?{pre:12,fc:15,cases:3,inter:5,post:12,fb:4,time:'40-45'}
+      :textWords<=8000?{pre:18,fc:20,cases:4,inter:7,post:18,fb:5,time:'55-65'}
+      :{pre:20,fc:25,cases:5,inter:10,post:25,fb:5,time:'75-90'};
+
+    console.log(`[Generate] "${targetTitle}" — ${textWords} words, sizing: pre=${sizing.pre} fc=${sizing.fc} cases=${sizing.cases} post=${sizing.post}`);
+    setGenStep(`Sesión ~${sizing.time} min · ${sizing.pre} pretest · ${sizing.fc} flashcards · ${sizing.cases} casos · ${sizing.post} posttest`);
+    setGenPct(2);
+
     const CTX=needsChunking?`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"`:`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"\n\nTEXTO:\n${targetText.slice(0,25000)}`;
     const TRANSFER='NUNCA preguntes lo que dice el texto. SIEMPRE presenta el concepto en contexto clínico NUEVO.';
     const CALIB=getDiffCalibration();
+    // Concept distribution instruction for all question-generating prompts
+    const DISTRIB=`\n\nDISTRIBUCIÓN: Genera exactamente 1 pregunta por concepto diferente. Ningún concepto debe aparecer en más de 2 preguntas. Prioriza los conceptos más importantes clínicamente.`;
     const now=new Date();
     const dateTag=now.toISOString().slice(0,10);
 
@@ -4074,8 +4054,8 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     if(!concepts){setGenError('Error extrayendo conceptos: '+errors.join('. '));setGenIdx(null);return;}
 
     // Phase 2: Pre-test (20)
-    const preTest=await runPhase('2/10 Pre-test (20 preguntas)',12,async()=>{
-      const r=await callClaude(`${SYS}\n\n${TRANSFER}${CALIB}\n\n20 preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\n7 fáciles, 7 medias, 6 difíciles.\n\nJSON:\n{"questions":[{"id":"p1","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
+    const preTest=await runPhase(`2/10 Pre-test (${sizing.pre})`,12,async()=>{
+      const r=await callClaude(`${SYS}\n\n${TRANSFER}${CALIB}${DISTRIB}\n\n${sizing.pre} preguntas test (PRE-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nDistribuye: ${Math.round(sizing.pre*0.35)} fáciles, ${Math.round(sizing.pre*0.35)} medias, ${sizing.pre-Math.round(sizing.pre*0.35)*2} difíciles.\n\nJSON:\n{"questions":[{"id":"p1","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media"}]}`,8192);
       return JSON.parse(repairJSON(r));
     });
 
@@ -4086,23 +4066,27 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     });
 
     // Phase 4: Flashcards (25)
-    const fc=await runPhase('4/10 Flashcards (25)',35,async()=>{
-      const r=await callClaude(`${SYS}\n\n25 flashcards de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"flashcards":[{"id":"f1","front":"Pregunta","back":"Respuesta","tipo":"concepto"}]}\n\n25 exactas.`,6144);
+    const fc=await runPhase(`4/10 Flashcards (${sizing.fc})`,35,async()=>{
+      const r=await callClaude(`${SYS}${DISTRIB}\n\n${sizing.fc} flashcards de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nUna flashcard por concepto diferente.\n\nJSON:\n{"flashcards":[{"id":"f1","front":"Pregunta","back":"Respuesta","tipo":"concepto"}]}\n\n${sizing.fc} exactas.`,6144);
       return JSON.parse(repairJSON(r));
     });
 
     // Phase 5: Lab cases (5) — split into 3+2 to avoid truncation
-    const cc=await runPhase('5/10 Casos laboratorio (3+2)',45,async()=>{
-      const r1=await callClaude(`${SYS}\n\n3 casos de laboratorio de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nFormato: "Recibes una muestra con [valores con unidades]. ¿Patrón, interferencias, pruebas adicionales?"\n\nJSON:\n{"clinicalCases":[{"id":"c1","presentation":"Recibes...","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"discussion":"breve"}]}`,6144);
+    const cc=await runPhase(`5/10 Casos laboratorio (${sizing.cases})`,45,async()=>{
+      const half1=Math.ceil(sizing.cases/2),half2=sizing.cases-half1;
+      const r1=await callClaude(`${SYS}\n\n${half1} casos de laboratorio de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nFormato: "Recibes una muestra con [valores con unidades]. ¿Patrón, interferencias, pruebas adicionales?" Cada caso sobre un concepto diferente.\n\nJSON:\n{"clinicalCases":[{"id":"c1","presentation":"Recibes...","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"discussion":"breve"}]}`,6144);
       const b1=JSON.parse(repairJSON(r1));
-      const r2=await callClaude(`${SYS}\n\n2 casos de laboratorio más de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nMismo formato.\n\nJSON:\n{"clinicalCases":[{"id":"c4","presentation":"...","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"discussion":"breve"}]}`,4096);
-      const b2=JSON.parse(repairJSON(r2));
-      return{clinicalCases:[...(b1.clinicalCases||b1||[]),...(b2.clinicalCases||b2||[])]};
+      if(half2>0){
+        const r2=await callClaude(`${SYS}\n\n${half2} casos de laboratorio más de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nMismo formato, conceptos diferentes a los anteriores.\n\nJSON:\n{"clinicalCases":[{"id":"c${half1+1}","presentation":"...","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"discussion":"breve"}]}`,4096);
+        const b2=JSON.parse(repairJSON(r2));
+        return{clinicalCases:[...(b1.clinicalCases||b1||[]),...(b2.clinicalCases||b2||[])]};
+      }
+      return b1;
     });
 
     // Phase 6: Fill blanks (5)
-    const fb=await runPhase('6/10 Completar blancos (5)',55,async()=>{
-      const r=await callClaude(`${SYS}\n\n5 preguntas completar blancos de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"fillBlanks":[{"id":"fb1","sentence":"Frase con ___","answers":["respuesta"],"explanation":"breve"}]}`,4096);
+    const fb=await runPhase(`6/10 Completar blancos (${sizing.fb})`,55,async()=>{
+      const r=await callClaude(`${SYS}${DISTRIB}\n\n${sizing.fb} preguntas completar blancos de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nUna pregunta por concepto diferente.\n\nJSON:\n{"fillBlanks":[{"id":"fb1","sentence":"Frase con ___","answers":["respuesta"],"explanation":"breve"}]}`,4096);
       return JSON.parse(repairJSON(r));
     });
 
@@ -4118,20 +4102,22 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
       return JSON.parse(repairJSON(r));
     });
 
-    // Phase 9: Post-test (13+12) — always split
-    // Phase 10: Interactive question types (combined in one call to save tokens)
-    const interactive=await runPhase('10/14 Tipos interactivos',80,async()=>{
-      const r=await callClaude(`${SYS}\n\nGenera estos tipos de preguntas interactivas sobre "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"sequences":[{"id":"s1","instruction":"Ordena los pasos de este mecanismo","steps":["paso1","paso2","paso3","paso4"],"correctOrder":[0,1,2,3]}],"classifications":[{"id":"cl1","categories":["Cat A","Cat B"],"items":[{"text":"item","category":0}]}],"matching":[{"id":"m1","left":["término1"],"right":["definición1"],"pairs":[[0,0]]}],"errors":[{"id":"e1","statement":"Afirmación con error","errorPart":"la parte incorrecta","correction":"lo correcto","options":["opción A","opción B","opción C"]}],"progressiveCases":[{"id":"pc1","step1":{"info":"Síntomas iniciales","question":"¿Primera impresión?"},"step2":{"info":"Primeros resultados","question":"¿Refinas diagnóstico?"},"step3":{"info":"Resultados completos","question":"¿Diagnóstico final?"},"answer":"Diagnóstico y razonamiento"}],"patterns":[{"id":"pt1","results":"Tabla de resultados analíticos","options":["Patrón A","Patrón B","Patrón C","Patrón D"],"correct":0,"explanation":"breve"}]}\n\n3 secuencias, 2 clasificaciones, 3 emparejamientos, 3 errores, 1 caso progresivo, 2 patrones.`,8192);
+    // Phase 9: Interactive question types — adaptive count
+    const iSeq=Math.max(1,Math.round(sizing.inter*0.3)),iCl=Math.max(1,Math.round(sizing.inter*0.2)),iMatch=Math.max(1,Math.round(sizing.inter*0.2)),iErr=Math.max(1,Math.round(sizing.inter*0.15)),iProg=1,iPat=Math.max(1,Math.round(sizing.inter*0.15));
+    const interactive=await runPhase(`10/14 Tipos interactivos (${sizing.inter})`,80,async()=>{
+      const r=await callClaude(`${SYS}${DISTRIB}\n\nPreguntas interactivas de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"sequences":[{"id":"s1","instruction":"Ordena los pasos","steps":["p1","p2","p3","p4"],"correctOrder":[0,1,2,3]}],"classifications":[{"id":"cl1","categories":["Cat A","Cat B"],"items":[{"text":"item","category":0}]}],"matching":[{"id":"m1","left":["término"],"right":["def"],"pairs":[[0,0]]}],"errors":[{"id":"e1","statement":"Afirmación","errorPart":"parte incorrecta","correction":"correcto","options":["A","B","C"]}],"progressiveCases":[{"id":"pc1","step1":{"info":"Datos","question":"¿?"},"step2":{"info":"Más datos","question":"¿?"},"step3":{"info":"Completo","question":"¿?"},"answer":"Dx"}],"patterns":[{"id":"pt1","results":"Tabla valores","options":["A","B","C","D"],"correct":0,"explanation":"breve"}]}\n\n${iSeq} secuencias, ${iCl} clasificaciones, ${iMatch} emparejamientos, ${iErr} errores, ${iProg} progresivo, ${iPat} patrones.`,8192);
       return JSON.parse(repairJSON(r));
     });
 
-    const postTest=await runPhase('11/14 Post-test (13+12)',88,async()=>{
-      const base=`${SYS}\n\n${TRANSFER}${CALIB}\n\nPreguntas DIFÍCILES de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"p1","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
-      const r1=await callClaude(base+'\n\n13 preguntas exactas.',8192);
+    // Phase 10: Post-test — adaptive count, split in 2
+    const postHalf1=Math.ceil(sizing.post/2),postHalf2=sizing.post-postHalf1;
+    const postTest=await runPhase(`11/14 Post-test (${postHalf1}+${postHalf2})`,88,async()=>{
+      const base=`${SYS}\n\n${TRANSFER}${CALIB}${DISTRIB}\n\nPreguntas DIFÍCILES (POST-TEST) de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"p1","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
+      const r1=await callClaude(base+`\n\n${postHalf1} preguntas exactas.`,8192);
       const b1=JSON.parse(repairJSON(r1));
       const q1=b1.questions||b1;
       setGenPct(92);
-      const r2=await callClaude(base+'\n\n12 preguntas exactas diferentes.',8192);
+      const r2=await callClaude(base+`\n\n${postHalf2} preguntas diferentes.`,8192);
       const b2=JSON.parse(repairJSON(r2));
       const q2=b2.questions||b2;
       return{questions:[...(Array.isArray(q1)?q1:[]),...(Array.isArray(q2)?q2:[])]};
@@ -4406,7 +4392,7 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
                           style={{background:genIdx===idx?T.amberS:(!sec.unified&&hasBothSources(sec))?T.surface:T.purple,color:genIdx===idx?T.amberText:(!sec.unified&&hasBothSources(sec))?T.dim:'#000',border:'none',borderRadius:8,padding:'8px 20px',fontSize:12,fontWeight:600,cursor:genIdx!=null||(!sec.unified&&hasBothSources(sec))?'not-allowed':'pointer',fontFamily:FONT}}>
                           {genIdx===idx?`⏳ ${genStep}`:(!sec.unified&&hasBothSources(sec))?'Unifica el contenido primero':'🧠 Generar aprendizaje'}
                         </button>
-                        {sec.text?.trim()&&<span style={{fontSize:10,color:T.muted}}>{(sec.unified?.text||sec.text).split(/\s+/).length} pal</span>}
+                        {(()=>{const txt=sec.extractedContent?.text||sec.unified?.text||sec.text||'';const wc=txt.split(/\s+/).length;if(wc<10)return null;const sz=wc<=1500?{t:'25-30',p:8,f:10,c:2}:wc<=4000?{t:'40-45',p:12,f:15,c:3}:wc<=8000?{t:'55-65',p:18,f:20,c:4}:{t:'75-90',p:20,f:25,c:5};return <span style={{fontSize:10,color:T.muted}}>{wc} pal · ~{sz.t} min · {sz.p} preg · {sz.f} FC · {sz.c} casos</span>;})()}
                       </div>
                       {genIdx===idx&&genPct>0&&<div style={{marginTop:8}}><PBar pct={genPct} color={T.purple} height={3}/></div>}
                       {genError&&(genIdx===idx||genIdx===null)&&<div style={{marginTop:6,fontSize:11,color:T.red,background:T.redS,padding:'6px 10px',borderRadius:6}}>{genError}</div>}
