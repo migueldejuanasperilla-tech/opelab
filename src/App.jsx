@@ -96,47 +96,10 @@ const topicFilePdfKey=(t,id)=>topicPdfKey(t)+'_'+id;
 // Convertir Blob/File a base64 para la API
 const blobToB64=blob=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(blob);});
 
-// ── Merge PDFs respetando el límite de 90 páginas de la API ──────────────────
-const MAX_TOTAL_PAGES=10;
-async function mergePdfsWithLimit(blobs){
-  const merged=await PDFDocument.create();
-  let total=0;
-  for(const blob of blobs){
-    if(total>=MAX_TOTAL_PAGES)break;
-    try{
-      const buf=await blob.arrayBuffer();
-      const src=await PDFDocument.load(buf,{ignoreEncryption:true});
-      const available=Math.min(src.getPageCount(),MAX_TOTAL_PAGES-total);
-      if(available<=0)break;
-      const indices=Array.from({length:available},(_,i)=>i);
-      const pages=await merged.copyPages(src,indices);
-      pages.forEach(p=>merged.addPage(p));
-      total+=available;
-    }catch(e){console.warn('Error merging PDF:',e);}
-  }
-  const bytes=await merged.save();
-  return{file:new File([bytes],'merged.pdf',{type:'application/pdf'}),pages:total};
-}
-const CHUNK_PAGES=30;
-async function splitPdfIfNeeded(file){
-  const buf=await file.arrayBuffer();
-  const src=await PDFDocument.load(buf,{ignoreEncryption:true});
-  const total=src.getPageCount();
-  if(total<=CHUNK_PAGES) return [{file,name:file.name,pages:`1–${total}`,total}];
-  const chunks=[];
-  for(let s=0;s<total;s+=CHUNK_PAGES){
-    const e=Math.min(s+CHUNK_PAGES,total);
-    const doc=await PDFDocument.create();
-    const indices=Array.from({length:e-s},(_,i)=>s+i);
-    const copied=await doc.copyPages(src,indices);
-    copied.forEach(p=>doc.addPage(p));
-    const bytes=await doc.save();
-    const blob=new Blob([bytes],{type:'application/pdf'});
-    const base=file.name.replace(/\.pdf$/i,'');
-    const name=`${base}_p${s+1}-${e}.pdf`;
-    chunks.push({file:new File([blob],name,{type:'application/pdf'}),name,pages:`${s+1}–${e}`,total:e-s});
-  }
-  return chunks;
+// ── splitPdfIfNeeded and mergePdfsWithLimit REMOVED — PDFs now processed locally with pdf.js
+// Legacy references kept as no-ops for any remaining dead code paths
+async function splitPdfIfNeeded(file){return[{file,name:file.name,pages:`1–?`,total:1}];}
+async function mergePdfsWithLimit(blobs){return{file:blobs[0],pages:0};
 }
 
 // ── Theme — Dark Mode ────────────────────────────────────────────────────────
@@ -667,21 +630,21 @@ export default function App(){
   const setNote=useCallback((sid,text)=>{setNotesState(prev=>{const n={...prev,[sid]:text};save('olab_notes',n);return n;});},[]);
   const saveTopicNote=useCallback((topic,text)=>{setTopicNotesState(prev=>{const n={...prev,[topic]:text};save('olab_topic_notes',n);return n;});},[]);
 
-  // Guardar PDF — divide automáticamente si >80 páginas
+  // Guardar PDF completo sin dividir
   const savePdfForTopic=useCallback(async(topic,file)=>{
     const tKey=topicPdfKey(topic);
-    const chunks=await splitPdfIfNeeded(file);
-    for(const chunk of chunks){
-      const fileId=uid();
-      await idbSave(topicFilePdfKey(topic,fileId),chunk.file);
-      setPdfMetaState(prev=>{
-        const existing=prev[tKey]||[];
-        const entry={id:fileId,name:chunk.name,size:chunk.file.size,date:new Date().toISOString(),pages:chunk.pages};
-        const n={...prev,[tKey]:[...existing,entry]};
-        save('olab_pdf_meta',n);return n;
-      });
-    }
-    return chunks.length; // devuelve nº de trozos creados
+    const fileId=uid();
+    await idbSave(topicFilePdfKey(topic,fileId),file);
+    // Get page count for metadata
+    let pageCount='?';
+    try{const buf=await file.arrayBuffer();const doc=await PDFDocument.load(buf,{ignoreEncryption:true});pageCount=`1–${doc.getPageCount()}`;}catch{}
+    setPdfMetaState(prev=>{
+      const existing=prev[tKey]||[];
+      const entry={id:fileId,name:file.name,size:file.size,date:new Date().toISOString(),pages:pageCount};
+      const n={...prev,[tKey]:[...existing,entry]};
+      save('olab_pdf_meta',n);return n;
+    });
+    return 1;
   },[]);
 
   // Eliminar un PDF específico por su fileId
@@ -1747,7 +1710,6 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                               inp.onchange=async e=>{
                                 const fs=Array.from(e.target.files||[]);
                                 for(const f of fs){
-                                  if(f.size>200*1024*1024){alert(`"${f.name}" supera 200 MB.`);continue;}
                                   setSplittingKey(pKey);await savePdfForTopic(t,f);setSplittingKey(null);
                                 }
                               };inp.click();
@@ -2098,7 +2060,7 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
   // Upload PDF for Tietz/Henry — uses savePdfForTopic with suffixed topic key
   const uploadPdf=(source)=>{
     const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
-    inp.onchange=async e=>{const f=e.target.files?.[0];if(!f||f.size>200*1024*1024)return;
+    inp.onchange=async e=>{const f=e.target.files?.[0];if(!f)return;
       await savePdfForTopic(topic+'§'+source,f);
     };inp.click();
   };
