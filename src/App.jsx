@@ -3714,94 +3714,126 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   // ── Content extraction per section from stored raw PDF text ─────────────
   const [extractingAll,setExtractingAll]=useState(false);
   const [extractingIdx,setExtractingIdx]=useState(null);
+  const [extractCancel,setExtractCancel]=useState(false);
+  const [extractEta,setExtractEta]=useState('');
 
-  // Load raw chapter text from IndexedDB
   const loadRawText=async(source)=>{
     const key=`raw_text_${source}_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}`;
     return await idbLoad(key);
   };
 
-  // Split text into overlapping chunks of ~5000 words
-  const chunkText5k=(text)=>{
+  // Chunk text into ~8000-word segments with 500-word overlap
+  const chunkLarge=(text)=>{
     const words=text.split(/\s+/);
-    if(words.length<=6000)return[text]; // small enough for one call
-    const chunks=[];const chunkWords=5000;const overlap=500;
-    for(let i=0;i<words.length;i+=chunkWords-overlap){
-      chunks.push(words.slice(i,i+chunkWords).join(' '));
-      if(i+chunkWords>=words.length)break;
+    if(words.length<=9000)return[text];
+    const chunks=[];const sz=8000;const ol=500;
+    for(let i=0;i<words.length;i+=sz-ol){
+      chunks.push(words.slice(i,i+sz).join(' '));
+      if(i+sz>=words.length)break;
     }
     return chunks;
   };
 
-  const extractSectionContent=async(idx)=>{
+  // Cached raw text — loaded once per extractAll run
+  const rawCacheRef=useRef({tietz:null,henry:null,loaded:false});
+
+  const extractSingleSection=async(idx,rawCombined)=>{
     const sec=sections[idx];
     if(sec.extractedContent)return;
+    const subsStr=(sec.subsections||[]).map(s=>s.title).join(', ');
+    const chunks=chunkLarge(rawCombined);
+    const allExtracts=[];
+
+    for(let ci=0;ci<chunks.length;ci++){
+      const raw=await callClaude(
+        `Del siguiente texto de libro médico, extrae TODA la información relacionada con "${sec.title}"${subsStr?` (incluye: ${subsStr})`:''}.`+
+        ` Copia el contenido relevante de forma exhaustiva sin resumir.`+
+        ` Incluye todos los valores numéricos, mecanismos, criterios diagnósticos y notas clínicas relacionados.`+
+        ` Responde en español. Responde SOLO con JSON puro.\n\n`+
+        `{"content":"texto completo extraído"}\n\nTEXTO:\n${chunks[ci]}`,8192);
+      const cleaned=raw.replace(/```json|```/g,'').trim();
+      const jIdx=cleaned.indexOf('{');
+      let extracted;
+      try{const p=JSON.parse(jIdx>=0?cleaned.slice(jIdx):cleaned);extracted=p.content||p.extractedText||cleaned;}
+      catch{extracted=cleaned;}
+      if(extracted?.length>50)allExtracts.push(extracted);
+    }
+
+    let combined=allExtracts.join('\n\n');
+    if(allExtracts.length>1){
+      const sentences=combined.split(/(?<=[.!?])\s+/);
+      const seen=new Set();
+      combined=sentences.filter(s=>{const k=s.trim().toLowerCase().slice(0,60);if(seen.has(k))return false;seen.add(k);return true;}).join(' ');
+    }
+
+    const words=combined.split(/\s+/).length;
+    console.log(`[Extract] "${sec.title}": ${words} words from ${chunks.length} chunk(s)`);
+    // Save immediately — this is the checkpoint
+    const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:combined,date:new Date().toISOString(),words,source:'auto'}}:s);
+    await save({...data,sections:updSections});
+  };
+
+  const extractSectionContent=async(idx)=>{
     setExtractingIdx(idx);
     try{
-      // Load raw text from both sources
       const tietzRaw=await loadRawText('tietz');
       const henryRaw=await loadRawText('henry');
-      const combinedRaw=[tietzRaw||'',henryRaw||''].filter(Boolean).join('\n\n---FUENTE SEPARADORA---\n\n');
+      const combinedRaw=[tietzRaw||'',henryRaw||''].filter(Boolean).join('\n\n');
       if(!combinedRaw.trim()){
-        // Fallback: use section's own text if raw not available
-        const ownText=sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'')||'';
+        const ownText=sections[idx].unified?.text||sections[idx].text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'')||'';
         if(ownText.trim().length>100){
           const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:ownText,date:new Date().toISOString(),words:ownText.split(/\s+/).length,source:'propio'}}:s);
           await save({...data,sections:updSections});
           setExtractingIdx(null);return;
         }
-        throw new Error('No hay texto de capítulo disponible. Extrae los PDFs primero.');
+        throw new Error('No hay texto. Extrae los PDFs primero.');
       }
-
-      const subsStr=(sec.subsections||[]).map(s=>s.title).join(', ');
-      const chunks=chunkText5k(combinedRaw);
-      const allExtracts=[];
-
-      for(let ci=0;ci<chunks.length;ci++){
-        if(chunks.length>1)setGenStep(`Extrayendo: ${sec.title} (chunk ${ci+1}/${chunks.length})...`);
-        const raw=await callClaude(
-          `Del siguiente texto de libro médico, extrae TODA la información relacionada con "${sec.title}"${subsStr?` (incluye: ${subsStr})`:''}.`+
-          ` Copia el contenido relevante de forma exhaustiva sin resumir.`+
-          ` Incluye todos los valores numéricos, mecanismos, criterios diagnósticos y notas clínicas relacionados.`+
-          ` Responde en español. Responde SOLO con JSON puro.\n\n`+
-          `{"content":"texto completo extraído"}\n\nTEXTO:\n${chunks[ci]}`,8192);
-        const cleaned=raw.replace(/```json|```/g,'').trim();
-        const jIdx=cleaned.indexOf('{');
-        let extracted;
-        try{const p=JSON.parse(jIdx>=0?cleaned.slice(jIdx):cleaned);extracted=p.content||p.extractedText||cleaned;}
-        catch{extracted=cleaned;}
-        if(extracted&&extracted.length>50)allExtracts.push(extracted);
-      }
-
-      // Combine results from all chunks, removing obvious duplicates
-      let combined=allExtracts.join('\n\n');
-      if(allExtracts.length>1){
-        // Simple dedup: split into sentences, remove exact duplicates
-        const sentences=combined.split(/(?<=[.!?])\s+/);
-        const seen=new Set();
-        const deduped=sentences.filter(s=>{const k=s.trim().toLowerCase().slice(0,60);if(seen.has(k))return false;seen.add(k);return true;});
-        combined=deduped.join(' ');
-      }
-
-      const words=combined.split(/\s+/).length;
-      console.log(`[Extract] "${sec.title}": ${words} words from ${chunks.length} chunk(s)`);
-      const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:combined,date:new Date().toISOString(),words,source:tietzRaw&&henryRaw?'tietz+henry':tietzRaw?'tietz':'henry'}}:s);
-      await save({...data,sections:updSections});
-    }catch(e){console.error(`[Extract] Error "${sec.title}":`,e.message);setGenError(`Error extrayendo "${sec.title}": ${e.message}`);}
+      await extractSingleSection(idx,combinedRaw);
+    }catch(e){console.error(`[Extract] Error:`,e.message);setGenError(`Error: ${e.message}`);}
     setExtractingIdx(null);
   };
 
   const extractAllContent=async()=>{
-    setExtractingAll(true);
+    setExtractingAll(true);setExtractCancel(false);
+    const startTime=Date.now();
+
+    // Load raw text once
+    const tietzRaw=await loadRawText('tietz');
+    const henryRaw=await loadRawText('henry');
+    const combinedRaw=[tietzRaw||'',henryRaw||''].filter(Boolean).join('\n\n');
+    if(!combinedRaw.trim()){alert('Primero sube y procesa el PDF en la tab Temario.');setExtractingAll(false);return;}
+
     const toExtract=sections.map((s,i)=>({s,i})).filter(({s})=>!s.extractedContent);
-    for(let j=0;j<toExtract.length;j++){
-      const{s,i}=toExtract[j];
-      setGenStep(`Extrayendo: ${s.title} (${j+1} de ${toExtract.length})...`);
-      setGenPct(Math.round(j/toExtract.length*100));
-      await extractSectionContent(i);
-      if(j<toExtract.length-1)await new Promise(r=>setTimeout(r,3000));
+    const totalChunks=chunkLarge(combinedRaw).length;
+    const estSeconds=toExtract.length*totalChunks*8+toExtract.length; // ~8s per API call + 1s pause
+    setExtractEta(`~${Math.ceil(estSeconds/60)} min`);
+
+    // Process in batches of 3 sections in parallel
+    const batchSize=3;
+    for(let b=0;b<toExtract.length;b+=batchSize){
+      if(extractCancel)break;
+      const batch=toExtract.slice(b,b+batchSize);
+      const batchEnd=Math.min(b+batchSize,toExtract.length);
+      setGenStep(`Extrayendo secciones ${b+1}-${batchEnd} de ${toExtract.length}...`);
+      setGenPct(Math.round(b/toExtract.length*100));
+
+      // Update ETA based on actual speed
+      const elapsed=(Date.now()-startTime)/1000;
+      if(b>0){const rate=elapsed/b;const remaining=(toExtract.length-b)*rate;setExtractEta(`~${Math.ceil(remaining/60)} min restantes`);}
+
+      // Run batch in parallel
+      await Promise.all(batch.map(async({s,i})=>{
+        try{await extractSingleSection(i,combinedRaw);}
+        catch(e){console.error(`[Extract] "${s.title}":`,e.message);}
+      }));
+
+      // 1s pause between batches
+      if(b+batchSize<toExtract.length)await new Promise(r=>setTimeout(r,1000));
     }
-    setGenStep('');setGenPct(100);
+
+    setGenStep(extractCancel?'Cancelado — puedes reanudar luego':'');
+    setGenPct(extractCancel?0:100);
+    setExtractEta('');
     setExtractingAll(false);
   };
 
@@ -4115,27 +4147,31 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
             <span style={{fontSize:10,color:T.dim}}>{sections.filter(s=>s.unified).length}/{sections.length} unificadas</span>
           </div>
         )}
-        {/* Extract all content button — prominent, always visible when sections exist */}
+        {/* Extract all content button */}
         {sections.length>0&&sections.some(s=>!s.extractedContent)&&(
           <div style={{marginTop:8,padding:'10px 14px',background:T.blueS,borderRadius:8,border:`0.5px solid ${T.blue}`}}>
-            <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-              <button onClick={async()=>{
-                // Check if raw PDF text exists in IndexedDB
-                const tietzRaw=await loadRawText('tietz');
-                const henryRaw=await loadRawText('henry');
-                if(!tietzRaw&&!henryRaw){
-                  alert('Primero sube y procesa el PDF en la tab Temario. El texto del capítulo debe estar extraído antes de poder asignar contenido a las secciones.');
-                  return;
-                }
-                extractAllContent();
-              }} disabled={extractingAll}
-                style={{background:extractingAll?T.surface:T.blue,color:extractingAll?T.dim:'#000',border:'none',borderRadius:8,padding:'8px 20px',fontSize:13,fontWeight:700,cursor:extractingAll?'wait':'pointer',fontFamily:FONT}}>
-                {extractingAll?`⏳ ${genStep||'Extrayendo...'}`:'📄 Extraer contenido automáticamente'}
-              </button>
-              <span style={{fontSize:11,color:T.blueText}}>{sections.filter(s=>s.extractedContent).length}/{sections.length} secciones extraídas</span>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              {!extractingAll?(
+                <button onClick={extractAllContent}
+                  style={{background:T.blue,color:'#000',border:'none',borderRadius:8,padding:'8px 20px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>
+                  📄 Extraer contenido automáticamente
+                </button>
+              ):(
+                <button onClick={()=>setExtractCancel(true)}
+                  style={{background:T.redS,color:T.red,border:`0.5px solid ${T.red}`,borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:FONT}}>
+                  ⏹ Cancelar
+                </button>
+              )}
+              <span style={{fontSize:11,color:T.blueText}}>{sections.filter(s=>s.extractedContent).length}/{sections.length} extraídas</span>
+              {extractEta&&<span style={{fontSize:10,color:T.dim}}>{extractEta}</span>}
             </div>
-            {extractingAll&&<div style={{marginTop:6}}><PBar pct={genPct} color={T.blue} height={3}/></div>}
-            {!extractingAll&&<div style={{fontSize:10,color:T.dim,marginTop:4}}>Busca en los PDFs de Tietz y Henry el contenido correspondiente a cada sección.</div>}
+            {extractingAll&&(
+              <div style={{marginTop:6}}>
+                <PBar pct={genPct} color={T.blue} height={3}/>
+                <div style={{fontSize:10,color:T.dim,marginTop:3}}>{genStep} · 3 secciones en paralelo</div>
+              </div>
+            )}
+            {!extractingAll&&<div style={{fontSize:10,color:T.dim,marginTop:4}}>Busca en los PDFs el contenido de cada sección. Procesa 3 en paralelo. Se puede cancelar y reanudar.</div>}
           </div>
         )}
         {sections.some(s=>s.generated)&&!data.notes?.length&&(
