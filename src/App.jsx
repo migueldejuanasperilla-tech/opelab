@@ -2858,6 +2858,21 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
   const hasTietzPdf=(pdfMeta[topicPdfKey(topic+'§tietz')]||[]).length>0;
   const hasHenryPdf=(pdfMeta[topicPdfKey(topic+'§henry')]||[]).length>0;
 
+  // Check if raw text is stored in IndexedDB
+  const [rawTextInfo,setRawTextInfo]=useState({tietz:null,henry:null});
+  useEffect(()=>{
+    const checkRaw=async()=>{
+      const slug=topic.replace(/[^a-z0-9]/gi,'').slice(0,30);
+      const t=await idbLoad(`raw_text_tietz_${slug}`);
+      const h=await idbLoad(`raw_text_henry_${slug}`);
+      setRawTextInfo({
+        tietz:t?{words:typeof t==='string'?t.split(/\s+/).length:0}:null,
+        henry:h?{words:typeof h==='string'?h.split(/\s+/).length:0}:null
+      });
+    };
+    checkRaw();
+  },[topic,tietzDone,henryDone]);
+
   // ── Manual structure editor ──────────────────────────────────────────────
   const parseIndexText=(text)=>{
     const lines=text.split('\n').filter(l=>l.trim());
@@ -3163,7 +3178,15 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
         </div>
       )}
       {!processing&&!hasTietzPdf&&!hasHenryPdf&&<div style={{fontSize:11,color:T.dim}}>Sube un PDF de Tietz o Henry arriba para extraer contenido.</div>}
-      {progress.step.startsWith('Error')&&<div style={{fontSize:11,color:T.red,marginTop:4}}>{progress.step}</div>}
+      {progress.step&&progress.step.startsWith('Error')&&<div style={{fontSize:11,color:T.red,marginTop:4}}>{progress.step}</div>}
+      {progress.step&&progress.step.startsWith('✓')&&<div style={{fontSize:11,color:T.green,marginTop:4}}>{progress.step}</div>}
+      {/* Raw text storage indicator */}
+      {(rawTextInfo.tietz||rawTextInfo.henry)&&(
+        <div style={{marginTop:6,display:'flex',gap:8,flexWrap:'wrap'}}>
+          {rawTextInfo.tietz&&<span style={{fontSize:10,color:T.green,background:T.greenS,padding:'2px 8px',borderRadius:4}}>✓ Texto Tietz guardado — {rawTextInfo.tietz.words.toLocaleString()} palabras</span>}
+          {rawTextInfo.henry&&<span style={{fontSize:10,color:T.green,background:T.greenS,padding:'2px 8px',borderRadius:4}}>✓ Texto Henry guardado — {rawTextInfo.henry.words.toLocaleString()} palabras</span>}
+        </div>
+      )}
     </Card>
   );
 }
