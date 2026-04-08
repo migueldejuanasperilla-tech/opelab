@@ -2297,7 +2297,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
   const [editingSections,setEditingSections]=useState(null); // [{title,text}] for review before confirm
   const [editSource,setEditSource]=useState(null); // 'tietz'|'henry'
 
-  // ── Extract text from PDF locally using pdf.js ───────────────────────────
+  // ── Extract text from PDF with font metadata ─────────────────────────────
   const extractPdfText=async(blob,fileLabel)=>{
     const buf=await blob.arrayBuffer();
     const pdf=await pdfjsLib.getDocument({data:buf}).promise;
@@ -2307,44 +2307,117 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       setProgress(prev=>({...prev,detail:`${fileLabel||'PDF'} · página ${p}/${totalPages}`}));
       const page=await pdf.getPage(p);
       const content=await page.getTextContent();
-      // Group items by approximate Y position to reconstruct lines
       const items=content.items.filter(it=>it.str.trim());
-      let lines=[];let curLine='';let lastY=null;
+      // Build lines with font info
+      let lines=[];let curLine={text:'',fontSize:0,bold:false,y:0};
       for(const it of items){
         const y=Math.round(it.transform[5]);
-        if(lastY!==null&&Math.abs(y-lastY)>3){
-          if(curLine.trim())lines.push({text:curLine.trim(),y:lastY,height:it.height||12});
-          curLine=it.str;
-        }else{curLine+=(curLine?' ':'')+it.str;}
-        lastY=y;
+        const fs=Math.round(it.transform[0])||Math.round(it.height)||12; // font size from transform matrix
+        const isBold=/bold/i.test(it.fontName||'');
+        if(curLine.text&&Math.abs(y-curLine.y)>3){
+          if(curLine.text.trim())lines.push({text:curLine.text.trim(),fontSize:curLine.fontSize,bold:curLine.bold,y:curLine.y});
+          curLine={text:it.str,fontSize:fs,bold:isBold,y};
+        }else{
+          curLine.text+=(curLine.text?' ':'')+it.str;
+          curLine.fontSize=Math.max(curLine.fontSize,fs);
+          if(isBold)curLine.bold=true;
+          curLine.y=y;
+        }
       }
-      if(curLine.trim())lines.push({text:curLine.trim(),y:lastY,height:12});
+      if(curLine.text.trim())lines.push({text:curLine.text.trim(),fontSize:curLine.fontSize,bold:curLine.bold,y:curLine.y});
       pages.push({pageNum:p,lines});
     }
     return{pages,totalPages};
   };
 
-  // ── Detect sections from extracted pages ────────────────────────────────
-  const detectSections=(pages)=>{
-    const sections=[];
-    let currentSection={title:'Introducción',text:'',pageStart:1};
-    for(const page of pages){
-      for(const line of page.lines){
-        // Heuristic: a line is a heading if it's short (<80 chars), all-uppercase or followed by much longer text
-        const isShort=line.text.length<80;
-        const isUpper=line.text===line.text.toUpperCase()&&line.text.length>3&&/[A-Z]/.test(line.text);
-        const looksLikeHeading=isShort&&(isUpper||/^\d+[\.\)]\s/.test(line.text)||/^[A-Z][A-Za-záéíóúñ\s]{3,50}$/.test(line.text));
-        if(looksLikeHeading&&currentSection.text.length>200){
-          sections.push({...currentSection,pageEnd:page.pageNum});
-          currentSection={title:line.text,text:'',pageStart:page.pageNum};
-        }else{
-          currentSection.text+=(currentSection.text?'\n':'')+line.text;
+  // ── Detect sections using font format + API fallback ────────────────────
+  const detectSections=async(pages)=>{
+    // Step 1: Compute body font size (the most common font size)
+    const fontSizes={};
+    let totalChars=0;
+    for(const page of pages)for(const line of page.lines){
+      const key=line.fontSize;
+      fontSizes[key]=(fontSizes[key]||0)+line.text.length;
+      totalChars+=line.text.length;
+    }
+    const bodyFontSize=Object.entries(fontSizes).sort((a,b)=>b[1]-a[1])[0]?.[0]||12;
+    const bodyFS=parseFloat(bodyFontSize);
+
+    // Step 2: Identify heading lines — larger font OR bold with different size
+    const headingLines=[];
+    for(const page of pages)for(const line of page.lines){
+      const isLarger=line.fontSize>bodyFS+1;
+      const isBoldDiff=line.bold&&line.fontSize>=bodyFS;
+      const isShortEnough=line.text.length<120;
+      if(isShortEnough&&(isLarger||isBoldDiff)){
+        headingLines.push({text:line.text,page:page.pageNum,fontSize:line.fontSize,bold:line.bold});
+      }
+    }
+
+    // Step 3: Decide strategy
+    const hasFormatInfo=headingLines.length>=3&&headingLines.length<=25;
+    let sectionTitles;
+
+    if(hasFormatInfo){
+      // Use format-detected headings (filter out repeated or trivial ones)
+      const seen=new Set();
+      sectionTitles=headingLines.filter(h=>{
+        const norm=h.text.trim().toLowerCase();
+        if(seen.has(norm)||norm.length<3)return false;
+        seen.add(norm);return true;
+      }).slice(0,25).map(h=>({title:h.text.trim(),page:h.page}));
+    }else{
+      // Fallback: ask API to identify section titles from first 3000 chars
+      setProgress(prev=>({...prev,detail:'Sin formato claro — consultando IA para detectar secciones...'}));
+      const fullText=pages.flatMap(p=>p.lines.map(l=>l.text)).join('\n');
+      const sample=fullText.slice(0,3000);
+      try{
+        const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:2048,messages:[{role:'user',content:`Responde SOLO con JSON puro, sin markdown.\n\nIdentifica todos los títulos de sección y subsección de este texto de libro médico. Devuelve solo la lista de títulos exactos en el orden que aparecen. Máximo 25.\n\nTEXTO:\n${sample}\n\n{"sections":["titulo1","titulo2"]}`}]})});
+        if(res.ok){
+          const d=await res.json();
+          let text=(d.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'');
+          text=text.split('\n').filter(l=>!/^\s*#/.test(l)).join('\n').trim();
+          const jIdx=text.indexOf('{');
+          const parsed=JSON.parse(jIdx>=0?text.slice(jIdx):text);
+          sectionTitles=(parsed.sections||[]).slice(0,25).map(t=>({title:typeof t==='string'?t:t.title||'',page:0}));
+        }
+      }catch{}
+      if(!sectionTitles?.length){
+        // Last resort: split every ~2000 words
+        sectionTitles=[];
+        const fullText2=pages.flatMap(p=>p.lines.map(l=>l.text)).join('\n');
+        for(let i=0;i<Math.min(fullText2.length,100000);i+=8000){
+          const chunk=fullText2.slice(i,i+60).split('\n')[0]||`Sección ${sectionTitles.length+1}`;
+          sectionTitles.push({title:chunk.trim().slice(0,60),page:Math.round(i/fullText2.length*pages.length)+1});
         }
       }
-      currentSection.text+='\n\n'; // page break
     }
-    if(currentSection.text.trim().length>50)sections.push({...currentSection,pageEnd:pages[pages.length-1]?.pageNum||0});
-    return sections;
+
+    // Step 4: Split full text at detected titles
+    const fullText=pages.flatMap(p=>p.lines.map(l=>({text:l.text,page:p.pageNum}))); // flat array of {text, page}
+    const sections=[];
+    for(let i=0;i<sectionTitles.length;i++){
+      const title=sectionTitles[i].title;
+      // Find position of this title in the text
+      const titleNorm=title.toLowerCase().trim();
+      let startIdx=fullText.findIndex(l=>l.text.toLowerCase().trim().includes(titleNorm));
+      if(startIdx<0)startIdx=fullText.findIndex(l=>l.text.toLowerCase().includes(titleNorm.slice(0,20)));
+      if(startIdx<0)startIdx=i===0?0:sections.length?sections[sections.length-1]._endIdx||0:0;
+      // Find end: next section title or end of text
+      let endIdx=fullText.length;
+      if(i<sectionTitles.length-1){
+        const nextTitle=sectionTitles[i+1].title.toLowerCase().trim();
+        const nextIdx=fullText.findIndex((l,j)=>j>startIdx&&(l.text.toLowerCase().trim().includes(nextTitle)||l.text.toLowerCase().includes(nextTitle.slice(0,20))));
+        if(nextIdx>startIdx)endIdx=nextIdx;
+      }
+      const sectionText=fullText.slice(startIdx,endIdx).map(l=>l.text).join('\n');
+      const pageStart=fullText[startIdx]?.page||sectionTitles[i].page||1;
+      const pageEnd=fullText[Math.min(endIdx-1,fullText.length-1)]?.page||pageStart;
+      sections.push({title,text:sectionText,pageStart,pageEnd,_endIdx:endIdx});
+    }
+    // Cap at 25
+    return sections.slice(0,25);
   };
 
   // ── Process a PDF source ────────────────────────────────────────────────
@@ -2376,7 +2449,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
 
       // Phase 2: Detect sections on unified text
       setProgress({step:'Detectando secciones en texto unificado...',pct:80,detail:`${totalPagesAll} páginas totales de ${files.length} archivo${files.length>1?'s':''}`});
-      const rawSections=detectSections(allPages);
+      const rawSections=await detectSections(allPages);
 
       // Phase 3: One API call to refine titles
       setProgress({step:'Refinando títulos con IA...',pct:90,detail:`${rawSections.length} secciones detectadas`});
