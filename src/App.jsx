@@ -489,12 +489,57 @@ const STATUS_ORDER={sinEmpezar:0,necesitaTrabajo:1,enProgreso:2,dominado:3};
 // ── Mastery levels ──────────────────────────────────────────────────────────
 function getMasteryLevel(score){
   if(score==null||score<=20) return {name:'Sin explorar',color:T.dim,emoji:'⬜'};
-  if(score<=40) return {name:'Iniciado',color:'#9ca3af',emoji:'🔘'};
-  if(score<=60) return {name:'Aprendiz',color:T.amber,emoji:'🟡'};
-  if(score<=75) return {name:'Competente',color:T.blue,emoji:'🔵'};
+  if(score<=40) return {name:'Iniciado',color:T.red,emoji:'🔴'};
+  if(score<=60) return {name:'Aprendiz',color:T.orange,emoji:'🟠'};
+  if(score<=75) return {name:'Competente',color:T.amber,emoji:'🟡'};
   if(score<=85) return {name:'Avanzado',color:T.teal,emoji:'🟢'};
   if(score<=95) return {name:'Experto',color:T.green,emoji:'💚'};
-  return {name:'Maestro',color:'#fbbf24',emoji:'👑'};
+  return {name:'Maestro',color:T.green,emoji:'⭐'};
+}
+
+// ── Session scoring (0-100) ─────────────────────────────────────────────────
+function calcSessionScore(gen,elapsed){
+  const prog=gen.progress||{};const phases=gen.phases||{};
+  let score=0;const breakdown={};
+
+  // Posttest: 35%
+  if(prog.postTest?.completed){const v=prog.postTest.score/100*35;score+=v;breakdown.postTest=Math.round(v);}
+  // Flashcards SM-2: 25%
+  const fcTotal=phases.flashcards?.length||0;
+  if(fcTotal>0&&prog.flashcardsDominated!=null){const v=prog.flashcardsDominated/fcTotal*25;score+=v;breakdown.flashcards=Math.round(v);}
+  // Clinical cases: 20%
+  if(prog.clinicalScore!=null){const v=prog.clinicalScore/100*20;score+=v;breakdown.clinical=Math.round(v);}
+  // Interactive questions: 15% — estimate from available phases
+  let interCorrect=0,interTotal=0;
+  if(prog.fillBlanks?.completed){interCorrect+=prog.fillBlanks.score;interTotal+=100;}
+  if(prog.openQuestions?.completed){interCorrect+=prog.openQuestions.score;interTotal+=100;}
+  if(interTotal>0){const v=interCorrect/interTotal*15;score+=v;breakdown.interactive=Math.round(v);}
+  // Fill blanks: 5%
+  if(prog.fillBlanks?.completed){const v=prog.fillBlanks.score/100*5;score+=v;breakdown.fillBlanks=Math.round(v);}
+
+  // Modifiers
+  const mods=[];
+  // Blind spots: -2 per (max -10)
+  const cert=prog.postTest?.certainty||{};
+  const blindSpots=Object.entries(prog.postTest?.answers||{}).filter(([i,a])=>{
+    const q=(phases.postTest||[])[parseInt(i)];
+    return cert[i]==='seguro'&&q&&a!==q.correct;
+  }).length;
+  if(blindSpots>0){const pen=Math.min(blindSpots*2,10);score-=pen;mods.push({type:'blindspot',value:-pen,detail:`${blindSpots} puntos ciegos`});}
+  // Bonus: pretest→posttest improvement >30
+  if(prog.preTest?.completed&&prog.postTest?.completed&&prog.postTest.score-prog.preTest.score>30){score+=5;mods.push({type:'bonus',value:5,detail:'Mejora >30% pre→post'});}
+  // Time penalty: >3× estimated (estimate ~20min per section)
+  if(elapsed>3600){score-=5;mods.push({type:'time',value:-5,detail:'Sesión excesivamente larga'});}
+
+  score=Math.max(0,Math.min(100,Math.round(score)));
+  return{score,breakdown,mods};
+}
+
+// Review mastery update weights by type
+const REVIEW_WEIGHTS={reconocimiento:{prev:0.6,review:0.4},consolidacion:{prev:0.5,review:0.5},integracion:{prev:0.4,review:0.6},profundo:{prev:0.3,review:0.7},mantenimiento:{prev:0.2,review:0.8}};
+function updateMasteryAfterReview(prevMastery,reviewScore,reviewType){
+  const w=REVIEW_WEIGHTS[reviewType]||{prev:0.5,review:0.5};
+  return Math.round(prevMastery*w.prev+reviewScore*w.review);
 }
 // Streak data: {current, max, lastDate}
 function loadStreak(){return load('olab_streak',{current:0,max:0,lastDate:null});}
@@ -533,24 +578,16 @@ function updateStreak(){
 }
 
 // ── Learning status helpers ─────────────────────────────────────────────────
-// Score for a single unit (section or subsection): postTest 40% + flashcards 30% + clinical 30%
-// External test data also contributes to the score
+// Use stored mastery from latest session score, or calculate from progress
 function calcUnitScore(unit){
   if(!unit?.generated) return null;
   const prog=unit.generated.progress||{};
-  let total=0,parts=0;
-  if(prog.postTest?.completed){total+=prog.postTest.score*0.4;parts+=0.4;}
-  if(prog.flashcardsDominated!=null&&unit.generated.phases?.flashcards?.length){
-    total+=(prog.flashcardsDominated/unit.generated.phases.flashcards.length*100)*0.3;parts+=0.3;
-  }
-  if(prog.clinicalScore!=null){total+=prog.clinicalScore*0.3;parts+=0.3;}
-  // Blend external test performance (from Test/Simulacro) if available
-  if(prog.externalTests?.t>=3){
-    const extScore=Math.round(prog.externalTests.c/prog.externalTests.t*100);
-    if(parts>0){total=total*0.85+extScore*0.15;} // 15% weight for external
-    else{total=extScore;parts=1;}
-  }
-  return parts>0?Math.round(total/parts):null;
+  // If we have a computed session score stored, use it
+  if(prog.mastery!=null) return prog.mastery;
+  // Fallback: calculate from components
+  const gen=unit.generated;
+  const{score}=calcSessionScore(gen,0);
+  return score>0?score:null;
 }
 // Score for a section: if it has subsections, weighted average of subsections; otherwise direct score
 function calcSectionScore(sec){
@@ -565,17 +602,24 @@ function calcSectionScore(sec){
 function getLearningStatus(learning){
   if(!learning?.sections||!learning.sections.length) return {coverage:0,mastery:0,status:'sinEmpezar',color:T.dim,label:'Sin empezar'};
   const total=learning.sections.length;
-  // A section counts as "generated" if it or any of its subsections have generated content
   const generated=learning.sections.filter(s=>s.generated||(s.subsections||[]).some(sub=>sub.generated)).length;
-  const scores=learning.sections.map(calcSectionScore).filter(s=>s!==null);
-  const mastery=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):0;
+  // Word-weighted mastery: each section weighted by its content size
+  let weightedSum=0,totalWeight=0;
+  learning.sections.forEach(s=>{
+    const score=calcSectionScore(s);
+    if(score===null)return;
+    const words=(s.extractedContent?.words||s.text?.split(/\s+/).length||1000);
+    weightedSum+=score*words;totalWeight+=words;
+  });
+  const mastery=totalWeight>0?Math.round(weightedSum/totalWeight):0;
   const coverage=Math.round(generated/total*100);
-  const hasLowSection=scores.some(s=>s<60);
+  const hasLowSection=learning.sections.some(s=>{const sc=calcSectionScore(s);return sc!==null&&sc<60;});
+  const lvl=getMasteryLevel(mastery);
   let status,color,label;
   if(generated===0){status='sinEmpezar';color=T.dim;label='Sin empezar';}
-  else if(hasLowSection){status='necesitaTrabajo';color=T.red;label=`${mastery}% dominio`;}
-  else if(mastery>=80&&coverage===100){status='dominado';color=T.green;label=`${mastery}% dominio`;}
-  else{status='enProgreso';color=T.amber;label=`${mastery}% dominio`;}
+  else if(hasLowSection){status='necesitaTrabajo';color=T.red;label=`${lvl.emoji} ${lvl.name} · ${mastery}%`;}
+  else if(mastery>=80&&coverage===100){status='dominado';color=T.green;label=`${lvl.emoji} ${lvl.name} · ${mastery}%`;}
+  else{status='enProgreso';color=T.amber;label=`${lvl.emoji} ${lvl.name} · ${mastery}%`;}
   return{coverage,mastery,status,color,label,generated,total};
 }
 
@@ -1470,6 +1514,9 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
   const streakHito=streak>=100?'🏆 100 días':streak>=30?'🔥 30 días':streak>=7?'⭐ 7 días':null;
   const allLS=Object.values(learningData||{}).map(getLearningStatus).filter(ls=>ls.status!=='sinEmpezar');
   const globalMastery=allLS.length?Math.round(allLS.reduce((a,ls)=>a+ls.mastery,0)/allLS.length):0;
+  // % of topics with mastery >75% over total temario
+  const topicsAbove75=Object.values(learningData||{}).filter(d=>getLearningStatus(d).mastery>75).length;
+  const globalDominio=ALL_TOPICS.length?Math.round(topicsAbove75/ALL_TOPICS.length*100):0;
   // Find best topic
   const bestTopic=allLS.length?Object.entries(learningData||{}).map(([t,d])=>({t,m:getLearningStatus(d).mastery})).filter(x=>x.m>0).sort((a,b)=>b.m-a.m)[0]:null;
 
@@ -1530,6 +1577,7 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
             {l:'Sesiones',v:sessions.length,c:T.teal,u:'completadas'},
             {l:'Temas vistos',v:`${studied}/60`,c:T.purple,u:''},
             {l:'Mejor tema',v:bestTopic?bestTopic.m+'%':'—',c:T.green,u:bestTopic?bestTopic.t.split('.')[0]+'.':''},
+            {l:'Tiempo total',v:(()=>{let total=0;Object.keys(localStorage).filter(k=>k.startsWith('study_time_')).forEach(k=>{try{const arr=JSON.parse(localStorage.getItem(k));if(Array.isArray(arr))total+=arr.reduce((a,s)=>a+(s.seconds||0),0);}catch{}});return total>=3600?Math.round(total/3600)+'h':Math.round(total/60)+'min';})(),c:T.teal,u:'estudiado'},
           ].map(s=>(
             <div key={s.l} style={{padding:'8px',borderRadius:8,background:T.bg,border:`0.5px solid ${T.border}`}}>
               <div style={{fontSize:18,fontWeight:700,color:s.c,lineHeight:1}}>{s.v}</div>
@@ -4451,10 +4499,42 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
 function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,saveSectionProgress,save,data,sections,topic,saveLearningData,phaseKey}){
   const pKey=phaseKey||idx;
   const onSaveProg=(key,val)=>saveSectionProgress(idx,key,val,subIdx);
+
+  // ── Session timer — auto-pause on tab switch ────────────────────────────
+  const [elapsed,setElapsed]=useState(gen.progress?.sessionTime||0);
+  const timerRef=useRef(null);
+  const startTimeRef=useRef(Date.now()-elapsed*1000);
+  useEffect(()=>{
+    const tick=()=>setElapsed(Math.floor((Date.now()-startTimeRef.current)/1000));
+    timerRef.current=setInterval(tick,1000);
+    const onVis=()=>{if(document.hidden)clearInterval(timerRef.current);else{startTimeRef.current=Date.now()-elapsed*1000;timerRef.current=setInterval(tick,1000);}};
+    document.addEventListener('visibilitychange',onVis);
+    return()=>{clearInterval(timerRef.current);document.removeEventListener('visibilitychange',onVis);};
+  },[]);
+  // Save time when posttest completes
+  const saveTime=useCallback(()=>{
+    const sec=sections[idx];if(!sec?.generated)return;
+    const timeKey=`study_time_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}_${sec.id||sec.title}`;
+    const prev=load(timeKey,[]);
+    prev.push({seconds:elapsed,date:new Date().toISOString()});
+    save(timeKey,prev);
+    // Also save to section progress
+    onSaveProg('sessionTime',elapsed);
+  },[elapsed,idx,topic,sections]);
+  // Auto-save time when posttest completes
+  const postTestDone=gen.progress?.postTest?.completed;
+  const savedTimeRef=useRef(false);
+  useEffect(()=>{if(postTestDone&&!savedTimeRef.current){savedTimeRef.current=true;saveTime();}},[postTestDone]);
+
+  const fmtTimer=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+
   return(
     <div>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
-        <div style={{fontSize:10,color:T.muted}}>Generado el {fmtDate(gen.generatedAt)} · {gen.conceptMap?.length||0} conceptos</div>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <div style={{fontSize:10,color:T.muted}}>Generado el {fmtDate(gen.generatedAt)} · {gen.conceptMap?.length||0} conceptos</div>
+          <span style={{fontSize:11,fontWeight:600,color:T.teal,fontVariantNumeric:'tabular-nums'}}>⏱ {fmtTimer(elapsed)}</span>
+        </div>
         <button onClick={()=>{
           if(subIdx!=null){const sec=sections[idx];const subs=(sec.subsections||[]).map((s,i)=>i===subIdx?{...s,generated:null}:s);const upd=sections.map((s,i)=>i===idx?{...s,subsections:subs}:s);save({...data,sections:upd});}
           else{const upd=sections.map((s,i)=>i===idx?{...s,generated:null}:s);save({...data,sections:upd});}
@@ -4479,17 +4559,58 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
       {curPhase===8&&(
         <div>
           <QuizPhase questions={gen.phases.postTest} title="Post-Test (25)" progress={gen.progress?.postTest} onSaveProgress={p=>onSaveProg('postTest',p)} color={T.red} isPostTest={true}/>
-          {gen.progress?.preTest?.completed&&gen.progress?.postTest?.completed&&(
-            <Card style={{padding:'12px 16px',marginTop:10,borderLeft:`3px solid ${T.green}`}}>
-              <div style={{fontSize:11,fontWeight:600,color:T.text,marginBottom:4}}>📊 Pre vs Post</div>
-              <div style={{display:'flex',gap:14,alignItems:'center'}}>
-                <span style={{fontSize:16,fontWeight:700,color:T.blue}}>{gen.progress.preTest.score}%</span>
+          {gen.progress?.preTest?.completed&&gen.progress?.postTest?.completed&&(()=>{
+            const ss=calcSessionScore(gen,elapsed);
+            const lvl=getMasteryLevel(ss.score);
+            // Save mastery to section progress (one-time)
+            if(!gen.progress.mastery&&ss.score>0){onSaveProg('mastery',ss.score);
+              // Save session history
+              const histKey=`session_hist_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}_${sections[idx]?.id||''}`;
+              const hist=load(histKey,[]);
+              hist.push({date:new Date().toISOString(),score:ss.score,breakdown:ss.breakdown,mods:ss.mods,elapsed,preTest:gen.progress.preTest.score,postTest:gen.progress.postTest.score});
+              save(histKey,hist);
+            }
+            const prevSession=(()=>{const hk=`session_hist_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}_${sections[idx]?.id||''}`;const h=load(hk,[]);return h.length>1?h[h.length-2]:null;})();
+            return(
+            <Card style={{padding:'18px 22px',marginTop:14,borderLeft:`3px solid ${T.green}`,animation:'fadeIn 250ms ease-in-out'}}>
+              <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:10}}>📊 Resumen de sesión</div>
+              {/* Main score */}
+              <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:12}}>
+                <div style={{textAlign:'center'}}>
+                  <div style={{fontSize:36,fontWeight:700,color:lvl.color}}>{ss.score}</div>
+                  <div style={{fontSize:11,color:T.muted}}>Puntuación</div>
+                  <div style={{fontSize:10,fontWeight:700,color:lvl.color}}>{lvl.emoji} {lvl.name}</div>
+                </div>
+                <div style={{flex:1,display:'flex',flexDirection:'column',gap:3}}>
+                  {/* Breakdown bars */}
+                  {[{k:'postTest',l:'Post-test',max:35},{k:'flashcards',l:'Flashcards',max:25},{k:'clinical',l:'Casos',max:20},{k:'interactive',l:'Interactivo',max:15},{k:'fillBlanks',l:'Completar',max:5}].map(b=>(
+                    <div key={b.k} style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:9,color:T.dim,minWidth:60}}>{b.l}</span>
+                      <div style={{flex:1,height:4,background:T.border,borderRadius:2}}><div style={{width:`${(ss.breakdown[b.k]||0)/b.max*100}%`,height:'100%',background:T.teal,borderRadius:2,transition:'width 0.5s'}}/></div>
+                      <span style={{fontSize:9,fontWeight:700,color:T.text,minWidth:20,textAlign:'right'}}>{ss.breakdown[b.k]||0}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Pre vs Post */}
+              <div style={{display:'flex',gap:14,alignItems:'center',marginBottom:8}}>
+                <span style={{fontSize:14,fontWeight:700,color:T.blue}}>{gen.progress.preTest.score}%</span>
                 <span style={{color:T.dim}}>→</span>
-                <span style={{fontSize:16,fontWeight:700,color:T.green}}>{gen.progress.postTest.score}%</span>
-                <span style={{fontSize:13,fontWeight:700,color:gen.progress.postTest.score>gen.progress.preTest.score?T.green:T.red}}>
+                <span style={{fontSize:14,fontWeight:700,color:T.green}}>{gen.progress.postTest.score}%</span>
+                <span style={{fontSize:12,fontWeight:700,color:gen.progress.postTest.score>gen.progress.preTest.score?T.green:T.red}}>
                   {gen.progress.postTest.score>gen.progress.preTest.score?'+':''}{gen.progress.postTest.score-gen.progress.preTest.score}%
                 </span>
+                <span style={{fontSize:12,fontWeight:600,color:T.teal,marginLeft:'auto'}}>⏱ {fmtTimer(elapsed)}</span>
               </div>
+              {/* Modifiers */}
+              {ss.mods.length>0&&<div style={{marginBottom:8}}>{ss.mods.map((m,i)=>(
+                <div key={i} style={{fontSize:10,color:m.value>0?T.green:T.red}}>{m.value>0?'+':''}{m.value} · {m.detail}</div>
+              ))}</div>}
+              {/* Previous session comparison */}
+              {prevSession&&<div style={{fontSize:11,color:T.muted}}>Sesión anterior: {prevSession.score} puntos {ss.score>prevSession.score?<span style={{color:T.green}}>· ↑{ss.score-prevSession.score}</span>:<span style={{color:T.red}}>· ↓{prevSession.score-ss.score}</span>}</div>}
+              {/* Time comparison */}
+              {(()=>{const sec=sections[idx];const tk=`study_time_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}_${sec?.id||sec?.title||''}`;const prev=load(tk,[]);if(prev.length>1){const avg=Math.round(prev.reduce((a,s)=>a+s.seconds,0)/prev.length);return <div style={{fontSize:10,color:T.dim}}>Media tiempo: {fmtTimer(avg)} {elapsed<avg?'· ¡Más rápido!':`· ${Math.round((elapsed/avg-1)*100)}% más`}</div>;}return null;})()}
+            </Card>);})()}
             </Card>
           )}
         </div>
