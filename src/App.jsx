@@ -146,6 +146,41 @@ async function idbSaveLearning(topic,data){const db=await idbOpen();return new P
 async function idbLoadLearning(topic){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readonly');const r=tx.objectStore(IDB_LEARN_STORE).get(topic);r.onsuccess=()=>res(r.result||null);r.onerror=rej;});}
 async function idbLoadAllLearning(){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readonly');const store=tx.objectStore(IDB_LEARN_STORE);const keys=store.getAllKeys();const vals=store.getAll();tx.oncomplete=()=>{const m={};keys.result.forEach((k,i)=>{if(vals.result[i])m[k]=vals.result[i];});res(m);};tx.onerror=rej;});}
 async function idbDeleteLearning(topic){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readwrite');tx.objectStore(IDB_LEARN_STORE).delete(topic);tx.oncomplete=res;tx.onerror=rej;});}
+
+// ── localStorage backup for learning data (crash/corruption safety net) ──
+const LB_PREFIX='olab_bk_';
+const LB_MAX=200000; // max chars per topic backup (~200KB)
+function backupLearningToLS(topic,data){
+  try{
+    const key=LB_PREFIX+topic.replace(/[^a-zA-Z0-9]/g,'').slice(0,40);
+    const json=JSON.stringify(data);
+    if(json.length>LB_MAX)return; // too large for localStorage — skip quietly
+    localStorage.setItem(key,json);
+    localStorage.setItem(key+'_ts',String(Date.now()));
+  }catch(e){/* localStorage full — non-critical */}
+}
+function restoreLearningFromLS(topic){
+  try{
+    const key=LB_PREFIX+topic.replace(/[^a-zA-Z0-9]/g,'').slice(0,40);
+    const raw=localStorage.getItem(key);
+    if(!raw)return null;
+    const data=JSON.parse(raw);
+    const ts=parseInt(localStorage.getItem(key+'_ts')||'0');
+    return{data,ts};
+  }catch{return null;}
+}
+function restoreAllLearningFromLS(){
+  const result={};
+  try{
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(!k?.startsWith(LB_PREFIX)||k.endsWith('_ts'))continue;
+      try{const d=JSON.parse(localStorage.getItem(k));if(d?.sections)result[k.slice(LB_PREFIX.length)]=d;}catch{}
+    }
+  }catch{}
+  return result;
+}
+
 // Clave por tema (para el mapa de metadata)
 const topicPdfKey=t=>{
   // Preserve §tietz / §henry suffix before sanitizing
@@ -652,6 +687,8 @@ export default function App(){
   const [loaded,setLoaded]=useState(false);
   const [topicView,setTopicView]=useState(null);
   const [learningData,setLearningData]=useState({});
+  const learningDataRef=useRef({});
+  useEffect(()=>{learningDataRef.current=learningData;},[learningData]);
   const [reviewDismissed,setReviewDismissed]=useState(false);
   const [activeReview,setActiveReview]=useState(null);
   const [streakData,setStreakData]=useState({current:0,max:0,lastDate:null});
@@ -704,8 +741,29 @@ export default function App(){
         }
       }
 
-      // Load learning data from IndexedDB
-      const ld=await idbLoadAllLearning();
+      // Load learning data from IndexedDB, with localStorage backup recovery
+      let ld=await idbLoadAllLearning();
+      // Recover any topics that exist in localStorage backup but not in IndexedDB
+      const lsBackups=restoreAllLearningFromLS();
+      let recovered=0;
+      for(const[rawKey,bkData]of Object.entries(lsBackups)){
+        // Find the topic name that matches this backup key
+        const matchingTopic=Object.keys(ld).find(t=>t.replace(/[^a-zA-Z0-9]/g,'').slice(0,40)===rawKey);
+        if(matchingTopic){
+          // Topic exists in IDB — check if backup has more data
+          const idbSections=ld[matchingTopic]?.sections||[];
+          const bkSections=bkData.sections||[];
+          const idbGenCount=idbSections.filter(s=>s.generated).length;
+          const bkGenCount=bkSections.filter(s=>s.generated).length;
+          if(bkGenCount>idbGenCount&&bkSections.length>=idbSections.length){
+            console.warn(`[Recovery] Restoring richer backup for "${matchingTopic}" (IDB: ${idbGenCount}gen/${idbSections.length}sec, Backup: ${bkGenCount}gen/${bkSections.length}sec)`);
+            ld[matchingTopic]=bkData;
+            await idbSaveLearning(matchingTopic,bkData);
+            recovered++;
+          }
+        }
+      }
+      if(recovered)console.log(`[Recovery] Restored ${recovered} topic(s) from localStorage backup`);
 
       setQs(q);setSr(s);setStats(st);setMarked(new Set(mk));setErrSet(new Set(er));
       setSessions(sess);setExamDateState(ed);setNotesState(nt);setTopicNotesState(tn);setPdfMetaState(pm);
@@ -727,7 +785,16 @@ export default function App(){
     setStudyNotesState(prev=>{const n={...prev,[topic]:{content,date:new Date().toISOString()}};save('olab_study_notes',n);return n;});
   },[]);
   const saveLearningData=useCallback(async(topic,data)=>{
+    if(!topic)return;
     if(data){
+      // Guard: refuse to overwrite existing data with empty sections
+      const existing=learningDataRef.current?.[topic];
+      if(existing?.sections?.length>0&&(!data.sections||data.sections.length===0)&&existing.sections.some(s=>s.generated||s.text?.trim())){
+        console.error('[SaveGuard] Blocked saving empty sections over existing data for',topic);
+        return;
+      }
+      // Backup to localStorage before writing to IndexedDB
+      backupLearningToLS(topic,data);
       await idbSaveLearning(topic,data);
       // Check for level-up before updating state
       setLearningData(prev=>{
@@ -735,12 +802,14 @@ export default function App(){
         const oldMastery=oldLd?getLearningStatus(oldLd).mastery:0;
         const newMastery=getLearningStatus(data).mastery;
         const oldLvl=getMasteryLevel(oldMastery);const newLvl=getMasteryLevel(newMastery);
-        // Level change logged silently — shown in semaphore/metrics
         if(newLvl.name!==oldLvl.name&&newMastery>oldMastery)console.log(`[Level] ${topic.split('.')[0]}: ${oldLvl.name} → ${newLvl.name}`);
         return{...prev,[topic]:data};
       });
       setStreakData(updateStreak());
-    }else{await idbDeleteLearning(topic);setLearningData(prev=>{const n={...prev};delete n[topic];return n;});}
+    }else{
+      // Never silently delete — require explicit user confirmation
+      console.warn('[SaveGuard] Ignoring attempt to delete learning data for',topic,'— use explicit delete with confirmation');
+    }
   },[]);
 
   // saveQs — persiste en IndexedDB. Acepta el array completo nuevo.
