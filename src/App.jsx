@@ -2238,6 +2238,11 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
             </Card>
           </div>
 
+          {/* PDF Processing */}
+          {(tietzFilesReal.length>0||henryFilesReal.length>0)&&(
+            <PdfProcessorUI topic={topic} pdfMeta={pdfMeta} learning={learning} saveLearningData={saveLearningData}/>
+          )}
+
           {/* Inline PDF viewer */}
           {viewingPdf&&(
             <PdfViewer topic={viewingPdf.topicKey} fileId={viewingPdf.fileId} name={viewingPdf.name} onClose={()=>setViewingPdf(null)}/>
@@ -2252,6 +2257,224 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
 
       <div style={{display:activeTab==='preguntas'?'block':'none'}}><TopicPreguntasTab topic={topic} allQuestions={allTopicQuestions} topicTag={topicNum?`T${topicNum}`:''} stats={stats} saveQs={saveQs} qs={qs} apiKey={apiKey} learning={learning} bgJobs={bgJobs} startBgJob={startBgJob} clearJob={clearJob}/></div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PDF PROCESSOR — procesa PDFs párrafo a párrafo con checkpoints
+// ═══════════════════════════════════════════════════════════════════════════
+function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
+  const [processing,setProcessing]=useState(null); // 'tietz'|'henry'|'fuse'|null
+  const [progress,setProgress]=useState({step:'',pct:0,detail:'',log:[]});
+  const [pdfData,setPdfData]=useState(()=>load('olab_pdfproc_'+topic.replace(/[^a-z0-9]/gi,'').slice(0,30),{tietz:null,henry:null,fused:null}));
+
+  const addLog=(msg)=>setProgress(p=>({...p,log:[...p.log.slice(-20),msg]}));
+
+  const callClaude=async(prompt,maxTokens=2048,retries=3)=>{
+    for(let a=1;a<=retries;a++){
+      try{
+        const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})});
+        if(!res.ok){if(a<retries&&(res.status===429||res.status>=500)){await new Promise(w=>setTimeout(w,a*5000));continue;}throw new Error(`HTTP ${res.status}`);}
+        const r=await res.json();
+        return(r.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
+      }catch(e){if(a>=retries)throw e;await new Promise(w=>setTimeout(w,a*3000));}
+    }
+  };
+
+  const callClaudeWithDoc=async(content,maxTokens=4096)=>{
+    const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content}]})});
+    if(!res.ok)throw new Error(`HTTP ${res.status}`);
+    const r=await res.json();
+    return(r.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
+  };
+
+  // Split text into paragraph chunks of ~300 words
+  const chunkText=(text,targetWords=300)=>{
+    const paras=text.split(/\n\s*\n/).filter(p=>p.trim());
+    const chunks=[];let cur=[];let cw=0;
+    for(const p of paras){
+      const wc=p.trim().split(/\s+/).length;
+      if(cw+wc>targetWords&&cur.length>0){chunks.push(cur.join('\n\n'));cur=[p];cw=wc;}
+      else{cur.push(p);cw+=wc;}
+    }
+    if(cur.length)chunks.push(cur.join('\n\n'));
+    return chunks;
+  };
+
+  const processPdf=async(source)=>{
+    const key=topicPdfKey(topic+'§'+source);
+    const files=pdfMeta[key]||[];
+    if(!files.length)return;
+    setProcessing(source);setProgress({step:'Cargando PDF...',pct:0,detail:'',log:[]});
+
+    try{
+      // Load PDF and convert to base64
+      const blob=await idbLoad(topicFilePdfKey(topic+'§'+source,files[0].id));
+      if(!blob)throw new Error('PDF no encontrado');
+      const b64=await blobToB64(blob instanceof File?blob:new File([blob],files[0].name,{type:'application/pdf'}));
+      addLog(`✓ PDF cargado: ${files[0].name}`);
+
+      // Phase 1: Extract structure
+      setProgress(p=>({...p,step:'Fase 1: Extrayendo estructura...',pct:5}));
+      addLog('Fase 1: Extrayendo índice de secciones...');
+      const structRaw=await callClaudeWithDoc([
+        {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}},
+        {type:'text',text:`IDIOMA: Todo en español. Analiza este documento de "${topic}". Identifica TODAS las secciones del capítulo.\nJSON:\n{"sections":[{"title":"Título en español","pageHint":"página aprox"}]}\n\n5-15 secciones.`}
+      ],4096);
+      const struct=JSON.parse(repairJSON(structRaw));
+      const secs=struct.sections||struct;
+      addLog(`✓ ${secs.length} secciones detectadas`);
+
+      // Phase 2: Extract full text
+      setProgress(p=>({...p,step:'Fase 2: Extrayendo texto...',pct:10}));
+      addLog('Fase 2: Extrayendo texto del PDF...');
+      const textRaw=await callClaudeWithDoc([
+        {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}},
+        {type:'text',text:`Extrae el texto COMPLETO de este documento, párrafo por párrafo. No resumas ni omitas nada. Devuelve todo el texto tal cual. Máximo detalle.`}
+      ],16000);
+      addLog(`✓ Texto extraído: ${textRaw.length} caracteres`);
+
+      // Phase 3: Chunk and extract per paragraph group
+      const chunks=chunkText(textRaw,300);
+      const totalChunks=chunks.length;
+      addLog(`Fase 3: ${totalChunks} bloques de párrafos a procesar`);
+      const allExtracts=[];
+      const failed=[];
+
+      for(let i=0;i<totalChunks;i++){
+        const secGuess=secs[Math.min(Math.floor(i/totalChunks*secs.length),secs.length-1)]?.title||'General';
+        setProgress(p=>({...p,step:`Fase 3: Procesando bloque ${i+1}/${totalChunks}`,pct:15+Math.round(i/totalChunks*60),detail:`Sección: ${secGuess}`}));
+        try{
+          const raw=await callClaude(`Experto bioquímica clínica. IDIOMA: español. Extrae TODA la información SIN resumir.\n\nTEMA:"${topic}" SECCIÓN:"${secGuess}"\n\n${chunks[i]}\n\nJSON:\n{"concepts":[{"t":"nombre","d":"definición completa","cat":"concept|value|mechanism|clinical"}]}`,2048);
+          const parsed=JSON.parse(repairJSON(raw));
+          allExtracts.push({section:secGuess,data:parsed.concepts||parsed,chunkIdx:i});
+          addLog(`✓ Bloque ${i+1}: ${(parsed.concepts||parsed).length||0} conceptos`);
+        }catch(e){
+          failed.push(i);
+          addLog(`✗ Bloque ${i+1}: ${e.message}`);
+        }
+      }
+
+      // Save result
+      const result={sections:secs,extracts:allExtracts,failed,processedAt:new Date().toISOString(),totalChunks,textLength:textRaw.length};
+      const newPdfData={...pdfData,[source]:result};
+      setPdfData(newPdfData);
+      save('olab_pdfproc_'+topic.replace(/[^a-z0-9]/gi,'').slice(0,30),newPdfData);
+      addLog(`✓ ${source.toUpperCase()} completado. ${allExtracts.length}/${totalChunks} bloques OK.${failed.length?` ${failed.length} fallidos.`:''}`);
+      setProgress(p=>({...p,step:'Completado',pct:100}));
+    }catch(e){addLog(`ERROR: ${e.message}`);}
+    setProcessing(null);
+  };
+
+  // Phase 4+5: Fuse and create sections
+  const fuseAndCreate=async()=>{
+    if(!pdfData.tietz&&!pdfData.henry)return;
+    setProcessing('fuse');setProgress({step:'Fusionando fuentes...',pct:0,detail:'',log:[]});
+
+    try{
+      const source=pdfData.tietz||pdfData.henry;
+      const secs=source.sections||[];
+      const fusedSections=[];
+
+      for(let i=0;i<secs.length;i++){
+        const secTitle=secs[i].title;
+        setProgress(p=>({...p,step:`Fusionando sección ${i+1}/${secs.length}: ${secTitle}`,pct:Math.round(i/secs.length*80)}));
+        const tietzConcepts=pdfData.tietz?.extracts?.filter(e=>e.section===secTitle).flatMap(e=>e.data)||[];
+        const henryConcepts=pdfData.henry?.extracts?.filter(e=>e.section===secTitle).flatMap(e=>e.data)||[];
+
+        let fusedContent;
+        if(tietzConcepts.length&&henryConcepts.length){
+          addLog(`Fusionando "${secTitle}": Tietz(${tietzConcepts.length}) + Henry(${henryConcepts.length})`);
+          const raw=await callClaude(`Experto bioquímica clínica. IDIOMA: español. Fusiona contenido de Tietz y Henry para "${secTitle}".\n\nTIETZ:\n${JSON.stringify(tietzConcepts.slice(0,40))}\n\nHENRY:\n${JSON.stringify(henryConcepts.slice(0,40))}\n\nElimina duplicados, conserva variaciones. JSON:\n{"concepts":[{"t":"...","d":"...","source":"tietz|henry|ambos"}]}`,4096);
+          fusedContent=JSON.parse(repairJSON(raw));
+        }else{
+          fusedContent={concepts:tietzConcepts.length?tietzConcepts:henryConcepts};
+        }
+        fusedSections.push({title:secTitle,concepts:fusedContent.concepts||fusedContent});
+        addLog(`✓ ${secTitle}: ${(fusedContent.concepts||[]).length} conceptos fusionados`);
+      }
+
+      // Phase 5: Create sections in Aprendizaje
+      setProgress(p=>({...p,step:'Creando secciones en Aprendizaje...',pct:90}));
+      const existingData=learning||{sections:[]};
+      const existingTitles=new Set((existingData.sections||[]).map(s=>s.title));
+      const newSections=fusedSections.filter(s=>!existingTitles.has(s.title)).map(s=>({
+        id:uid(),
+        title:s.title,
+        text:s.concepts.map(c=>`${c.t}: ${c.d}`).join('\n\n'),
+        generated:null
+      }));
+
+      if(newSections.length){
+        const updated={...existingData,sections:[...(existingData.sections||[]),...newSections]};
+        await saveLearningData(topic,updated);
+        addLog(`✓ ${newSections.length} secciones creadas en Aprendizaje`);
+      }else{
+        addLog('Las secciones ya existían en Aprendizaje');
+      }
+
+      // Save fused data
+      const newPdfData={...pdfData,fused:fusedSections};
+      setPdfData(newPdfData);
+      save('olab_pdfproc_'+topic.replace(/[^a-z0-9]/gi,'').slice(0,30),newPdfData);
+      setProgress(p=>({...p,step:'Completado',pct:100}));
+    }catch(e){addLog(`ERROR: ${e.message}`);}
+    setProcessing(null);
+  };
+
+  const tietzStatus=pdfData.tietz?'done':processing==='tietz'?'processing':'pending';
+  const henryStatus=pdfData.henry?'done':processing==='henry'?'processing':'pending';
+  const canFuse=(pdfData.tietz||pdfData.henry)&&!processing;
+
+  return(
+    <Card style={{padding:'14px 18px',marginBottom:16}}>
+      <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>📄 Procesamiento de PDFs</div>
+      <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
+        {(pdfMeta[topicPdfKey(topic+'§tietz')]||[]).length>0&&(
+          <button onClick={()=>processPdf('tietz')} disabled={!!processing}
+            style={{background:tietzStatus==='done'?T.greenS:T.blueS,border:`0.5px solid ${tietzStatus==='done'?T.green:T.blue}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:tietzStatus==='done'?T.green:T.blueText,fontFamily:FONT}}>
+            {tietzStatus==='done'?'✓ Tietz procesado':tietzStatus==='processing'?'⏳ Procesando Tietz...':'📘 Procesar Tietz'}
+          </button>
+        )}
+        {(pdfMeta[topicPdfKey(topic+'§henry')]||[]).length>0&&(
+          <button onClick={()=>processPdf('henry')} disabled={!!processing}
+            style={{background:henryStatus==='done'?T.greenS:T.amberS,border:`0.5px solid ${henryStatus==='done'?T.green:T.amber}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:henryStatus==='done'?T.green:T.amberText,fontFamily:FONT}}>
+            {henryStatus==='done'?'✓ Henry procesado':henryStatus==='processing'?'⏳ Procesando Henry...':'📙 Procesar Henry'}
+          </button>
+        )}
+        {canFuse&&(
+          <button onClick={fuseAndCreate} disabled={!!processing}
+            style={{background:pdfData.fused?T.greenS:T.green,border:`0.5px solid ${T.green}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:pdfData.fused?T.green:'#000',fontFamily:FONT}}>
+            {pdfData.fused?'✓ Fusionado':'🔀 Fusionar y crear secciones'}
+          </button>
+        )}
+      </div>
+      {/* Progress */}
+      {processing&&(
+        <div style={{marginBottom:8}}>
+          <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+            <span style={{fontSize:11,color:T.text,fontWeight:600}}>{progress.step}</span>
+            <span style={{fontSize:11,color:T.muted}}>{progress.pct}%</span>
+          </div>
+          <PBar pct={progress.pct} color={T.green} height={3}/>
+          {progress.detail&&<div style={{fontSize:10,color:T.dim,marginTop:2}}>{progress.detail}</div>}
+        </div>
+      )}
+      {/* Log */}
+      {progress.log.length>0&&(
+        <div style={{maxHeight:120,overflowY:'auto',background:T.bg,borderRadius:6,padding:'6px 8px',border:`0.5px solid ${T.border}`}}>
+          {progress.log.map((l,i)=>(
+            <div key={i} style={{fontSize:9,color:l.startsWith('✓')?T.green:l.startsWith('✗')||l.startsWith('ERROR')?T.red:T.dim,fontFamily:'monospace',lineHeight:1.5}}>{l}</div>
+          ))}
+        </div>
+      )}
+      {/* Status summary */}
+      {pdfData.tietz&&<div style={{fontSize:10,color:T.dim,marginTop:4}}>Tietz: {pdfData.tietz.extracts?.length||0} bloques · {pdfData.tietz.sections?.length||0} secciones{pdfData.tietz.failed?.length?` · ${pdfData.tietz.failed.length} fallidos`:''}</div>}
+      {pdfData.henry&&<div style={{fontSize:10,color:T.dim}}>Henry: {pdfData.henry.extracts?.length||0} bloques · {pdfData.henry.sections?.length||0} secciones{pdfData.henry.failed?.length?` · ${pdfData.henry.failed.length} fallidos`:''}</div>}
+      {pdfData.fused&&<div style={{fontSize:10,color:T.green}}>Fusionado: {pdfData.fused.length} secciones creadas</div>}
+    </Card>
   );
 }
 
