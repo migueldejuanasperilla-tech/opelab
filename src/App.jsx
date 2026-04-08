@@ -3770,14 +3770,15 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
 
   const extractAllContent=async()=>{
     setExtractingAll(true);
-    for(let i=0;i<sections.length;i++){
-      if(sections[i].extractedContent)continue;
-      setGenStep(`Extrayendo contenido: ${sections[i].title} (${i+1} de ${sections.length})...`);
-      setGenPct(Math.round(i/sections.length*100));
+    const toExtract=sections.map((s,i)=>({s,i})).filter(({s})=>!s.extractedContent);
+    for(let j=0;j<toExtract.length;j++){
+      const{s,i}=toExtract[j];
+      setGenStep(`Extrayendo: ${s.title} (${j+1} de ${toExtract.length})...`);
+      setGenPct(Math.round(j/toExtract.length*100));
       await extractSectionContent(i);
-      if(i<sections.length-1)await new Promise(r=>setTimeout(r,3000));
+      if(j<toExtract.length-1)await new Promise(r=>setTimeout(r,3000));
     }
-    setGenStep('');setGenPct(0);
+    setGenStep('');setGenPct(100);
     setExtractingAll(false);
   };
 
@@ -4091,14 +4092,27 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
             <span style={{fontSize:10,color:T.dim}}>{sections.filter(s=>s.unified).length}/{sections.length} unificadas</span>
           </div>
         )}
-        {/* Extract all content button */}
-        {sections.length>0&&sections.some(s=>!s.extractedContent&&s.text?.trim())&&(
-          <div style={{marginTop:6,display:'flex',gap:6,alignItems:'center'}}>
-            <button onClick={extractAllContent} disabled={extractingAll}
-              style={{fontSize:11,background:extractingAll?T.surface:T.blueS,border:`0.5px solid ${extractingAll?T.border:T.blue}`,borderRadius:6,padding:'4px 12px',cursor:extractingAll?'wait':'pointer',color:extractingAll?T.dim:T.blueText,fontWeight:600,fontFamily:FONT}}>
-              {extractingAll?`⏳ ${genStep||'Extrayendo...'}`:'📄 Extraer todo el contenido'}
-            </button>
-            <span style={{fontSize:10,color:T.dim}}>{sections.filter(s=>s.extractedContent).length}/{sections.length} extraídas</span>
+        {/* Extract all content button — prominent, always visible when sections exist */}
+        {sections.length>0&&sections.some(s=>!s.extractedContent)&&(
+          <div style={{marginTop:8,padding:'10px 14px',background:T.blueS,borderRadius:8,border:`0.5px solid ${T.blue}`}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <button onClick={async()=>{
+                // Check if raw PDF text exists in IndexedDB
+                const tietzRaw=await loadRawText('tietz');
+                const henryRaw=await loadRawText('henry');
+                if(!tietzRaw&&!henryRaw){
+                  alert('Primero sube y procesa el PDF en la tab Temario. El texto del capítulo debe estar extraído antes de poder asignar contenido a las secciones.');
+                  return;
+                }
+                extractAllContent();
+              }} disabled={extractingAll}
+                style={{background:extractingAll?T.surface:T.blue,color:extractingAll?T.dim:'#000',border:'none',borderRadius:8,padding:'8px 20px',fontSize:13,fontWeight:700,cursor:extractingAll?'wait':'pointer',fontFamily:FONT}}>
+                {extractingAll?`⏳ ${genStep||'Extrayendo...'}`:'📄 Extraer contenido automáticamente'}
+              </button>
+              <span style={{fontSize:11,color:T.blueText}}>{sections.filter(s=>s.extractedContent).length}/{sections.length} secciones extraídas</span>
+            </div>
+            {extractingAll&&<div style={{marginTop:6}}><PBar pct={genPct} color={T.blue} height={3}/></div>}
+            {!extractingAll&&<div style={{fontSize:10,color:T.dim,marginTop:4}}>Busca en los PDFs de Tietz y Henry el contenido correspondiente a cada sección.</div>}
           </div>
         )}
         {sections.some(s=>s.generated)&&!data.notes?.length&&(
