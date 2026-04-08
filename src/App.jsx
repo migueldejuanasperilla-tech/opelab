@@ -3002,36 +3002,30 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
           <div style={{fontSize:10,color:T.dim,marginBottom:8}}>{treeNodes.filter(n=>n.level===1).length} secciones principales · {treeNodes.filter(n=>n.level>1).length} subsecciones</div>
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
             <button onClick={async()=>{
-              const sources=[];
-              if(pdfData.tietz)sources.push('tietz');
-              if(pdfData.henry)sources.push('henry');
-              if(!sources.length){alert('Extrae al menos un PDF primero.');return;}
-              // Apply to first source, which opens the review screen
-              // The review screen's confirmSections handles creating in Aprendizaje
-              await applyTreeToText(sources[0]);
-              // If both sources exist, merge the second into editingSections
-              if(sources.length>1){
-                const pdfResult2=pdfData[sources[1]];
-                if(pdfResult2?.sections){
-                  const fullText2=pdfResult2.sections.map(s=>s.text).join('\n\n');
-                  const flat2=fullText2.split('\n').map(text=>({text,page:0}));
-                  const titles2=treeNodes.filter(n=>n.level===1).map(n=>n.title);
-                  const pos2=findTitlePositions(flat2,titles2);
-                  const secs2=splitTextAtTitles(flat2,titles2,pos2);
-                  // Merge second source text into editingSections
-                  setEditingSections(prev=>{
-                    if(!prev)return prev;
-                    return prev.map(sec=>{
-                      const match=secs2.find(s2=>s2.title===sec.title);
-                      if(match)return{...sec,text:sec.text+'\n\n'+match.text,words:sec.words+match.words};
-                      return sec;
-                    });
-                  });
-                  setEditSource('ambos');
-                }
+              // Create sections directly in Aprendizaje — empty, ready for content extraction
+              const mainNodes=treeNodes.filter(n=>n.level===1);
+              if(!mainNodes.length){alert('Define al menos una sección de nivel 1.');return;}
+              const existingData=learning||{sections:[]};
+              const existingTitles=new Set((existingData.sections||[]).map(s=>s.title));
+              const newSections=[];
+              for(const node of mainNodes){
+                if(existingTitles.has(node.title))continue;
+                // Collect subsection titles for this main section
+                const nodeIdx=treeNodes.indexOf(node);
+                const nextMainIdx=treeNodes.findIndex((n,i)=>i>nodeIdx&&n.level===1);
+                const subs=treeNodes.slice(nodeIdx+1,nextMainIdx>0?nextMainIdx:treeNodes.length).filter(n=>n.level>1);
+                newSections.push({
+                  id:uid(),title:node.title,text:'',generated:null,extractedContent:null,
+                  subsections:subs.length?subs.map(s=>({id:uid(),title:s.title,text:'',generated:null})):undefined
+                });
               }
-            }} disabled={!pdfData.tietz&&!pdfData.henry}
-              style={{background:T.green,color:'#000',border:'none',borderRadius:8,padding:'6px 18px',fontSize:12,fontWeight:700,cursor:!pdfData.tietz&&!pdfData.henry?'not-allowed':'pointer',fontFamily:FONT}}>
+              if(newSections.length){
+                await saveLearningData(topic,{...existingData,sections:[...(existingData.sections||[]),...newSections]});
+              }
+              setManualMode(false);setTreeNodes([]);
+              setProgress({step:`✓ ${newSections.length} secciones creadas. Usa "Extraer contenido" para llenarlas desde los PDFs.`,pct:100,detail:''});
+            }}
+              style={{background:T.green,color:'#000',border:'none',borderRadius:8,padding:'6px 18px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>
               ✓ Confirmar estructura
             </button>
             <button onClick={()=>setTreeNodes([])} style={{fontSize:11,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Reiniciar</button>
@@ -3688,6 +3682,53 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     setUnifyAllRunning(false);
   };
 
+  // ── Content extraction per section from full PDF text ───────────────────
+  const [extractingAll,setExtractingAll]=useState(false);
+  const [extractingIdx,setExtractingIdx]=useState(null);
+
+  const extractSectionContent=async(idx)=>{
+    const sec=sections[idx];
+    if(sec.extractedContent)return; // already done
+    if(!sec.text?.trim()&&!sec.title)return;
+    setExtractingIdx(idx);
+    try{
+      // Get full chapter text from the section's own text or from pdfData
+      const sectionText=sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'')||'';
+      // If section already has substantial text (>200 words), use it directly
+      if(sectionText.split(/\s+/).length>200){
+        const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:sectionText,date:new Date().toISOString(),words:sectionText.split(/\s+/).length}}:s);
+        await save({...data,sections:updSections});
+        setExtractingIdx(null);return;
+      }
+      // Otherwise, need API extraction from full chapter text
+      const fullChapterText=sections.map(s=>s.text||'').join('\n\n').replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'');
+      const subsectionTitles=(sec.subsections||[]).map(s=>s.title).join(', ');
+      // Chunk if too long
+      const chunkSize=20000;
+      const textToSend=fullChapterText.slice(0,chunkSize);
+      const raw=await callClaude(`Eres experto en bioquímica clínica. IDIOMA: Todo en español. Responde SOLO con JSON puro.\n\nBusca y extrae TODA la información relacionada con "${sec.title}"${subsectionTitles?` (incluye: ${subsectionTitles})`:''} que aparezca en este texto. No resumas — extrae el contenido completo y exacto relacionado con este concepto, incluyendo todos los valores numéricos, mecanismos, criterios diagnósticos y notas clínicas.\n\nTEXTO DEL CAPÍTULO:\n${textToSend}\n\n{"extractedText":"contenido completo extraído relacionado con ${sec.title}","keywords":["palabra clave 1","palabra clave 2"]}`,8192);
+      const parsed=JSON.parse(repairJSON(raw));
+      const extracted=parsed.extractedText||parsed.text||JSON.stringify(parsed);
+      const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:extracted,date:new Date().toISOString(),words:extracted.split(/\s+/).length,keywords:parsed.keywords||[]}}:s);
+      await save({...data,sections:updSections});
+    }catch(e){console.error(`[Extract] Error section "${sec.title}":`,e.message);}
+    setExtractingIdx(null);
+  };
+
+  const extractAllContent=async()=>{
+    setExtractingAll(true);
+    for(let i=0;i<sections.length;i++){
+      if(sections[i].extractedContent)continue;
+      if(!sections[i].text?.trim()&&!sections[i].title)continue;
+      setGenStep(`Extrayendo contenido: ${sections[i].title} (${i+1} de ${sections.length})...`);
+      setGenPct(Math.round(i/sections.length*100));
+      await extractSectionContent(i);
+      if(i<sections.length-1)await new Promise(r=>setTimeout(r,3000));
+    }
+    setGenStep('');setGenPct(0);
+    setExtractingAll(false);
+  };
+
   // ── API caller with retries and truncation detection ────────────────────
   const callClaude=async(prompt,maxTokens=4096,retries=3)=>{
     for(let attempt=1;attempt<=retries;attempt++){
@@ -3734,8 +3775,8 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   const generateSection=async(idx,subIdx)=>{
     const sec=sections[idx];
     const sub=subIdx!=null?sec.subsections?.[subIdx]:null;
-    // Use unified text if available, otherwise raw text
-    const targetText=sub?sub.text:(sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,''));
+    // Priority: extractedContent > unified > raw text
+    const targetText=sub?sub.text:(sec.extractedContent?.text||sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,''));
     const targetTitle=sub?`${sec.title} > ${sub.title}`:sec.title;
     if(!targetText?.trim()){setGenError('Pega texto primero.');return;}
     setGenIdx(subIdx!=null?`${idx}-${subIdx}`:idx);setGenError('');setGenPct(0);
@@ -3998,6 +4039,16 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
             <span style={{fontSize:10,color:T.dim}}>{sections.filter(s=>s.unified).length}/{sections.length} unificadas</span>
           </div>
         )}
+        {/* Extract all content button */}
+        {sections.length>0&&sections.some(s=>!s.extractedContent&&s.text?.trim())&&(
+          <div style={{marginTop:6,display:'flex',gap:6,alignItems:'center'}}>
+            <button onClick={extractAllContent} disabled={extractingAll}
+              style={{fontSize:11,background:extractingAll?T.surface:T.blueS,border:`0.5px solid ${extractingAll?T.border:T.blue}`,borderRadius:6,padding:'4px 12px',cursor:extractingAll?'wait':'pointer',color:extractingAll?T.dim:T.blueText,fontWeight:600,fontFamily:FONT}}>
+              {extractingAll?`⏳ ${genStep||'Extrayendo...'}`:'📄 Extraer todo el contenido'}
+            </button>
+            <span style={{fontSize:10,color:T.dim}}>{sections.filter(s=>s.extractedContent).length}/{sections.length} extraídas</span>
+          </div>
+        )}
         {sections.some(s=>s.generated)&&!data.notes?.length&&(
           <div style={{marginTop:8,fontSize:11,color:T.teal}}>Genera apuntes del tema desde la pestaña Apuntes para sintetizar todo el contenido.</div>
         )}
@@ -4030,7 +4081,8 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
                   <div style={{fontSize:10,color:T.muted}}>
                     {(()=>{const hasTietz=sec.text?.includes('[Fuente: Tietz]');const hasHenry=sec.text?.includes('[Fuente: Henry]');const src=hasTietz&&hasHenry?'T+H':hasTietz?'T':hasHenry?'H':null;return src?<span style={{color:T.teal,marginRight:4}}>{src}</span>:null;})()}
                     {sec.unified&&<span style={{color:T.green,marginRight:4}}>✓U</span>}
-                    {hasGen?`Generado · ${sec.generated.conceptMap?.length||0} conceptos`:'Sin generar'}
+                    {sec.extractedContent&&<span style={{color:T.blue,marginRight:4}}>✓E({sec.extractedContent.words})</span>}
+                    {hasGen?`Generado · ${sec.generated.conceptMap?.length||0} conceptos`:sec.extractedContent?'Extraído — listo para generar':'Sin generar'}
                     {score!==null&&<span style={{color:scoreColor,fontWeight:700}}> · {score}%</span>}
                     {sec.pageStart&&<span style={{color:T.dim}}> · pp.{sec.pageStart}{sec.pageEnd?'-'+sec.pageEnd:''}</span>}
                   </div>
@@ -4043,9 +4095,25 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
               {/* Expanded section content */}
               {isOpen&&(
                 <div style={{borderTop:`1px solid ${T.border}`,padding:'14px 16px'}}>
-                  {/* Section-level content: unify + generate */}
+                  {/* Section-level content: extract + unify + generate */}
                   {!hasGen&&(
                     <div style={{marginBottom:(sec.subsections||[]).length?12:0}}>
+                      {/* Extraction status */}
+                      {sec.extractedContent?(
+                        <div style={{marginBottom:8,padding:'6px 10px',background:T.blueS,borderRadius:6,border:`0.5px solid ${T.blue}`,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                          <span style={{fontSize:10,color:T.blueText}}>✓ Contenido extraído · {sec.extractedContent.words} palabras · {fmtDate(sec.extractedContent.date)}</span>
+                          <button onClick={()=>{const n=sections.map((s,i)=>i===idx?{...s,extractedContent:null}:s);save({...data,sections:n});}}
+                            style={{fontSize:9,background:'none',border:`0.5px solid ${T.border}`,borderRadius:4,padding:'1px 6px',cursor:'pointer',color:T.dim,fontFamily:FONT}}>Regenerar</button>
+                        </div>
+                      ):(sec.text?.trim()&&(
+                        <div style={{marginBottom:8,display:'flex',gap:6,alignItems:'center'}}>
+                          <button onClick={()=>extractSectionContent(idx)} disabled={extractingIdx!=null}
+                            style={{fontSize:10,background:extractingIdx===idx?T.surface:T.blueS,border:`0.5px solid ${extractingIdx===idx?T.border:T.blue}`,borderRadius:6,padding:'4px 10px',cursor:extractingIdx!=null?'wait':'pointer',color:extractingIdx===idx?T.dim:T.blueText,fontWeight:600,fontFamily:FONT}}>
+                            {extractingIdx===idx?'⏳ Extrayendo...':'📄 Extraer contenido'}
+                          </button>
+                          <span style={{fontSize:9,color:T.dim}}>sin extraer</span>
+                        </div>
+                      ))}
                       {/* Unification status */}
                       {sec.unified?(
                         <div style={{marginBottom:10,padding:'8px 12px',background:T.greenS,borderRadius:8,border:`0.5px solid ${T.green}`}}>
