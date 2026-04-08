@@ -90,7 +90,12 @@ async function idbLoadLearning(topic){const db=await idbOpen();return new Promis
 async function idbLoadAllLearning(){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readonly');const store=tx.objectStore(IDB_LEARN_STORE);const keys=store.getAllKeys();const vals=store.getAll();tx.oncomplete=()=>{const m={};keys.result.forEach((k,i)=>{if(vals.result[i])m[k]=vals.result[i];});res(m);};tx.onerror=rej;});}
 async function idbDeleteLearning(topic){const db=await idbOpen();return new Promise((res,rej)=>{const tx=db.transaction(IDB_LEARN_STORE,'readwrite');tx.objectStore(IDB_LEARN_STORE).delete(topic);tx.oncomplete=res;tx.onerror=rej;});}
 // Clave por tema (para el mapa de metadata)
-const topicPdfKey=t=>'pdf_'+t.replace(/[^a-zA-Z0-9]/g,'').slice(0,40);
+const topicPdfKey=t=>{
+  // Preserve §tietz / §henry suffix before sanitizing
+  let suffix='';
+  if(t.includes('§')){const parts=t.split('§');suffix='_'+parts.pop();t=parts.join('');}
+  return 'pdf_'+t.replace(/[^a-zA-Z0-9]/g,'').slice(0,40)+suffix;
+};
 // Clave por archivo individual en IndexedDB
 const topicFilePdfKey=(t,id)=>topicPdfKey(t)+'_'+id;
 // Convertir Blob/File a base64 para la API
@@ -1628,7 +1633,6 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
 function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePdfForTopic,apiKey,setTopicView,learningData}){
   const [open,setOpen]=useState(null);
   const [openPdf,setOpenPdf]=useState(null); // {topic, fileId, name}
-  const [splittingKey,setSplittingKey]=useState(null);
   const studied=ALL_TOPICS.filter(t=>stats[t]?.t>0).length;
 
   const pctS=Math.round(studied/ALL_TOPICS.length*100);
@@ -1710,12 +1714,12 @@ function Temario({setTab,stats,qs,notes,setNote,pdfMeta,savePdfForTopic,deletePd
                               inp.onchange=async e=>{
                                 const fs=Array.from(e.target.files||[]);
                                 for(const f of fs){
-                                  setSplittingKey(pKey);await savePdfForTopic(t,f);setSplittingKey(null);
+                                  await savePdfForTopic(t,f);
                                 }
                               };inp.click();
-                            }} disabled={splittingKey===pKey}
-                              style={{background:splittingKey===pKey?T.amberS:hasPdfs?T.greenS:T.blueS,border:`1px solid ${splittingKey===pKey?T.amber:hasPdfs?'#1a3a1a':T.border2}`,borderRadius:20,padding:'3px 10px',fontSize:10,cursor:splittingKey===pKey?'wait':'pointer',color:splittingKey===pKey?T.amberText:hasPdfs?T.greenText:T.blueText,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>
-                              {splittingKey===pKey?'⏳…':hasPdfs?`📄 ${files.length}`:'+ PDF'}
+                            }}
+                              style={{background:hasPdfs?T.greenS:T.blueS,border:`1px solid ${hasPdfs?'#1a3a1a':T.border2}`,borderRadius:20,padding:'3px 10px',fontSize:10,cursor:'pointer',color:hasPdfs?T.greenText:T.blueText,fontWeight:600,fontFamily:FONT,whiteSpace:'nowrap'}}>
+                              {hasPdfs?`📄 ${files.length}`:'+ PDF'}
                             </button>
                             {ls&&ls.status!=='sinEmpezar'&&(()=>{const lvl=getMasteryLevel(ls.mastery);return(
                               <span style={{background:lvl.color+'18',border:`0.5px solid ${lvl.color}`,borderRadius:20,padding:'3px 8px',fontSize:10,color:lvl.color,fontWeight:700,fontFamily:FONT,whiteSpace:'nowrap'}}>
@@ -2057,10 +2061,25 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
   const section=SECTIONS.find(s=>s.topics.includes(topic));
   const ls=learning?getLearningStatus(learning):null;
 
-  // Upload PDF for Tietz/Henry — uses savePdfForTopic with suffixed topic key
+  // Upload PDF for Tietz/Henry — validates source separation, replaces old splits
   const uploadPdf=(source)=>{
     const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
-    inp.onchange=async e=>{const f=e.target.files?.[0];if(!f)return;
+    inp.onchange=async e=>{
+      const f=e.target.files?.[0];if(!f)return;
+      // Validate: check if same file name exists in the OTHER source
+      const otherSource=source==='tietz'?'henry':'tietz';
+      const otherFiles=pdfMeta[topicPdfKey(topic+'§'+otherSource)]||[];
+      if(otherFiles.some(of=>of.name===f.name)){
+        alert(`Este archivo "${f.name}" ya está subido en ${otherSource==='tietz'?'Tietz':'Henry'}. Cada PDF debe pertenecer a una sola fuente.`);
+        return;
+      }
+      // Clear any previous files for this source (replaces old split versions)
+      const existingKey=topicPdfKey(topic+'§'+source);
+      const existingFiles=pdfMeta[existingKey]||[];
+      if(existingFiles.length>0){
+        for(const old of existingFiles)await idbDel(topicFilePdfKey(topic+'§'+source,old.id));
+        setPdfMetaState(prev=>{const n={...prev};delete n[existingKey];save('olab_pdf_meta',n);return n;});
+      }
       await savePdfForTopic(topic+'§'+source,f);
     };inp.click();
   };
@@ -2289,11 +2308,69 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       if(curLine.text.trim())lines.push({text:curLine.text.trim(),fontSize:curLine.fontSize,bold:curLine.bold,y:curLine.y});
       pages.push({pageNum:p,lines});
     }
-    return{pages,totalPages};
+    // Extract PDF bookmarks/outline if available
+    let bookmarks=[];
+    try{
+      const outline=await pdf.getOutline();
+      if(outline?.length){
+        const flattenOutline=(items,level=1)=>{
+          for(const item of items){
+            if(item.title)bookmarks.push({title:item.title.trim(),level,dest:item.dest});
+            if(item.items?.length&&level<2)flattenOutline(item.items,level+1);
+          }
+        };
+        flattenOutline(outline);
+      }
+    }catch{}
+    return{pages,totalPages,bookmarks};
   };
 
-  // ── Detect sections using two-level font hierarchy + API fallback ────────
-  const detectSections=async(pages)=>{
+  // ── Balance sections: merge small (<500 words), split large (>15000) ────
+  const balanceSections=(sections)=>{
+    const balanced=[];
+    for(const s of sections){
+      if(s.words<500&&balanced.length>0){
+        const prev=balanced[balanced.length-1];
+        prev.text+='\n\n'+s.text;prev.words+=s.words;prev.pageEnd=s.pageEnd;prev.title+=' / '+s.title;
+      }else if(s.words>15000){
+        const paras=s.text.split(/\n\n+/);let half='';let hw=0;
+        for(const p of paras){half+=(half?'\n\n':'')+p;hw+=p.split(/\s+/).length;if(hw>=s.words/2)break;}
+        const rest=s.text.slice(half.length).trim();
+        balanced.push({...s,text:half,words:hw,title:s.title+' (1/2)'});
+        if(rest.length>200)balanced.push({...s,text:rest,words:s.words-hw,title:s.title+' (2/2)',pageStart:s.pageStart+Math.round((s.pageEnd-s.pageStart)/2)});
+      }else balanced.push(s);
+    }
+    return balanced.slice(0,25);
+  };
+
+  // ── Detect sections using bookmarks > font hierarchy > API fallback ─────
+  const detectSections=async(pages,allBookmarks)=>{
+    // Priority 1: Use PDF bookmarks if available (most reliable)
+    if(allBookmarks?.length>=2&&allBookmarks.length<=25){
+      const level1=allBookmarks.filter(b=>b.level===1);
+      const titles=(level1.length>=2?level1:allBookmarks).slice(0,25);
+      // Split text at bookmark titles
+      const flat=pages.flatMap(p=>p.lines.map(l=>({text:l.text,page:p.pageNum})));
+      const sections=[];
+      for(let i=0;i<titles.length;i++){
+        const tn=titles[i].title.toLowerCase();
+        let start=flat.findIndex(l=>l.text.toLowerCase().includes(tn));
+        if(start<0)start=flat.findIndex(l=>l.text.toLowerCase().includes(tn.slice(0,20)));
+        if(start<0)start=sections.length?sections[sections.length-1]._end||0:0;
+        let end=flat.length;
+        if(i<titles.length-1){
+          const nxt=titles[i+1].title.toLowerCase();
+          const ni=flat.findIndex((l,j)=>j>start&&l.text.toLowerCase().includes(nxt));
+          if(ni>start)end=ni;
+        }
+        const txt=flat.slice(start,end).map(l=>l.text).join('\n');
+        sections.push({title:titles[i].title,text:txt,pageStart:flat[start]?.page||1,pageEnd:flat[Math.min(end-1,flat.length-1)]?.page||1,words:txt.split(/\s+/).length,_end:end});
+      }
+      // Balance sizes
+      return balanceSections(sections);
+    }
+
+    // Priority 2: Font-based hierarchy
     // Step 1: Build font size histogram weighted by character count
     const fontSizes={};
     for(const page of pages)for(const line of page.lines){
@@ -2364,33 +2441,8 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       sections.push({title,text:txt,pageStart:flat[start]?.page||1,pageEnd:flat[Math.min(end-1,flat.length-1)]?.page||1,words,_end:end});
     }
 
-    // Step 5: Enforce size bounds (500-15000 words)
-    const balanced=[];
-    for(let i=0;i<sections.length;i++){
-      const s=sections[i];
-      if(s.words<500&&balanced.length>0){
-        // Merge small section into previous
-        const prev=balanced[balanced.length-1];
-        prev.text+='\n\n'+s.text;
-        prev.words+=s.words;
-        prev.pageEnd=s.pageEnd;
-        prev.title+=' / '+s.title;
-      }else if(s.words>15000){
-        // Split oversized: find midpoint at a paragraph break
-        const paras=s.text.split(/\n\n+/);
-        let half='';let halfWords=0;
-        for(const p of paras){
-          half+=(half?'\n\n':'')+p;halfWords+=p.split(/\s+/).length;
-          if(halfWords>=s.words/2)break;
-        }
-        const rest=s.text.slice(half.length).trim();
-        balanced.push({...s,text:half,words:halfWords,title:s.title+' (1/2)'});
-        if(rest.length>200)balanced.push({...s,text:rest,words:s.words-halfWords,title:s.title+' (2/2)',pageStart:s.pageStart+Math.round((s.pageEnd-s.pageStart)/2)});
-      }else{
-        balanced.push(s);
-      }
-    }
-    return balanced.slice(0,25);
+    // Step 5: Enforce size bounds
+    return balanceSections(sections);
   };
 
   // ── Process a PDF source ────────────────────────────────────────────────
@@ -2403,6 +2455,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
     try{
       // Phase 1: Extract text from ALL PDFs of this source, sequentially
       const allPages=[];
+      const allBookmarks=[];
       let totalPagesAll=0;
       for(let fi=0;fi<files.length;fi++){
         const f=files[fi];
@@ -2410,11 +2463,12 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
         const blob=await idbLoad(topicFilePdfKey(topic+'§'+source,f.id));
         if(!blob){console.warn(`[PdfProc] PDF not found: ${f.name}`);continue;}
         const file=blob instanceof File?blob:new File([blob],f.name,{type:'application/pdf'});
-        const{pages,totalPages}=await extractPdfText(file,f.name);
+        const{pages,totalPages,bookmarks}=await extractPdfText(file,f.name);
         // Offset page numbers to be sequential across files
         const offset=totalPagesAll;
         pages.forEach(p=>{p.pageNum+=offset;});
         allPages.push(...pages);
+        if(bookmarks?.length&&!allBookmarks.length)allBookmarks.push(...bookmarks); // use bookmarks from first PDF that has them
         totalPagesAll+=totalPages;
       }
 
@@ -2422,7 +2476,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
 
       // Phase 2: Detect sections on unified text
       setProgress({step:'Detectando secciones en texto unificado...',pct:80,detail:`${totalPagesAll} páginas totales de ${files.length} archivo${files.length>1?'s':''}`});
-      const rawSections=await detectSections(allPages);
+      const rawSections=await detectSections(allPages,allBookmarks);
 
       // Phase 3: One API call to refine titles
       setProgress({step:'Refinando títulos con IA...',pct:90,detail:`${rawSections.length} secciones detectadas`});
