@@ -4611,7 +4611,6 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
               {/* Time comparison */}
               {(()=>{const sec=sections[idx];const tk=`study_time_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}_${sec?.id||sec?.title||''}`;const prev=load(tk,[]);if(prev.length>1){const avg=Math.round(prev.reduce((a,s)=>a+s.seconds,0)/prev.length);return <div style={{fontSize:10,color:T.dim}}>Media tiempo: {fmtTimer(avg)} {elapsed<avg?'· ¡Más rápido!':`· ${Math.round((elapsed/avg-1)*100)}% más`}</div>;}return null;})()}
             </Card>);})()}
-            </Card>
           )}
         </div>
       )}
