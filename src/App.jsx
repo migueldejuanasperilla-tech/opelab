@@ -2552,6 +2552,12 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
 
       if(!allPages.length)throw new Error('No se pudo extraer texto de ningún PDF');
 
+      // Save raw text to IndexedDB for later content extraction
+      const rawFullText=allPages.flatMap(p=>p.lines.map(l=>l.text)).join('\n');
+      const rawTextKey=`raw_text_${source}_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}`;
+      await idbSave(rawTextKey,rawFullText);
+      console.log(`[PdfProc] Saved raw text: ${rawTextKey} (${rawFullText.split(/\s+/).length} words)`);
+
       // Phase 2: Detect sections on unified text
       setProgress({step:'Detectando secciones en texto unificado...',pct:80,detail:`${totalPagesAll} páginas totales de ${files.length} archivo${files.length>1?'s':''}`});
       const rawSections=await detectSections(allPages,allBookmarks);
@@ -3682,36 +3688,83 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     setUnifyAllRunning(false);
   };
 
-  // ── Content extraction per section from full PDF text ───────────────────
+  // ── Content extraction per section from stored raw PDF text ─────────────
   const [extractingAll,setExtractingAll]=useState(false);
   const [extractingIdx,setExtractingIdx]=useState(null);
 
+  // Load raw chapter text from IndexedDB
+  const loadRawText=async(source)=>{
+    const key=`raw_text_${source}_${topic.replace(/[^a-z0-9]/gi,'').slice(0,30)}`;
+    return await idbLoad(key);
+  };
+
+  // Split text into overlapping chunks of ~5000 words
+  const chunkText5k=(text)=>{
+    const words=text.split(/\s+/);
+    if(words.length<=6000)return[text]; // small enough for one call
+    const chunks=[];const chunkWords=5000;const overlap=500;
+    for(let i=0;i<words.length;i+=chunkWords-overlap){
+      chunks.push(words.slice(i,i+chunkWords).join(' '));
+      if(i+chunkWords>=words.length)break;
+    }
+    return chunks;
+  };
+
   const extractSectionContent=async(idx)=>{
     const sec=sections[idx];
-    if(sec.extractedContent)return; // already done
-    if(!sec.text?.trim()&&!sec.title)return;
+    if(sec.extractedContent)return;
     setExtractingIdx(idx);
     try{
-      // Get full chapter text from the section's own text or from pdfData
-      const sectionText=sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'')||'';
-      // If section already has substantial text (>200 words), use it directly
-      if(sectionText.split(/\s+/).length>200){
-        const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:sectionText,date:new Date().toISOString(),words:sectionText.split(/\s+/).length}}:s);
-        await save({...data,sections:updSections});
-        setExtractingIdx(null);return;
+      // Load raw text from both sources
+      const tietzRaw=await loadRawText('tietz');
+      const henryRaw=await loadRawText('henry');
+      const combinedRaw=[tietzRaw||'',henryRaw||''].filter(Boolean).join('\n\n---FUENTE SEPARADORA---\n\n');
+      if(!combinedRaw.trim()){
+        // Fallback: use section's own text if raw not available
+        const ownText=sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'')||'';
+        if(ownText.trim().length>100){
+          const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:ownText,date:new Date().toISOString(),words:ownText.split(/\s+/).length,source:'propio'}}:s);
+          await save({...data,sections:updSections});
+          setExtractingIdx(null);return;
+        }
+        throw new Error('No hay texto de capítulo disponible. Extrae los PDFs primero.');
       }
-      // Otherwise, need API extraction from full chapter text
-      const fullChapterText=sections.map(s=>s.text||'').join('\n\n').replace(/\[Fuente: (Tietz|Henry)\]\s*/g,'');
-      const subsectionTitles=(sec.subsections||[]).map(s=>s.title).join(', ');
-      // Chunk if too long
-      const chunkSize=20000;
-      const textToSend=fullChapterText.slice(0,chunkSize);
-      const raw=await callClaude(`Eres experto en bioquímica clínica. IDIOMA: Todo en español. Responde SOLO con JSON puro.\n\nBusca y extrae TODA la información relacionada con "${sec.title}"${subsectionTitles?` (incluye: ${subsectionTitles})`:''} que aparezca en este texto. No resumas — extrae el contenido completo y exacto relacionado con este concepto, incluyendo todos los valores numéricos, mecanismos, criterios diagnósticos y notas clínicas.\n\nTEXTO DEL CAPÍTULO:\n${textToSend}\n\n{"extractedText":"contenido completo extraído relacionado con ${sec.title}","keywords":["palabra clave 1","palabra clave 2"]}`,8192);
-      const parsed=JSON.parse(repairJSON(raw));
-      const extracted=parsed.extractedText||parsed.text||JSON.stringify(parsed);
-      const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:extracted,date:new Date().toISOString(),words:extracted.split(/\s+/).length,keywords:parsed.keywords||[]}}:s);
+
+      const subsStr=(sec.subsections||[]).map(s=>s.title).join(', ');
+      const chunks=chunkText5k(combinedRaw);
+      const allExtracts=[];
+
+      for(let ci=0;ci<chunks.length;ci++){
+        if(chunks.length>1)setGenStep(`Extrayendo: ${sec.title} (chunk ${ci+1}/${chunks.length})...`);
+        const raw=await callClaude(
+          `Del siguiente texto de libro médico, extrae TODA la información relacionada con "${sec.title}"${subsStr?` (incluye: ${subsStr})`:''}.`+
+          ` Copia el contenido relevante de forma exhaustiva sin resumir.`+
+          ` Incluye todos los valores numéricos, mecanismos, criterios diagnósticos y notas clínicas relacionados.`+
+          ` Responde en español. Responde SOLO con JSON puro.\n\n`+
+          `{"content":"texto completo extraído"}\n\nTEXTO:\n${chunks[ci]}`,8192);
+        const cleaned=raw.replace(/```json|```/g,'').trim();
+        const jIdx=cleaned.indexOf('{');
+        let extracted;
+        try{const p=JSON.parse(jIdx>=0?cleaned.slice(jIdx):cleaned);extracted=p.content||p.extractedText||cleaned;}
+        catch{extracted=cleaned;}
+        if(extracted&&extracted.length>50)allExtracts.push(extracted);
+      }
+
+      // Combine results from all chunks, removing obvious duplicates
+      let combined=allExtracts.join('\n\n');
+      if(allExtracts.length>1){
+        // Simple dedup: split into sentences, remove exact duplicates
+        const sentences=combined.split(/(?<=[.!?])\s+/);
+        const seen=new Set();
+        const deduped=sentences.filter(s=>{const k=s.trim().toLowerCase().slice(0,60);if(seen.has(k))return false;seen.add(k);return true;});
+        combined=deduped.join(' ');
+      }
+
+      const words=combined.split(/\s+/).length;
+      console.log(`[Extract] "${sec.title}": ${words} words from ${chunks.length} chunk(s)`);
+      const updSections=sections.map((s,i)=>i===idx?{...s,extractedContent:{text:combined,date:new Date().toISOString(),words,source:tietzRaw&&henryRaw?'tietz+henry':tietzRaw?'tietz':'henry'}}:s);
       await save({...data,sections:updSections});
-    }catch(e){console.error(`[Extract] Error section "${sec.title}":`,e.message);}
+    }catch(e){console.error(`[Extract] Error "${sec.title}":`,e.message);setGenError(`Error extrayendo "${sec.title}": ${e.message}`);}
     setExtractingIdx(null);
   };
 
@@ -3719,7 +3772,6 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     setExtractingAll(true);
     for(let i=0;i<sections.length;i++){
       if(sections[i].extractedContent)continue;
-      if(!sections[i].text?.trim()&&!sections[i].title)continue;
       setGenStep(`Extrayendo contenido: ${sections[i].title} (${i+1} de ${sections.length})...`);
       setGenPct(Math.round(i/sections.length*100));
       await extractSectionContent(i);
