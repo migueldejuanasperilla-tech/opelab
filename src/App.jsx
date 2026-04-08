@@ -1472,6 +1472,78 @@ function Dashboard({qs,testQs,fcQs,dueQs,stats,errSet,marked,setTab,examDate,ses
         </Card>
       )}
 
+      {/* Diagnóstico de conocimiento */}
+      {(()=>{
+        const diffProfile=loadDiffProfile();
+        const typeAnalysis=Object.entries(diffProfile).filter(([,v])=>v.t>=3).map(([k,v])=>({type:k,acc:Math.round(v.c/v.t*100),total:v.t})).sort((a,b)=>a.acc-b.acc);
+        // Section-level error rates from learning data
+        const sectionErrors=[];
+        Object.entries(learningData||{}).forEach(([t,ld])=>{
+          (ld?.sections||[]).forEach(sec=>{
+            const prog=sec?.generated?.progress;
+            if(!prog)return;
+            const scores=[];
+            if(prog.preTest?.completed)scores.push(prog.preTest.score);
+            if(prog.postTest?.completed)scores.push(prog.postTest.score);
+            if(scores.length){const avg=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);sectionErrors.push({topic:t.split('.')[0],section:sec.title,score:avg,topicFull:t});}
+          });
+        });
+        sectionErrors.sort((a,b)=>a.score-b.score);
+        // Blind spots: high confidence + fail (sections scored >60 on pretest but <50 on posttest)
+        const blindSpots=[];
+        Object.entries(learningData||{}).forEach(([t,ld])=>{
+          (ld?.sections||[]).forEach(sec=>{
+            const prog=sec?.generated?.progress;
+            if(prog?.preTest?.completed&&prog?.postTest?.completed&&prog.preTest.score>60&&prog.postTest.score<50){
+              blindSpots.push({topic:t.split('.')[0],section:sec.title,pre:prog.preTest.score,post:prog.postTest.score,topicFull:t});
+            }
+          });
+        });
+        if(!typeAnalysis.length&&!sectionErrors.length)return null;
+        return(
+          <Card style={{padding:'18px 22px',marginBottom:16}}>
+            <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.red,borderRadius:2,display:'block'}}/>🔍 Diagnóstico de conocimiento</div>
+            {/* Type weakness */}
+            {typeAnalysis.length>0&&(
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,color:T.muted,marginBottom:6}}>Rendimiento por tipo de pregunta</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {typeAnalysis.map(a=>(
+                    <div key={a.type} style={{background:a.acc<50?T.redS:a.acc<70?T.amberS:T.greenS,border:`0.5px solid ${a.acc<50?T.red:a.acc<70?T.amber:T.green}`,borderRadius:8,padding:'6px 10px',textAlign:'center',minWidth:70}}>
+                      <div style={{fontSize:14,fontWeight:700,color:a.acc<50?T.red:a.acc<70?T.amber:T.green}}>{a.acc}%</div>
+                      <div style={{fontSize:9,color:T.dim}}>{a.type} ({a.total})</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Worst sections */}
+            {sectionErrors.length>0&&(
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,color:T.muted,marginBottom:6}}>Secciones con mayor error</div>
+                {sectionErrors.slice(0,5).map((s,i)=>(
+                  <div key={i} onClick={()=>setTopicView?.(s.topicFull)} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 0',cursor:'pointer',borderBottom:`0.5px solid ${T.border}20`}}>
+                    <span style={{fontSize:12,fontWeight:700,color:s.score<50?T.red:s.score<70?T.amber:T.green,minWidth:28}}>{s.score}%</span>
+                    <span style={{fontSize:11,color:T.text,flex:1}}>{s.topic} · {s.section}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Blind spots */}
+            {blindSpots.length>0&&(
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:T.red,marginBottom:4}}>⚠ Puntos ciegos (alta confianza + fallo)</div>
+                {blindSpots.map((b,i)=>(
+                  <div key={i} style={{fontSize:11,color:T.text,padding:'3px 0'}}>
+                    {b.topic} · {b.section}: Pre {b.pre}% → Post {b.post}%
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        );
+      })()}
+
       {/* Planificador compacto */}
       <Card style={{padding:'18px 22px'}}>
         <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:12,display:'flex',alignItems:'center',gap:8}}><span style={{width:3,height:16,background:T.amber,borderRadius:2,display:'block'}}/>📅 Planificación</div>
@@ -2240,11 +2312,19 @@ Requisitos:
 // PREGUNTAS TAB — todas las preguntas del tema con metadatos y generación
 // ═══════════════════════════════════════════════════════════════════════════
 function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,learning,bgJobs,startBgJob,clearJob}){
-  const [filter,setFilter]=useState({section:'',type:'',difficulty:''});
+  const [mode,setMode]=useState('browse'); // browse | practice | exam
+  const [filter,setFilter]=useState({section:'',type:'',difficulty:'',status:''});
   const [generating,setGenerating]=useState(false);
   const [genMsg,setGenMsg]=useState('');
+  // Practice state
+  const [practiceQs,setPracticeQs]=useState([]);
+  const [practiceIdx,setPracticeIdx]=useState(0);
+  const [practiceAnswer,setPracticeAnswer]=useState(null);
+  const [practiceRevealed,setPracticeRevealed]=useState(false);
+  const [practiceStats,setPracticeStats]=useState({c:0,t:0});
+  // Per-question stats from localStorage
+  const [qStats,setQStats]=useState(()=>load('olab_qstats',{}));
 
-  // Group by section
   const sections=[...new Set(allQuestions.map(q=>q.seccion||q._section||'General'))].sort();
   const types=[...new Set(allQuestions.map(q=>q.tipo||q._source||q.type||'—'))];
   const diffs=[...new Set(allQuestions.map(q=>q.dificultad||'—'))].filter(d=>d!=='—');
@@ -2253,17 +2333,13 @@ function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,l
     if(filter.section&&(q.seccion||q._section||'General')!==filter.section)return false;
     if(filter.type&&(q.tipo||q._source||q.type)!==filter.type)return false;
     if(filter.difficulty&&(q.dificultad||'—')!==filter.difficulty)return false;
+    if(filter.status==='failed'&&!(qStats[q.id]?.t>0&&qStats[q.id].c/qStats[q.id].t<0.5))return false;
+    if(filter.status==='unanswered'&&qStats[q.id]?.t>0)return false;
     return true;
   });
 
-  // Get user stats for each question
-  const getQStats=(qid)=>{const s=stats[topic];return s?{pct:s.t?Math.round(s.c/s.t*100):0}:null;};
-
-  // Build context from notes or learning concepts
   const sourceContext=useMemo(()=>{
-    // Prefer notes if available
     if(learning?.notes?.length) return learning.notes.map(n=>`SECCIÓN: ${n.section}\n${n.content}`).join('\n\n').slice(0,15000);
-    // Fallback: concepts from learning sections
     const concepts=[];
     (learning?.sections||[]).forEach(sec=>{
       (sec.generated?.conceptMap||[]).forEach(c=>concepts.push(`[${sec.title}] ${c.t}: ${c.d}`));
@@ -2272,60 +2348,142 @@ function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,l
     return concepts.length?concepts.join('\n').slice(0,15000):'';
   },[learning]);
 
-  // Generate 20 additional questions
   const generateMore=async()=>{
-    setGenerating(true);setGenMsg('Generando 20 preguntas adicionales...');
+    setGenerating(true);setGenMsg('Generando 20 preguntas...');
     try{
-      const SYS='Eres un experto en bioquímica clínica y preparación de oposiciones FEA Laboratorio Clínico (SESCAM 2025). IDIOMA: Toda tu respuesta debe estar en español. Responde SOLO con JSON válido parseable con JSON.parse(), sin texto adicional, sin bloques markdown.';
-      const ctxBlock=sourceContext?`\n\nCONTENIDO DEL TEMA (apuntes estructurados):\n${sourceContext}`:'';
-      const res=await fetch('/api/anthropic',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:`${SYS}\n\nGenera exactamente 20 preguntas tipo test sobre el tema "${topic}" para la oposición FEA Laboratorio Clínico SESCAM 2025.${ctxBlock}\n\nMezcla niveles de dificultad y tipos (concepto, mecanismo, valor, clínico, aplicación). Las preguntas deben estar basadas en el contenido proporcionado.\n\nJSON:\n{"questions":[{"id":"new1","question":"...","options":["A) ...","B) ...","C) ...","D) ..."],"correct":0,"explanation":"...","tipo":"concepto|mecanismo|valor|clinico|aplicacion","dificultad":"baja|media|alta","tema":"${topicTag}","seccion":"General","fase":"extra","fechaGeneracion":"${new Date().toISOString().slice(0,10)}"}]}\n\n- 20 preguntas exactas\n- Las opciones incluyen la letra (A, B, C, D)\n- Nivel de oposición FEA`}]})
-      });
+      const ctxBlock=sourceContext?`\n\nCONTENIDO:\n${sourceContext}`:'';
+      const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:8192,messages:[{role:'user',content:`Eres experto FEA Lab. Clínico. IDIOMA: español. SOLO JSON válido.\n\n20 preguntas test de "${topic}".${ctxBlock}\n\nJSON:\n{"questions":[{"id":"n1","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"explanation":"breve","tipo":"concepto","dificultad":"media","tema":"${topicTag}","seccion":"General","fase":"extra"}]}`}]})});
       if(!res.ok)throw new Error(`HTTP ${res.status}`);
       const data=await res.json();
       const text=(data.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
-      const parsed=JSON.parse(repairJSON(text));
-      const newQs=(parsed.questions||parsed).map(q=>({...q,id:uid(),type:'test',topic,tema:topicTag,fase:'extra',fechaGeneracion:new Date().toISOString().slice(0,10)}));
-      const updated=[...qs,...newQs];
-      await saveQs(updated);
-      setGenMsg(`✓ ${newQs.length} preguntas añadidas${sourceContext?' (basadas en apuntes)':''}`);
-      setTimeout(()=>setGenMsg(''),3000);
+      const newQs=(JSON.parse(repairJSON(text)).questions||JSON.parse(repairJSON(text))).map(q=>({...q,id:uid(),type:'test',topic,tema:topicTag,fase:'extra',fechaGeneracion:new Date().toISOString().slice(0,10)}));
+      await saveQs([...qs,...newQs]);
+      setGenMsg(`✓ ${newQs.length} preguntas añadidas`);setTimeout(()=>setGenMsg(''),3000);
     }catch(e){setGenMsg(`Error: ${e.message}`);}
     setGenerating(false);
   };
 
+  // Record answer for per-question stats
+  const recordPracticeAnswer=(q,selectedIdx)=>{
+    const correct=selectedIdx===q.correct;
+    setPracticeAnswer(selectedIdx);setPracticeRevealed(true);
+    setPracticeStats(prev=>({c:prev.c+(correct?1:0),t:prev.t+1}));
+    setQStats(prev=>{
+      const cur=prev[q.id]||{c:0,t:0,last:null};
+      const n={...prev,[q.id]:{c:cur.c+(correct?1:0),t:cur.t+1,last:new Date().toISOString()}};
+      save('olab_qstats',n);return n;
+    });
+  };
+
+  const startPractice=(examMode)=>{
+    const pool=shuffle(filtered.filter(q=>q.type==='test'&&q.options));
+    if(!pool.length)return;
+    setPracticeQs(pool);setPracticeIdx(0);setPracticeAnswer(null);setPracticeRevealed(false);
+    setPracticeStats({c:0,t:0});setMode(examMode?'exam':'practice');
+  };
+
+  // ── Practice/Exam mode ──
+  if(mode==='practice'||mode==='exam'){
+    const q=practiceQs[practiceIdx];
+    if(!q||practiceIdx>=practiceQs.length){
+      const pct=practiceStats.t?Math.round(practiceStats.c/practiceStats.t*100):0;
+      return(
+        <Card style={{padding:'28px',textAlign:'center'}}>
+          <div style={{fontSize:40,marginBottom:10}}>{pct>=70?'🎉':'📚'}</div>
+          <div style={{fontSize:24,fontWeight:700,color:pct>=70?T.green:pct>=50?T.amber:T.red}}>{pct}%</div>
+          <div style={{fontSize:13,color:T.text,marginBottom:4}}>{practiceStats.c} de {practiceStats.t} correctas</div>
+          <div style={{fontSize:12,color:T.dim,marginBottom:16}}>{mode==='exam'?'Modo examen':'Práctica'} · {topic.split('.')[0]}</div>
+          <Btn onClick={()=>{setMode('browse');}} variant="primary">Volver a preguntas</Btn>
+        </Card>
+      );
+    }
+    const qs_=qStats[q.id];
+    return(
+      <div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <span style={{fontSize:13,fontWeight:600,color:T.text}}>{mode==='exam'?'Examen':'Práctica'} — {practiceIdx+1}/{practiceQs.length}</span>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <span style={{fontSize:11,color:T.muted}}>{practiceStats.c}/{practiceStats.t}</span>
+            <button onClick={()=>setMode('browse')} style={{fontSize:11,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Salir</button>
+          </div>
+        </div>
+        <PBar pct={practiceIdx/practiceQs.length*100} color={T.blue} height={3}/>
+        <Card style={{padding:'18px',marginTop:12}}>
+          {/* Metadata */}
+          <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:8}}>
+            {q.seccion&&<span style={{fontSize:9,color:T.muted,background:T.surface,padding:'1px 5px',borderRadius:4,border:`0.5px solid ${T.border}`}}>{q.seccion}</span>}
+            {q.tipo&&<span style={{fontSize:9,color:T.blue,background:T.blueS,padding:'1px 5px',borderRadius:4}}>{q.tipo}</span>}
+            {q.dificultad&&<span style={{fontSize:9,color:q.dificultad==='alta'?T.red:q.dificultad==='media'?T.amber:T.green,background:q.dificultad==='alta'?T.redS:q.dificultad==='media'?T.amberS:T.greenS,padding:'1px 5px',borderRadius:4}}>{q.dificultad}</span>}
+            {qs_?.t>0&&<span style={{fontSize:9,color:T.dim}}>Respondida {qs_.t}x · {Math.round(qs_.c/qs_.t*100)}%</span>}
+          </div>
+          <div style={{fontSize:14,color:T.text,lineHeight:1.8,marginBottom:14,fontWeight:500}}>{q.question}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {(q.options||[]).map((opt,j)=>{
+              let bg=T.card,bdr=T.border,col=T.text;
+              if(practiceRevealed&&j===q.correct){bg=T.greenS;bdr=T.green;col=T.greenText;}
+              else if(practiceRevealed&&practiceAnswer===j&&j!==q.correct){bg=T.redS;bdr=T.red;col=T.redText;}
+              else if(!practiceRevealed&&practiceAnswer===j){bg=T.blueS;bdr=T.blue;col=T.blueText;}
+              return <button key={j} onClick={()=>{if(!practiceRevealed){if(mode==='practice')recordPracticeAnswer(q,j);else{setPracticeAnswer(j);}}}}
+                disabled={practiceRevealed&&mode==='practice'}
+                style={{background:bg,border:`0.5px solid ${bdr}`,borderRadius:8,padding:'10px 12px',fontSize:12,textAlign:'left',cursor:practiceRevealed?'default':'pointer',color:col,fontFamily:FONT}}>{opt}</button>;
+            })}
+          </div>
+          {/* Feedback — always show in practice, after submit in exam */}
+          {practiceRevealed&&(mode==='practice'||true)&&q.explanation&&(
+            <div style={{marginTop:10,padding:'8px 12px',background:T.blueS,borderRadius:8,fontSize:11,color:T.blueText,lineHeight:1.6,borderLeft:`2px solid ${T.blue}`}}>{q.explanation}</div>
+          )}
+          <div style={{display:'flex',justifyContent:'flex-end',marginTop:12,gap:8}}>
+            {mode==='exam'&&!practiceRevealed&&practiceAnswer!=null&&(
+              <button onClick={()=>{recordPracticeAnswer(q,practiceAnswer);}} style={{background:T.green,color:'#000',border:'none',borderRadius:6,padding:'6px 16px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Confirmar</button>
+            )}
+            {practiceRevealed&&(
+              <button onClick={()=>{setPracticeIdx(i=>i+1);setPracticeAnswer(null);setPracticeRevealed(false);}} style={{background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'6px 16px',fontSize:12,cursor:'pointer',color:T.muted,fontFamily:FONT}}>Siguiente →</button>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  // ── Browse mode ──
   return(
     <div>
-      {/* Header + filters */}
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,flexWrap:'wrap',gap:8}}>
         <div style={{fontSize:14,fontWeight:700,color:T.text}}>{allQuestions.length} preguntas</div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           <select value={filter.section} onChange={e=>setFilter(f=>({...f,section:e.target.value}))} style={{background:T.surface,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 8px',fontSize:11,fontFamily:FONT}}>
-            <option value="">Todas las secciones</option>
+            <option value="">Todas secciones</option>
             {sections.map(s=><option key={s} value={s}>{s}</option>)}
           </select>
           <select value={filter.type} onChange={e=>setFilter(f=>({...f,type:e.target.value}))} style={{background:T.surface,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 8px',fontSize:11,fontFamily:FONT}}>
-            <option value="">Todos los tipos</option>
+            <option value="">Todos tipos</option>
             {types.map(t=><option key={t} value={t}>{t}</option>)}
           </select>
           {diffs.length>0&&<select value={filter.difficulty} onChange={e=>setFilter(f=>({...f,difficulty:e.target.value}))} style={{background:T.surface,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 8px',fontSize:11,fontFamily:FONT}}>
             <option value="">Toda dificultad</option>
             {diffs.map(d=><option key={d} value={d}>{d}</option>)}
           </select>}
+          <select value={filter.status} onChange={e=>setFilter(f=>({...f,status:e.target.value}))} style={{background:T.surface,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 8px',fontSize:11,fontFamily:FONT}}>
+            <option value="">Todas</option>
+            <option value="failed">Solo falladas</option>
+            <option value="unanswered">No respondidas</option>
+          </select>
         </div>
       </div>
 
-      {/* Generate more button */}
-      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:16}}>
+      {/* Action buttons */}
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+        <Btn onClick={()=>startPractice(false)} disabled={!filtered.filter(q=>q.type==='test').length} variant="primary" style={{padding:'8px 16px',fontSize:12}}>▶ Practicar ({filtered.filter(q=>q.type==='test').length})</Btn>
+        <Btn onClick={()=>startPractice(true)} disabled={!filtered.filter(q=>q.type==='test').length} variant="orange" style={{padding:'8px 16px',fontSize:12}}>⚡ Modo examen</Btn>
         <button onClick={generateMore} disabled={generating}
-          style={{background:generating?T.surface:T.green,color:generating?T.dim:'#000',border:`0.5px solid ${generating?T.border:T.green}`,borderRadius:8,padding:'8px 18px',fontSize:12,fontWeight:700,cursor:generating?'wait':'pointer',fontFamily:FONT}}>
-          {generating?'⏳ Generando...':'+ Generar 20 preguntas más'}
+          style={{background:generating?T.surface:T.green,color:generating?T.dim:'#000',border:`0.5px solid ${generating?T.border:T.green}`,borderRadius:8,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:generating?'wait':'pointer',fontFamily:FONT}}>
+          {generating?'⏳...':'+ 20 preguntas'}
         </button>
         {genMsg&&<span style={{fontSize:11,color:genMsg.startsWith('✓')?T.green:T.red}}>{genMsg}</span>}
       </div>
 
-      {/* Question list grouped by section */}
+      {/* Question list */}
       {filtered.length===0?(
         <Card style={{padding:'40px',textAlign:'center'}}>
           <div style={{fontSize:36,marginBottom:10}}>🧪</div>
@@ -2333,33 +2491,27 @@ function TopicPreguntasTab({topic,allQuestions,topicTag,stats,saveQs,qs,apiKey,l
           <div style={{fontSize:12,color:T.dim}}>Genera preguntas en Aprendizaje o usa el botón de arriba</div>
         </Card>
       ):(
-        <div style={{display:'flex',flexDirection:'column',gap:6}}>
-          {filtered.slice(0,50).map((q,i)=>(
-            <Card key={q.id||i} style={{padding:'10px 14px'}}>
-              <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
-                <span style={{fontSize:9,color:T.dim,background:T.bg,padding:'2px 5px',borderRadius:4,fontWeight:600,flexShrink:0,marginTop:2}}>#{i+1}</span>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,color:T.text,lineHeight:1.5,marginBottom:4}}>{q.question||q.front||q.presentation}</div>
-                  {q.type==='test'&&q.options&&(
-                    <div style={{display:'flex',flexDirection:'column',gap:2,marginBottom:4}}>
-                      {q.options.map((o,j)=>(
-                        <div key={j} style={{fontSize:11,color:j===q.correct?T.green:T.dim,fontWeight:j===q.correct?600:400,paddingLeft:6}}>{o}</div>
-                      ))}
+        <div style={{display:'flex',flexDirection:'column',gap:4}}>
+          {filtered.slice(0,50).map((q,i)=>{
+            const qs_=qStats[q.id];
+            return(
+              <Card key={q.id||i} style={{padding:'8px 12px'}}>
+                <div style={{display:'flex',alignItems:'flex-start',gap:6}}>
+                  <span style={{fontSize:9,color:T.dim,background:T.bg,padding:'2px 4px',borderRadius:3,fontWeight:600,flexShrink:0,marginTop:2}}>#{i+1}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,color:T.text,lineHeight:1.5}}>{q.question||q.front||q.presentation}</div>
+                    <div style={{display:'flex',gap:3,flexWrap:'wrap',marginTop:3}}>
+                      {q.seccion&&<span style={{fontSize:8,color:T.muted,background:T.surface,padding:'1px 4px',borderRadius:3,border:`0.5px solid ${T.border}`}}>{q.seccion}</span>}
+                      {q.tipo&&<span style={{fontSize:8,color:T.blue,background:T.blueS,padding:'1px 4px',borderRadius:3}}>{q.tipo}</span>}
+                      {q.dificultad&&<span style={{fontSize:8,color:q.dificultad==='alta'?T.red:q.dificultad==='media'?T.amber:T.green,padding:'1px 4px',borderRadius:3,background:q.dificultad==='alta'?T.redS:q.dificultad==='media'?T.amberS:T.greenS}}>{q.dificultad}</span>}
+                      {qs_?.t>0&&<span style={{fontSize:8,color:qs_.c/qs_.t>=0.7?T.green:qs_.c/qs_.t>=0.5?T.amber:T.red,fontWeight:600}}>{Math.round(qs_.c/qs_.t*100)}% ({qs_.t}x)</span>}
                     </div>
-                  )}
-                  {q.type==='flashcard'&&q.back&&<div style={{fontSize:11,color:T.teal,background:T.tealS,padding:'3px 6px',borderRadius:4,marginBottom:4}}>{q.back}</div>}
-                  {/* Metadata row */}
-                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                    {(q.seccion||q._section)&&<span style={{fontSize:9,color:T.muted,background:T.surface,padding:'1px 5px',borderRadius:4,border:`0.5px solid ${T.border}`}}>{q.seccion||q._section}</span>}
-                    {(q.tipo||q._source)&&<span style={{fontSize:9,color:T.blue,background:T.blueS,padding:'1px 5px',borderRadius:4}}>{q.tipo||q._source}</span>}
-                    {q.dificultad&&<span style={{fontSize:9,color:q.dificultad==='alta'?T.red:q.dificultad==='media'?T.amber:T.green,background:q.dificultad==='alta'?T.redS:q.dificultad==='media'?T.amberS:T.greenS,padding:'1px 5px',borderRadius:4}}>{q.dificultad}</span>}
-                    {q.fechaGeneracion&&<span style={{fontSize:9,color:T.dim}}>{q.fechaGeneracion}</span>}
                   </div>
                 </div>
-              </div>
-            </Card>
-          ))}
-          {filtered.length>50&&<div style={{fontSize:12,color:T.dim,textAlign:'center',padding:10}}>...y {filtered.length-50} preguntas más</div>}
+              </Card>
+            );
+          })}
+          {filtered.length>50&&<div style={{fontSize:11,color:T.dim,textAlign:'center',padding:8}}>+{filtered.length-50} más</div>}
         </div>
       )}
     </div>
@@ -2608,7 +2760,13 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     });
 
     // Phase 10: Post-test (13+12) — always split
-    const postTest=await runPhase('10/10 Post-test (13+12)',85,async()=>{
+    // Phase 10: Interactive question types (combined in one call to save tokens)
+    const interactive=await runPhase('10/14 Tipos interactivos',80,async()=>{
+      const r=await callClaude(`${SYS}\n\nGenera estos tipos de preguntas interactivas sobre "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"sequences":[{"id":"s1","instruction":"Ordena los pasos de este mecanismo","steps":["paso1","paso2","paso3","paso4"],"correctOrder":[0,1,2,3]}],"classifications":[{"id":"cl1","categories":["Cat A","Cat B"],"items":[{"text":"item","category":0}]}],"matching":[{"id":"m1","left":["término1"],"right":["definición1"],"pairs":[[0,0]]}],"errors":[{"id":"e1","statement":"Afirmación con error","errorPart":"la parte incorrecta","correction":"lo correcto","options":["opción A","opción B","opción C"]}],"progressiveCases":[{"id":"pc1","step1":{"info":"Síntomas iniciales","question":"¿Primera impresión?"},"step2":{"info":"Primeros resultados","question":"¿Refinas diagnóstico?"},"step3":{"info":"Resultados completos","question":"¿Diagnóstico final?"},"answer":"Diagnóstico y razonamiento"}],"patterns":[{"id":"pt1","results":"Tabla de resultados analíticos","options":["Patrón A","Patrón B","Patrón C","Patrón D"],"correct":0,"explanation":"breve"}]}\n\n3 secuencias, 2 clasificaciones, 3 emparejamientos, 3 errores, 1 caso progresivo, 2 patrones.`,8192);
+      return JSON.parse(repairJSON(r));
+    });
+
+    const postTest=await runPhase('11/14 Post-test (13+12)',88,async()=>{
       const base=`${SYS}\n\n${TRANSFER}${CALIB}\n\nPreguntas DIFÍCILES de "${targetTitle}". CONCEPTOS:\n${cMap}\n\nJSON:\n{"questions":[{"id":"p1","question":"...","options":["A)...","B)...","C)...","D)..."],"correct":0,"explanation":"breve","tipo":"aplicacion","dificultad":"alta"}]}`;
       const r1=await callClaude(base+'\n\n13 preguntas exactas.',8192);
       const b1=JSON.parse(repairJSON(r1));
@@ -2641,6 +2799,7 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
         diffDiagnosis:dd?.diffDiagnosis||dd||[],
         openQuestions:oq?.openQuestions||oq||[],
         conceptRelations:rm?.relationships||rm||[],
+        interactive:interactive||{},
         postTest:taggedPostTest,
       },
       progress:{preTest:null,postTest:null,flashcardsDominated:null,flashcardsSm2:null,clinicalScore:null,fillBlanks:null,openQuestions:null},
@@ -2720,6 +2879,7 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
     {id:'diffDiagnosis',label:'Diferencial',icon:'⚖️',color:T.amber},
     {id:'openQuestions',label:'Abiertas',icon:'💬',color:T.teal},
     {id:'conceptMap',label:'Mapa',icon:'🗺️',color:T.green},
+    {id:'interactive',label:'Interactivo',icon:'🎯',color:T.orange},
     {id:'postTest',label:'Post-Test',icon:'✅',color:T.red},
     {id:'spacedRepetition',label:'Repaso',icon:'📅',color:T.blue},
   ];
@@ -2902,7 +3062,8 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
       {curPhase===5&&<DiffDiagnosisPhase pairs={gen.phases.diffDiagnosis||[]}/>}
       {curPhase===6&&<OpenQuestionsPhase questions={gen.phases.openQuestions||[]} progress={gen.progress?.openQuestions} onSaveProgress={p=>onSaveProg('openQuestions',p)}/>}
       {curPhase===7&&<ConceptMapPhase concepts={gen.conceptMap||[]} relations={gen.phases.conceptRelations||[]}/>}
-      {curPhase===8&&(
+      {curPhase===8&&<InteractiveQuestionsPhase data={gen.phases.interactive||{}}/>}
+      {curPhase===9&&(
         <div>
           <QuizPhase questions={gen.phases.postTest} title="Post-Test (25)" progress={gen.progress?.postTest} onSaveProgress={p=>onSaveProg('postTest',p)} color={T.red}/>
           {gen.progress?.preTest?.completed&&gen.progress?.postTest?.completed&&(
@@ -2920,7 +3081,7 @@ function SectionPhasesUI({gen,idx,subIdx,phasesList,curPhase,setActivePhase,save
           )}
         </div>
       )}
-      {curPhase===9&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
+      {curPhase===10&&data.spacedRepetition&&<SpacedRepetitionPhase schedule={data.spacedRepetition} topic={topic} learning={data} saveLearningData={saveLearningData}/>}
       {/* Cross-topic connections */}
       {gen.connections&&gen.connections.length>0&&(
         <Card style={{padding:'12px 16px',marginTop:12}}>
@@ -3440,6 +3601,144 @@ function ConceptMapPhase({concepts,relations}){
           </div>
         </Card>
       )}
+    </div>
+  );
+}
+
+// ── Interactive Questions Phase (sequences, classification, matching, etc.) ─
+function InteractiveQuestionsPhase({data}){
+  const [tab,setTab]=useState('sequences');
+  const [revealed,setRevealed]=useState({});
+  const [userOrder,setUserOrder]=useState({});
+  const [dragFrom,setDragFrom]=useState(null);
+
+  const tabs=[
+    {id:'sequences',label:'Ordenar',count:(data.sequences||[]).length},
+    {id:'classifications',label:'Clasificar',count:(data.classifications||[]).length},
+    {id:'matching',label:'Emparejar',count:(data.matching||[]).length},
+    {id:'errors',label:'Error',count:(data.errors||[]).length},
+    {id:'progressiveCases',label:'Progresivo',count:(data.progressiveCases||[]).length},
+    {id:'patterns',label:'Patrones',count:(data.patterns||[]).length},
+  ].filter(t=>t.count>0);
+
+  if(!tabs.length) return <div style={{color:T.dim,textAlign:'center',padding:40}}>Sin preguntas interactivas. Regenera la sección.</div>;
+
+  const activeItems=data[tab]||[];
+
+  return(
+    <div>
+      <div style={{display:'flex',gap:3,marginBottom:12,flexWrap:'wrap'}}>
+        {tabs.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:'3px 8px',fontSize:9,fontWeight:tab===t.id?700:500,color:tab===t.id?T.orange:T.muted,background:tab===t.id?T.orangeS:T.surface,border:`0.5px solid ${tab===t.id?T.orange:T.border}`,borderRadius:5,cursor:'pointer',fontFamily:FONT}}>
+            {t.label} ({t.count})
+          </button>
+        ))}
+      </div>
+
+      {/* Sequences — drag to reorder */}
+      {tab==='sequences'&&activeItems.map((seq,si)=>{
+        const order=userOrder[si]||seq.steps.map((_,i)=>i);
+        const isRev=revealed[`seq-${si}`];
+        const isCorrect=isRev&&JSON.stringify(order)===JSON.stringify(seq.correctOrder);
+        return(
+          <Card key={si} style={{padding:'14px',marginBottom:8}}>
+            <div style={{fontSize:12,fontWeight:600,color:T.text,marginBottom:8}}>{seq.instruction}</div>
+            <div style={{display:'flex',flexDirection:'column',gap:4}}>
+              {order.map((stepIdx,pos)=>(
+                <div key={pos} draggable onDragStart={()=>setDragFrom(pos)} onDragOver={e=>e.preventDefault()}
+                  onDrop={()=>{if(dragFrom!==null){const n=[...order];const[m]=n.splice(dragFrom,1);n.splice(pos,0,m);setUserOrder(p=>({...p,[si]:n}));setDragFrom(null);}}}
+                  style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:isRev?(stepIdx===seq.correctOrder[pos]?T.greenS:T.redS):T.surface,border:`0.5px solid ${T.border}`,borderRadius:6,cursor:'grab',fontSize:12,color:T.text}}>
+                  <span style={{color:T.dim,fontSize:10,fontWeight:700}}>{pos+1}</span>
+                  <span>{seq.steps[stepIdx]}</span>
+                </div>
+              ))}
+            </div>
+            {!isRev?<button onClick={()=>setRevealed(p=>({...p,[`seq-${si}`]:true}))} style={{marginTop:8,background:T.orange,color:'#000',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Comprobar orden</button>
+            :<div style={{marginTop:6,fontSize:11,color:isCorrect?T.green:T.red,fontWeight:600}}>{isCorrect?'✓ Orden correcto':'✗ Orden incorrecto — revisa los pasos'}</div>}
+          </Card>
+        );
+      })}
+
+      {/* Classifications — drag items to categories */}
+      {tab==='classifications'&&activeItems.map((cl,ci)=>(
+        <Card key={ci} style={{padding:'14px',marginBottom:8}}>
+          <div style={{display:'flex',gap:10,marginBottom:8}}>
+            {cl.categories.map((cat,i)=>(
+              <div key={i} style={{flex:1,background:T.bg,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'8px',minHeight:60}}>
+                <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:4}}>{cat}</div>
+                {(cl.items||[]).filter(it=>it.category===i).map((it,j)=>(
+                  <div key={j} style={{fontSize:10,color:T.muted,padding:'2px 0'}}>{it.text}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+          {!revealed[`cl-${ci}`]?<button onClick={()=>setRevealed(p=>({...p,[`cl-${ci}`]:true}))} style={{background:T.orange,color:'#000',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Mostrar clasificación correcta</button>
+          :<div style={{fontSize:11,color:T.green}}>✓ Clasificación mostrada</div>}
+        </Card>
+      ))}
+
+      {/* Matching — connect columns */}
+      {tab==='matching'&&activeItems.map((m,mi)=>(
+        <Card key={mi} style={{padding:'14px',marginBottom:8}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div>{(m.left||[]).map((l,i)=><div key={i} style={{padding:'4px 8px',marginBottom:3,fontSize:11,color:T.text,background:T.surface,borderRadius:4,border:`0.5px solid ${T.border}`}}>{l}</div>)}</div>
+            <div>{(m.right||[]).map((r,i)=><div key={i} style={{padding:'4px 8px',marginBottom:3,fontSize:11,color:T.teal,background:T.tealS,borderRadius:4,border:`0.5px solid ${T.teal}30`}}>{r}</div>)}</div>
+          </div>
+          {!revealed[`m-${mi}`]?<button onClick={()=>setRevealed(p=>({...p,[`m-${mi}`]:true}))} style={{marginTop:8,background:T.orange,color:'#000',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Mostrar parejas</button>
+          :<div style={{marginTop:6,fontSize:11,color:T.green}}>{(m.pairs||[]).map(([l,r],i)=><div key={i}>{m.left[l]} ↔ {m.right[r]}</div>)}</div>}
+        </Card>
+      ))}
+
+      {/* Errors — find the mistake */}
+      {tab==='errors'&&activeItems.map((e,ei)=>(
+        <Card key={ei} style={{padding:'14px',marginBottom:8}}>
+          <div style={{fontSize:12,color:T.text,lineHeight:1.7,marginBottom:8}}>"{e.statement}"</div>
+          {!revealed[`e-${ei}`]?(
+            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+              {(e.options||[]).map((o,j)=><button key={j} onClick={()=>setRevealed(p=>({...p,[`e-${ei}`]:o===e.errorPart}))} style={{padding:'4px 10px',fontSize:11,borderRadius:6,cursor:'pointer',background:T.surface,border:`0.5px solid ${T.border}`,color:T.text,fontFamily:FONT}}>{o}</button>)}
+            </div>
+          ):<div style={{fontSize:11}}><div style={{color:T.red,marginBottom:2}}>Error: {e.errorPart}</div><div style={{color:T.green}}>Corrección: {e.correction}</div></div>}
+        </Card>
+      ))}
+
+      {/* Progressive cases */}
+      {tab==='progressiveCases'&&activeItems.map((pc,pi)=>{
+        const step=revealed[`pc-${pi}`]||0;
+        const steps=[pc.step1,pc.step2,pc.step3].filter(Boolean);
+        return(
+          <Card key={pi} style={{padding:'14px',marginBottom:8}}>
+            <div style={{fontSize:12,fontWeight:600,color:T.text,marginBottom:8}}>Caso progresivo</div>
+            {steps.slice(0,step+1).map((s,i)=>(
+              <div key={i} style={{marginBottom:8,padding:'8px 10px',background:T.bg,borderRadius:6,border:`0.5px solid ${T.border}`,borderLeft:`2px solid ${[T.blue,T.amber,T.green][i]}`}}>
+                <div style={{fontSize:11,color:T.muted,marginBottom:2}}>Paso {i+1}</div>
+                <div style={{fontSize:12,color:T.text,lineHeight:1.6}}>{s.info}</div>
+                <div style={{fontSize:11,color:T.orange,marginTop:4,fontWeight:600}}>{s.question}</div>
+              </div>
+            ))}
+            {step<steps.length-1?<button onClick={()=>setRevealed(p=>({...p,[`pc-${pi}`]:(step||0)+1}))} style={{background:T.orange,color:'#000',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Siguiente paso</button>
+            :step>=steps.length-1&&!revealed[`pc-${pi}-ans`]?<button onClick={()=>setRevealed(p=>({...p,[`pc-${pi}-ans`]:true}))} style={{background:T.green,color:'#000',border:'none',borderRadius:6,padding:'5px 14px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:FONT}}>Ver diagnóstico</button>
+            :<div style={{fontSize:12,color:T.green,lineHeight:1.6,marginTop:6}}>{pc.answer}</div>}
+          </Card>
+        );
+      })}
+
+      {/* Patterns — identify analytical pattern */}
+      {tab==='patterns'&&activeItems.map((pt,pi)=>(
+        <Card key={pi} style={{padding:'14px',marginBottom:8}}>
+          <div style={{fontSize:12,color:T.text,lineHeight:1.6,marginBottom:8,background:T.bg,padding:'8px 10px',borderRadius:6,border:`0.5px solid ${T.border}`,fontFamily:'monospace',fontSize:11}}>{pt.results}</div>
+          {!revealed[`pt-${pi}`]?(
+            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+              {(pt.options||[]).map((o,j)=><button key={j} onClick={()=>setRevealed(p=>({...p,[`pt-${pi}`]:{sel:j,ok:j===pt.correct}}))} style={{padding:'5px 12px',fontSize:11,borderRadius:6,cursor:'pointer',background:T.surface,border:`0.5px solid ${T.border}`,color:T.text,fontFamily:FONT}}>{o}</button>)}
+            </div>
+          ):(
+            <div>
+              <div style={{fontSize:11,color:revealed[`pt-${pi}`].ok?T.green:T.red,fontWeight:600,marginBottom:2}}>{revealed[`pt-${pi}`].ok?'✓ Correcto':'✗ Incorrecto'}</div>
+              <div style={{fontSize:11,color:T.green}}>Patrón: {pt.options[pt.correct]}</div>
+              {pt.explanation&&<div style={{fontSize:11,color:T.muted,marginTop:2}}>{pt.explanation}</div>}
+            </div>
+          )}
+        </Card>
+      ))}
     </div>
   );
 }
