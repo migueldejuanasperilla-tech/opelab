@@ -3847,16 +3847,32 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
   const generateSection=async(idx,subIdx)=>{
     const sec=sections[idx];
     const sub=subIdx!=null?sec.subsections?.[subIdx]:null;
-    // Priority: extractedContent > unified > raw text
-    const targetText=sub?sub.text:(sec.extractedContent?.text||sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,''));
+    // Priority: extractedContent > unified > raw text > load from IndexedDB
+    let targetText=sub?sub.text:(sec.extractedContent?.text||sec.unified?.text||sec.text?.replace(/\[Fuente: (Tietz|Henry)\]\s*/g,''));
+    // If no text yet, try loading raw chapter text from IndexedDB
+    if(!targetText?.trim()){
+      console.log(`[Generate] Section "${sec.title}" has no text, trying raw PDF text...`);
+      const t=await loadRawText('tietz');
+      const h=await loadRawText('henry');
+      const raw=[t||'',h||''].filter(Boolean).join('\n\n');
+      if(raw.trim())targetText=raw;
+    }
     const targetTitle=sub?`${sec.title} > ${sub.title}`:sec.title;
-    if(!targetText?.trim()){setGenError('Pega texto primero.');return;}
+    if(!targetText?.trim()){
+      // Set genIdx so the error is visible next to THIS section's button
+      const gid=subIdx!=null?`${idx}-${subIdx}`:idx;
+      setGenIdx(gid);
+      setGenError('Sin contenido. Extrae el contenido del PDF primero con el botón "Extraer contenido automáticamente".');
+      setTimeout(()=>{setGenIdx(null);},5000);
+      return;
+    }
     setGenIdx(subIdx!=null?`${idx}-${subIdx}`:idx);setGenError('');setGenPct(0);
 
     const SYS='Eres un experto en bioquímica clínica (FEA Lab. Clínico, SESCAM 2025). IDIOMA: Todo en español. Responde SOLO con JSON válido.';
-    // If text >5000 words, process concept extraction in chunks of ~4000 words
     const textWords=targetText.split(/\s+/).length;
     const needsChunking=textWords>5000;
+    console.log(`[Generate] Starting "${targetTitle}" — ${textWords} words, chunking=${needsChunking}, source=${sec.extractedContent?'extracted':sec.unified?'unified':'raw'}`);
+    setGenStep(`Iniciando generación de "${targetTitle}" (${textWords} palabras)...`);
     const CTX=needsChunking?`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"`:`TEMA: "${topic}"\nSECCIÓN: "${targetTitle}"\n\nTEXTO:\n${targetText.slice(0,25000)}`;
     const TRANSFER='NUNCA preguntes lo que dice el texto. SIEMPRE presenta el concepto en contexto clínico NUEVO.';
     const CALIB=getDiffCalibration();
@@ -4246,8 +4262,8 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
                         </button>
                         {sec.text?.trim()&&<span style={{fontSize:10,color:T.muted}}>{(sec.unified?.text||sec.text).split(/\s+/).length} pal</span>}
                       </div>
-                      {genIdx===idx&&<div style={{marginTop:8}}><PBar pct={genPct} color={T.purple} height={3}/></div>}
-                      {genError&&genIdx===idx&&<div style={{marginTop:6,fontSize:11,color:T.red}}>{genError}</div>}
+                      {genIdx===idx&&genPct>0&&<div style={{marginTop:8}}><PBar pct={genPct} color={T.purple} height={3}/></div>}
+                      {genError&&(genIdx===idx||genIdx===null)&&<div style={{marginTop:6,fontSize:11,color:T.red,background:T.redS,padding:'6px 10px',borderRadius:6}}>{genError}</div>}
                     </div>
                   )}
 
