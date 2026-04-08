@@ -2330,94 +2330,105 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
     return{pages,totalPages};
   };
 
-  // ── Detect sections using font format + API fallback ────────────────────
+  // ── Detect sections using two-level font hierarchy + API fallback ────────
   const detectSections=async(pages)=>{
-    // Step 1: Compute body font size (the most common font size)
+    // Step 1: Build font size histogram weighted by character count
     const fontSizes={};
-    let totalChars=0;
     for(const page of pages)for(const line of page.lines){
-      const key=line.fontSize;
-      fontSizes[key]=(fontSizes[key]||0)+line.text.length;
-      totalChars+=line.text.length;
+      const k=Math.round(line.fontSize*10)/10; // round to 0.1
+      fontSizes[k]=(fontSizes[k]||0)+line.text.length;
     }
-    const bodyFontSize=Object.entries(fontSizes).sort((a,b)=>b[1]-a[1])[0]?.[0]||12;
-    const bodyFS=parseFloat(bodyFontSize);
+    const sorted=Object.entries(fontSizes).sort((a,b)=>b[1]-a[1]);
+    const bodyFS=parseFloat(sorted[0]?.[0])||12;
+    // Find distinct larger font sizes (heading candidates)
+    const largerSizes=sorted.map(([fs])=>parseFloat(fs)).filter(fs=>fs>bodyFS+0.5).sort((a,b)=>b-a);
 
-    // Step 2: Identify heading lines — larger font OR bold with different size
-    const headingLines=[];
+    // Step 2: Classify heading levels
+    // Level 1 = largest font or bold+largest — main sections
+    // Level 2 = medium font or bold+medium — subsections (folded into level 1)
+    const level1FS=largerSizes[0]||bodyFS+2;
+    const level2FS=largerSizes[1]||largerSizes[0]||bodyFS+1;
+    const allHeadings=[];
     for(const page of pages)for(const line of page.lines){
-      const isLarger=line.fontSize>bodyFS+1;
-      const isBoldDiff=line.bold&&line.fontSize>=bodyFS;
-      const isShortEnough=line.text.length<120;
-      if(isShortEnough&&(isLarger||isBoldDiff)){
-        headingLines.push({text:line.text,page:page.pageNum,fontSize:line.fontSize,bold:line.bold});
-      }
+      if(line.text.length>120||line.text.length<2)continue;
+      const fs=line.fontSize;
+      const isL1=fs>=level1FS-0.3||(line.bold&&fs>bodyFS+1.5);
+      const isL2=!isL1&&(fs>=level2FS-0.3||(line.bold&&fs>=bodyFS));
+      if(isL1||isL2)allHeadings.push({text:line.text.trim(),page:page.pageNum,level:isL1?1:2,fontSize:fs,bold:line.bold});
     }
 
-    // Step 3: Decide strategy
-    const hasFormatInfo=headingLines.length>=3&&headingLines.length<=25;
-    let sectionTitles;
+    // Step 3: Filter to level-1 only; dedupe
+    const seen=new Set();
+    let level1=allHeadings.filter(h=>h.level===1).filter(h=>{const n=h.text.toLowerCase();if(seen.has(n)||n.length<2)return false;seen.add(n);return true;});
 
-    if(hasFormatInfo){
-      // Use format-detected headings (filter out repeated or trivial ones)
-      const seen=new Set();
-      sectionTitles=headingLines.filter(h=>{
-        const norm=h.text.trim().toLowerCase();
-        if(seen.has(norm)||norm.length<3)return false;
-        seen.add(norm);return true;
-      }).slice(0,25).map(h=>({title:h.text.trim(),page:h.page}));
-    }else{
-      // Fallback: ask API to identify section titles from first 3000 chars
-      setProgress(prev=>({...prev,detail:'Sin formato claro — consultando IA para detectar secciones...'}));
-      const fullText=pages.flatMap(p=>p.lines.map(l=>l.text)).join('\n');
-      const sample=fullText.slice(0,3000);
+    // If format detection found too few or too many, use API fallback
+    const hasGoodFormat=level1.length>=2&&level1.length<=25;
+    if(!hasGoodFormat){
+      setProgress(prev=>({...prev,detail:'Consultando IA para detectar secciones principales...'}));
+      const fullTextStr=pages.flatMap(p=>p.lines.map(l=>l.text)).join('\n');
+      const sample=fullTextStr.slice(0,4000);
       try{
         const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:2048,messages:[{role:'user',content:`Responde SOLO con JSON puro, sin markdown.\n\nIdentifica todos los títulos de sección y subsección de este texto de libro médico. Devuelve solo la lista de títulos exactos en el orden que aparecen. Máximo 25.\n\nTEXTO:\n${sample}\n\n{"sections":["titulo1","titulo2"]}`}]})});
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:2048,messages:[{role:'user',content:`Responde SOLO con JSON puro.\n\nIdentifica SOLO los títulos de SECCIÓN PRINCIPAL (no subsecciones) de este capítulo de libro médico. Máximo 15 secciones.\n\nTEXTO:\n${sample}\n\n{"sections":["titulo1","titulo2"]}`}]})});
         if(res.ok){
           const d=await res.json();
-          let text=(d.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'');
-          text=text.split('\n').filter(l=>!/^\s*#/.test(l)).join('\n').trim();
-          const jIdx=text.indexOf('{');
-          const parsed=JSON.parse(jIdx>=0?text.slice(jIdx):text);
-          sectionTitles=(parsed.sections||[]).slice(0,25).map(t=>({title:typeof t==='string'?t:t.title||'',page:0}));
+          let t=(d.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'');
+          t=t.split('\n').filter(l=>!/^\s*#/.test(l)).join('\n').trim();
+          const jIdx=t.indexOf('{');
+          const parsed=JSON.parse(jIdx>=0?t.slice(jIdx):t);
+          level1=(parsed.sections||[]).slice(0,25).map(s=>({text:typeof s==='string'?s:s.title||'',page:0,level:1}));
         }
       }catch{}
-      if(!sectionTitles?.length){
-        // Last resort: split every ~2000 words
-        sectionTitles=[];
-        const fullText2=pages.flatMap(p=>p.lines.map(l=>l.text)).join('\n');
-        for(let i=0;i<Math.min(fullText2.length,100000);i+=8000){
-          const chunk=fullText2.slice(i,i+60).split('\n')[0]||`Sección ${sectionTitles.length+1}`;
-          sectionTitles.push({title:chunk.trim().slice(0,60),page:Math.round(i/fullText2.length*pages.length)+1});
-        }
+    }
+    if(!level1.length)level1=[{text:'Capítulo completo',page:1,level:1}];
+
+    // Step 4: Split text at level-1 titles (subsections fold in as continuous text)
+    const flat=pages.flatMap(p=>p.lines.map(l=>({text:l.text,page:p.pageNum})));
+    const sections=[];
+    for(let i=0;i<level1.length;i++){
+      const title=level1[i].text;
+      const titleN=title.toLowerCase().trim();
+      let start=flat.findIndex(l=>l.text.toLowerCase().includes(titleN));
+      if(start<0)start=flat.findIndex(l=>l.text.toLowerCase().includes(titleN.slice(0,Math.min(20,titleN.length))));
+      if(start<0)start=sections.length?sections[sections.length-1]._end||0:0;
+      let end=flat.length;
+      if(i<level1.length-1){
+        const nxt=level1[i+1].text.toLowerCase().trim();
+        const nxtIdx=flat.findIndex((l,j)=>j>start&&(l.text.toLowerCase().includes(nxt)||l.text.toLowerCase().includes(nxt.slice(0,20))));
+        if(nxtIdx>start)end=nxtIdx;
       }
+      const txt=flat.slice(start,end).map(l=>l.text).join('\n');
+      const words=txt.split(/\s+/).length;
+      sections.push({title,text:txt,pageStart:flat[start]?.page||1,pageEnd:flat[Math.min(end-1,flat.length-1)]?.page||1,words,_end:end});
     }
 
-    // Step 4: Split full text at detected titles
-    const fullText=pages.flatMap(p=>p.lines.map(l=>({text:l.text,page:p.pageNum}))); // flat array of {text, page}
-    const sections=[];
-    for(let i=0;i<sectionTitles.length;i++){
-      const title=sectionTitles[i].title;
-      // Find position of this title in the text
-      const titleNorm=title.toLowerCase().trim();
-      let startIdx=fullText.findIndex(l=>l.text.toLowerCase().trim().includes(titleNorm));
-      if(startIdx<0)startIdx=fullText.findIndex(l=>l.text.toLowerCase().includes(titleNorm.slice(0,20)));
-      if(startIdx<0)startIdx=i===0?0:sections.length?sections[sections.length-1]._endIdx||0:0;
-      // Find end: next section title or end of text
-      let endIdx=fullText.length;
-      if(i<sectionTitles.length-1){
-        const nextTitle=sectionTitles[i+1].title.toLowerCase().trim();
-        const nextIdx=fullText.findIndex((l,j)=>j>startIdx&&(l.text.toLowerCase().trim().includes(nextTitle)||l.text.toLowerCase().includes(nextTitle.slice(0,20))));
-        if(nextIdx>startIdx)endIdx=nextIdx;
+    // Step 5: Enforce size bounds (500-15000 words)
+    const balanced=[];
+    for(let i=0;i<sections.length;i++){
+      const s=sections[i];
+      if(s.words<500&&balanced.length>0){
+        // Merge small section into previous
+        const prev=balanced[balanced.length-1];
+        prev.text+='\n\n'+s.text;
+        prev.words+=s.words;
+        prev.pageEnd=s.pageEnd;
+        prev.title+=' / '+s.title;
+      }else if(s.words>15000){
+        // Split oversized: find midpoint at a paragraph break
+        const paras=s.text.split(/\n\n+/);
+        let half='';let halfWords=0;
+        for(const p of paras){
+          half+=(half?'\n\n':'')+p;halfWords+=p.split(/\s+/).length;
+          if(halfWords>=s.words/2)break;
+        }
+        const rest=s.text.slice(half.length).trim();
+        balanced.push({...s,text:half,words:halfWords,title:s.title+' (1/2)'});
+        if(rest.length>200)balanced.push({...s,text:rest,words:s.words-halfWords,title:s.title+' (2/2)',pageStart:s.pageStart+Math.round((s.pageEnd-s.pageStart)/2)});
+      }else{
+        balanced.push(s);
       }
-      const sectionText=fullText.slice(startIdx,endIdx).map(l=>l.text).join('\n');
-      const pageStart=fullText[startIdx]?.page||sectionTitles[i].page||1;
-      const pageEnd=fullText[Math.min(endIdx-1,fullText.length-1)]?.page||pageStart;
-      sections.push({title,text:sectionText,pageStart,pageEnd,_endIdx:endIdx});
     }
-    // Cap at 25
-    return sections.slice(0,25);
+    return balanced.slice(0,25);
   };
 
   // ── Process a PDF source ────────────────────────────────────────────────
@@ -2747,30 +2758,62 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
   const hasTietzPdf=(pdfMeta[topicPdfKey(topic+'§tietz')]||[]).length>0;
   const hasHenryPdf=(pdfMeta[topicPdfKey(topic+'§henry')]||[]).length>0;
 
-  // Section review/edit screen
-  if(editingSections) return(
+  // Split a section at a manual point
+  const splitSection=(idx)=>{
+    const sec=editingSections[idx];
+    const paras=sec.text.split(/\n\n+/);
+    const mid=Math.ceil(paras.length/2);
+    const textA=paras.slice(0,mid).join('\n\n');
+    const textB=paras.slice(mid).join('\n\n');
+    const wordsA=textA.split(/\s+/).length;
+    const wordsB=textB.split(/\s+/).length;
+    const midPage=sec.pageStart+Math.round((sec.pageEnd-sec.pageStart)/2);
+    const newSections=[...editingSections];
+    newSections.splice(idx,1,
+      {...sec,text:textA,words:wordsA,title:sec.title+' (1/2)',pageEnd:midPage},
+      {...sec,text:textB,words:wordsB,title:sec.title+' (2/2)',pageStart:midPage}
+    );
+    setEditingSections(newSections);
+  };
+
+  // Section review/edit screen with bar chart
+  if(editingSections) {
+    const maxWords=Math.max(...editingSections.map(s=>s.words),1);
+    const avgWords=Math.round(editingSections.reduce((a,s)=>a+s.words,0)/editingSections.length);
+    return(
     <Card style={{padding:'16px 18px',marginBottom:16}}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-        <div style={{fontSize:13,fontWeight:700,color:T.text}}>{editingSections.length} secciones detectadas — {editSource==='tietz'?'📘 Tietz':'📙 Henry'}</div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.text}}>{editingSections.length} secciones — {editSource==='tietz'?'📘 Tietz':'📙 Henry'}</div>
         <div style={{display:'flex',gap:6}}>
           <button onClick={()=>{setEditingSections(null);setEditSource(null);}} style={{fontSize:11,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Cancelar</button>
-          <button onClick={confirmSections} style={{fontSize:11,background:T.green,color:'#000',border:'none',borderRadius:6,padding:'4px 14px',cursor:'pointer',fontWeight:700,fontFamily:FONT}}>✓ Confirmar y crear secciones</button>
+          <button onClick={confirmSections} style={{fontSize:11,background:T.green,color:'#000',border:'none',borderRadius:6,padding:'4px 14px',cursor:'pointer',fontWeight:700,fontFamily:FONT}}>✓ Confirmar</button>
         </div>
       </div>
-      <div style={{fontSize:11,color:T.dim,marginBottom:10}}>Revisa los títulos. Puedes editarlos antes de confirmar.</div>
-      <div style={{display:'flex',flexDirection:'column',gap:4}}>
-        {editingSections.map((sec,i)=>(
-          <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:T.bg,borderRadius:6,border:`0.5px solid ${T.border}`}}>
-            <span style={{fontSize:10,color:T.dim,fontWeight:700,minWidth:20}}>{i+1}</span>
-            <input value={sec.title} onChange={e=>{const n=[...editingSections];n[i]={...n[i],title:e.target.value};setEditingSections(n);}}
-              style={{flex:1,background:'transparent',color:T.text,border:'none',fontSize:12,fontWeight:600,outline:'none',fontFamily:FONT}}/>
-            <span style={{fontSize:9,color:T.dim,flexShrink:0}}>{sec.words} pal · pp.{sec.pageStart}-{sec.pageEnd}</span>
-            <button onClick={()=>setEditingSections(editingSections.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:12}}>×</button>
-          </div>
-        ))}
+      <div style={{fontSize:10,color:T.dim,marginBottom:8}}>Media: {avgWords} palabras/sección. Edita títulos, elimina o divide secciones demasiado largas.</div>
+      <div style={{display:'flex',flexDirection:'column',gap:3}}>
+        {editingSections.map((sec,i)=>{
+          const pct=Math.round(sec.words/maxWords*100);
+          const tooSmall=sec.words<500;const tooBig=sec.words>15000;
+          const barColor=tooBig?T.red:tooSmall?T.amber:T.green;
+          return(
+            <div key={i} style={{background:T.bg,borderRadius:6,border:`0.5px solid ${tooBig||tooSmall?barColor:T.border}`,overflow:'hidden'}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,padding:'5px 8px'}}>
+                <span style={{fontSize:9,color:T.dim,fontWeight:700,minWidth:16}}>{i+1}</span>
+                <input value={sec.title} onChange={e=>{const n=[...editingSections];n[i]={...n[i],title:e.target.value};setEditingSections(n);}}
+                  style={{flex:1,background:'transparent',color:T.text,border:'none',fontSize:11,fontWeight:600,outline:'none',fontFamily:FONT,minWidth:0}}/>
+                <span style={{fontSize:9,color:barColor,fontWeight:700,flexShrink:0}}>{sec.words.toLocaleString()}</span>
+                <span style={{fontSize:8,color:T.dim,flexShrink:0}}>pp.{sec.pageStart}-{sec.pageEnd}</span>
+                {tooBig&&<button onClick={()=>splitSection(i)} title="Dividir sección" style={{background:T.redS,border:`0.5px solid ${T.red}`,borderRadius:4,padding:'1px 6px',fontSize:9,cursor:'pointer',color:T.red,fontWeight:700,fontFamily:FONT}}>✂</button>}
+                <button onClick={()=>setEditingSections(editingSections.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:11,padding:'0 2px'}}>×</button>
+              </div>
+              {/* Size bar */}
+              <div style={{height:3,background:T.border}}><div style={{height:'100%',width:`${pct}%`,background:barColor,borderRadius:2}}/></div>
+            </div>
+          );
+        })}
       </div>
     </Card>
-  );
+  );}
 
   return(
     <Card style={{padding:'14px 18px',marginBottom:16}}>
