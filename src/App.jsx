@@ -2275,8 +2275,13 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
   const [processing,setProcessing]=useState(null);
   const [progress,setProgress]=useState({step:'',pct:0,detail:''});
   const [pdfData,setPdfData]=useState(()=>load(storeKey,{tietz:null,henry:null}));
-  const [editingSections,setEditingSections]=useState(null); // [{title,text}] for review before confirm
-  const [editSource,setEditSource]=useState(null); // 'tietz'|'henry'
+  const [editingSections,setEditingSections]=useState(null);
+  const [editSource,setEditSource]=useState(null);
+  const [manualMode,setManualMode]=useState(false);
+  const [manualText,setManualText]=useState('');
+  const [treeNodes,setTreeNodes]=useState([]); // [{id,title,level,children:[]}]
+  const [editingNodeId,setEditingNodeId]=useState(null);
+  const [dragNode,setDragNode]=useState(null);
 
   // ── Extract text from PDF with font metadata ─────────────────────────────
   const extractPdfText=async(blob,fileLabel)=>{
@@ -2774,6 +2779,176 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
   const hasTietzPdf=(pdfMeta[topicPdfKey(topic+'§tietz')]||[]).length>0;
   const hasHenryPdf=(pdfMeta[topicPdfKey(topic+'§henry')]||[]).length>0;
 
+  // ── Manual structure editor ──────────────────────────────────────────────
+  const parseIndexText=(text)=>{
+    const lines=text.split('\n').filter(l=>l.trim());
+    return lines.map(line=>{
+      // Detect level by: leading whitespace, numbered prefix, or tab depth
+      const stripped=line.replace(/^\s+/,'');
+      const indent=line.length-stripped.length;
+      const tabLevel=Math.floor(indent/2);
+      // Check numbered prefix: 1.1.1 → level 3, 1.1 → level 2, 1. → level 1
+      const numMatch=stripped.match(/^(\d+(?:\.\d+)*)[.\)]\s*/);
+      let level=1;
+      if(numMatch)level=numMatch[1].split('.').length;
+      else if(tabLevel>0)level=Math.min(tabLevel+1,3);
+      const title=stripped.replace(/^[\d.)\-–—•·\s]+/,'').trim()||stripped.trim();
+      return{id:uid(),title,level:Math.min(level,3)};
+    }).filter(n=>n.title.length>1);
+  };
+
+  const applyManualText=()=>{
+    const nodes=parseIndexText(manualText);
+    if(!nodes.length)return;
+    setTreeNodes(nodes);
+  };
+
+  const addNodeAfter=(idx)=>{
+    const n=[...treeNodes];
+    const level=n[idx]?.level||1;
+    n.splice(idx+1,0,{id:uid(),title:'Nueva sección',level});
+    setTreeNodes(n);setEditingNodeId(n[idx+1].id);
+  };
+
+  const addChild=(idx)=>{
+    const n=[...treeNodes];
+    const parentLevel=n[idx]?.level||1;
+    n.splice(idx+1,0,{id:uid(),title:'Nueva subsección',level:Math.min(parentLevel+1,3)});
+    setTreeNodes(n);setEditingNodeId(n[idx+1].id);
+  };
+
+  const removeNode=(idx)=>{setTreeNodes(treeNodes.filter((_,i)=>i!==idx));};
+
+  const mergeWithNext=(idx)=>{
+    if(idx>=treeNodes.length-1)return;
+    const n=[...treeNodes];
+    n[idx]={...n[idx],title:n[idx].title+' / '+n[idx+1].title};
+    n.splice(idx+1,1);
+    setTreeNodes(n);
+  };
+
+  const moveNode=(fromIdx,toIdx)=>{
+    if(fromIdx===toIdx)return;
+    const n=[...treeNodes];const[moved]=n.splice(fromIdx,1);n.splice(toIdx,0,moved);
+    setTreeNodes(n);
+  };
+
+  const changeLevel=(idx,delta)=>{
+    const n=[...treeNodes];
+    n[idx]={...n[idx],level:Math.max(1,Math.min(3,n[idx].level+delta))};
+    setTreeNodes(n);
+  };
+
+  // Apply tree structure to extracted PDF text and create sections
+  const applyTreeToText=async(source)=>{
+    // Get level-1 nodes as main sections
+    const mainSections=treeNodes.filter(n=>n.level===1);
+    if(!mainSections.length){alert('Define al menos una sección de nivel 1.');return;}
+
+    // Get extracted text
+    const pdfResult=pdfData[source];
+    if(!pdfResult?.sections){alert(`Primero extrae el PDF de ${source==='tietz'?'Tietz':'Henry'}.`);return;}
+    const fullText=pdfResult.sections.map(s=>s.text).join('\n\n');
+
+    // Split text at each level-1 title
+    const sections=[];
+    for(let i=0;i<mainSections.length;i++){
+      const title=mainSections[i].title;
+      const titleN=title.toLowerCase();
+      // Collect subsection titles for this main section
+      const mainIdx=treeNodes.indexOf(mainSections[i]);
+      const nextMainIdx=i<mainSections.length-1?treeNodes.indexOf(mainSections[i+1]):treeNodes.length;
+      const subsections=treeNodes.slice(mainIdx+1,nextMainIdx).filter(n=>n.level>1);
+
+      // Find text boundaries
+      let startPos=fullText.toLowerCase().indexOf(titleN);
+      if(startPos<0)startPos=fullText.toLowerCase().indexOf(titleN.slice(0,20));
+      if(startPos<0)startPos=i===0?0:sections.length?fullText.length*i/mainSections.length:0;
+      let endPos=fullText.length;
+      if(i<mainSections.length-1){
+        const nextT=mainSections[i+1].title.toLowerCase();
+        const ni=fullText.toLowerCase().indexOf(nextT,startPos+1);
+        if(ni>startPos)endPos=ni;
+      }
+      const sectionText=fullText.slice(startPos,endPos);
+      sections.push({
+        title,text:sectionText,words:sectionText.split(/\s+/).length,
+        subsectionTitles:subsections.map(s=>s.title),pageStart:0,pageEnd:0
+      });
+    }
+
+    setEditingSections(sections);
+    setEditSource(source);
+    setManualMode(false);
+  };
+
+  // Apply Tietz structure as template for Henry
+  const applyAsTemplate=(fromSource,toSource)=>{
+    const fromData=pdfData[fromSource];
+    if(!fromData?.sections)return;
+    const titles=fromData.sections.map(s=>s.title);
+    const nodes=titles.map(t=>({id:uid(),title:t,level:1}));
+    setTreeNodes(nodes);
+  };
+
+  // ── Manual editor UI ──────────────────────────────────────────────────
+  if(manualMode) return(
+    <Card style={{padding:'16px 18px',marginBottom:16}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.text}}>📋 Editor manual de estructura</div>
+        <button onClick={()=>setManualMode(false)} style={{fontSize:11,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Cancelar</button>
+      </div>
+
+      {!treeNodes.length?(
+        <div>
+          <div style={{fontSize:11,color:T.dim,marginBottom:8,lineHeight:1.5}}>Pega el índice del capítulo. Usa indentación o numeración (1., 1.1, 1.1.1) para indicar jerarquía.</div>
+          <textarea value={manualText} onChange={e=>setManualText(e.target.value)} placeholder={"1. Introducción\n2. Fisiología\n  2.1 Metabolismo\n  2.2 Regulación\n3. Métodos analíticos\n  3.1 Espectrofotometría\n  3.2 Inmunoanálisis\n4. Valores de referencia\n5. Patología\n  5.1 Diagnóstico diferencial"}
+            style={{width:'100%',minHeight:160,background:T.bg,color:T.text,border:`0.5px solid ${T.border}`,borderRadius:8,padding:'10px 12px',fontSize:12,fontFamily:'monospace',resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.6,marginBottom:10}}/>
+          <div style={{display:'flex',gap:6}}>
+            <button onClick={applyManualText} disabled={!manualText.trim()} style={{background:manualText.trim()?T.green:T.surface,color:manualText.trim()?'#000':T.dim,border:`0.5px solid ${manualText.trim()?T.green:T.border}`,borderRadius:8,padding:'6px 16px',fontSize:12,fontWeight:700,cursor:manualText.trim()?'pointer':'not-allowed',fontFamily:FONT}}>Crear árbol</button>
+            {pdfData.tietz&&<button onClick={()=>applyAsTemplate('tietz','henry')} style={{fontSize:11,background:T.blueS,border:`0.5px solid ${T.blue}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.blueText,fontFamily:FONT}}>📘 Usar estructura Tietz</button>}
+            {pdfData.henry&&<button onClick={()=>applyAsTemplate('henry','tietz')} style={{fontSize:11,background:T.amberS,border:`0.5px solid ${T.amber}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.amberText,fontFamily:FONT}}>📙 Usar estructura Henry</button>}
+          </div>
+        </div>
+      ):(
+        <div>
+          <div style={{fontSize:10,color:T.dim,marginBottom:8}}>Arrastra para reordenar. ◀▶ para cambiar nivel. Doble clic para editar título.</div>
+          {/* Tree view */}
+          <div style={{display:'flex',flexDirection:'column',gap:2,marginBottom:12}}>
+            {treeNodes.map((node,i)=>(
+              <div key={node.id} draggable
+                onDragStart={()=>setDragNode(i)} onDragEnd={()=>setDragNode(null)}
+                onDragOver={e=>e.preventDefault()}
+                onDrop={()=>{if(dragNode!==null)moveNode(dragNode,i);setDragNode(null);}}
+                style={{display:'flex',alignItems:'center',gap:4,padding:'4px 6px',paddingLeft:8+(node.level-1)*20,background:dragNode===i?T.tealS:T.bg,borderRadius:6,border:`0.5px solid ${T.border}`,opacity:dragNode===i?0.5:1,cursor:'grab'}}>
+                <span style={{fontSize:8,color:T.dim,fontWeight:700,minWidth:10}}>L{node.level}</span>
+                <button onClick={()=>changeLevel(i,-1)} disabled={node.level<=1} style={{background:'none',border:'none',color:node.level>1?T.teal:T.dim,cursor:node.level>1?'pointer':'default',fontSize:10,padding:'0 2px'}}>◀</button>
+                <button onClick={()=>changeLevel(i,1)} disabled={node.level>=3} style={{background:'none',border:'none',color:node.level<3?T.teal:T.dim,cursor:node.level<3?'pointer':'default',fontSize:10,padding:'0 2px'}}>▶</button>
+                {editingNodeId===node.id?(
+                  <input value={node.title} autoFocus onChange={e=>{const n=[...treeNodes];n[i]={...n[i],title:e.target.value};setTreeNodes(n);}}
+                    onBlur={()=>setEditingNodeId(null)} onKeyDown={e=>e.key==='Enter'&&setEditingNodeId(null)}
+                    style={{flex:1,background:'transparent',color:T.text,border:`0.5px solid ${T.teal}`,borderRadius:4,padding:'2px 6px',fontSize:11,fontWeight:600,outline:'none',fontFamily:FONT}}/>
+                ):(
+                  <span onDoubleClick={()=>setEditingNodeId(node.id)} style={{flex:1,fontSize:11,fontWeight:node.level===1?700:500,color:node.level===1?T.text:T.muted,cursor:'text'}}>{node.title}</span>
+                )}
+                <button onClick={()=>addChild(i)} title="Añadir subsección" style={{background:'none',border:'none',color:T.teal,cursor:'pointer',fontSize:10,padding:'0 2px'}}>+↓</button>
+                <button onClick={()=>addNodeAfter(i)} title="Añadir sección después" style={{background:'none',border:'none',color:T.green,cursor:'pointer',fontSize:10,padding:'0 2px'}}>+</button>
+                {i<treeNodes.length-1&&<button onClick={()=>mergeWithNext(i)} title="Fusionar con siguiente" style={{background:'none',border:'none',color:T.amber,cursor:'pointer',fontSize:10,padding:'0 2px'}}>⊕</button>}
+                <button onClick={()=>removeNode(i)} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:10,padding:'0 2px'}}>×</button>
+              </div>
+            ))}
+          </div>
+          <div style={{fontSize:10,color:T.dim,marginBottom:8}}>{treeNodes.filter(n=>n.level===1).length} secciones principales · {treeNodes.filter(n=>n.level>1).length} subsecciones</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {pdfData.tietz&&<button onClick={()=>applyTreeToText('tietz')} style={{background:T.blueS,border:`0.5px solid ${T.blue}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:'pointer',color:T.blueText,fontFamily:FONT}}>📘 Aplicar a Tietz</button>}
+            {pdfData.henry&&<button onClick={()=>applyTreeToText('henry')} style={{background:T.amberS,border:`0.5px solid ${T.amber}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:'pointer',color:T.amberText,fontFamily:FONT}}>📙 Aplicar a Henry</button>}
+            <button onClick={()=>setTreeNodes([])} style={{fontSize:11,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Reiniciar</button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+
   // Split a section at a manual point
   const splitSection=(idx)=>{
     const sec=editingSections[idx];
@@ -2833,7 +3008,10 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
 
   return(
     <Card style={{padding:'14px 18px',marginBottom:16}}>
-      <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>📄 Extracción de PDFs</div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.text}}>📄 Extracción de PDFs</div>
+        <button onClick={()=>setManualMode(true)} style={{fontSize:10,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'3px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>📋 Estructura manual</button>
+      </div>
       <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
         {hasTietzPdf&&(
           <button onClick={()=>processPdf('tietz')} disabled={!!processing}
