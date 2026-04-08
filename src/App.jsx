@@ -2270,6 +2270,27 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
 
   const addLog=(msg)=>setProgress(p=>({...p,log:[...p.log.slice(-20),msg]}));
 
+  // Clean markdown/prose from Claude response before JSON parsing
+  const cleanRaw=(raw)=>{
+    let s=raw.trim();
+    s=s.replace(/```(?:json)?\s*/gi,'').replace(/```\s*/g,'');
+    s=s.split('\n').filter(l=>!/^\s*#{1,6}\s/.test(l)).join('\n').trim();
+    const fb=s.indexOf('{'),fb2=s.indexOf('[');
+    const js=fb>=0&&fb2>=0?Math.min(fb,fb2):fb>=0?fb:fb2;
+    if(js>0)s=s.slice(js);
+    return s;
+  };
+  const safeParse=(raw,ctx)=>{
+    const c=cleanRaw(raw);
+    try{return JSON.parse(c);}catch{
+      try{return JSON.parse(repairJSON(c));}catch{
+        const preview=c.slice(0,300).replace(/\n/g,'\\n');
+        throw new Error(`JSON parse failed (${ctx}). Preview: "${preview}"`);
+      }
+    }
+  };
+  const JSON_HINT='Responde ÚNICAMENTE con JSON puro. Sin markdown, sin backticks, sin #, sin texto antes o después del JSON.';
+
   const callClaude=async(prompt,maxTokens=2048,retries=3)=>{
     for(let a=1;a<=retries;a++){
       try{
@@ -2277,7 +2298,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
           body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})});
         if(!res.ok){if(a<retries&&(res.status===429||res.status>=500)){await new Promise(w=>setTimeout(w,a*5000));continue;}throw new Error(`HTTP ${res.status}`);}
         const r=await res.json();
-        return(r.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
+        return(r.content||[]).map(c=>c.text||'').join('').trim();
       }catch(e){if(a>=retries)throw e;await new Promise(w=>setTimeout(w,a*3000));}
     }
   };
@@ -2287,7 +2308,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content}]})});
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const r=await res.json();
-    return(r.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
+    return(r.content||[]).map(c=>c.text||'').join('').trim();
   };
 
   // Split text into paragraph chunks of ~300 words
@@ -2321,9 +2342,9 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       addLog('Fase 1: Extrayendo índice de secciones...');
       const structRaw=await callClaudeWithDoc([
         {type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}},
-        {type:'text',text:`IDIOMA: Todo en español. Analiza este documento de "${topic}". Identifica TODAS las secciones del capítulo.\nJSON:\n{"sections":[{"title":"Título en español","pageHint":"página aprox"}]}\n\n5-15 secciones.`}
+        {type:'text',text:`${JSON_HINT}\n\nIDIOMA: Todo en español. Analiza este documento de "${topic}". Identifica TODAS las secciones del capítulo.\n\n{"sections":[{"title":"Título en español","pageHint":"página aprox"}]}\n\n5-15 secciones.`}
       ],4096);
-      const struct=JSON.parse(repairJSON(structRaw));
+      const struct=safeParse(structRaw,'extract_structure');
       const secs=struct.sections||struct;
       addLog(`✓ ${secs.length} secciones detectadas`);
 
@@ -2347,8 +2368,8 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
         const secGuess=secs[Math.min(Math.floor(i/totalChunks*secs.length),secs.length-1)]?.title||'General';
         setProgress(p=>({...p,step:`Fase 3: Procesando bloque ${i+1}/${totalChunks}`,pct:15+Math.round(i/totalChunks*60),detail:`Sección: ${secGuess}`}));
         try{
-          const raw=await callClaude(`Experto bioquímica clínica. IDIOMA: español. Extrae TODA la información SIN resumir.\n\nTEMA:"${topic}" SECCIÓN:"${secGuess}"\n\n${chunks[i]}\n\nJSON:\n{"concepts":[{"t":"nombre","d":"definición completa","cat":"concept|value|mechanism|clinical"}]}`,2048);
-          const parsed=JSON.parse(repairJSON(raw));
+          const raw=await callClaude(`${JSON_HINT}\n\nExperto bioquímica clínica. IDIOMA: español. Extrae TODA la información SIN resumir.\n\nTEMA:"${topic}" SECCIÓN:"${secGuess}"\n\n${chunks[i]}\n\n{"concepts":[{"t":"nombre","d":"definición completa","cat":"concept|value|mechanism|clinical"}]}`,2048);
+          const parsed=safeParse(raw,`chunk_${i+1}`);
           allExtracts.push({section:secGuess,data:parsed.concepts||parsed,chunkIdx:i});
           addLog(`✓ Bloque ${i+1}: ${(parsed.concepts||parsed).length||0} conceptos`);
         }catch(e){
@@ -2387,8 +2408,8 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
         let fusedContent;
         if(tietzConcepts.length&&henryConcepts.length){
           addLog(`Fusionando "${secTitle}": Tietz(${tietzConcepts.length}) + Henry(${henryConcepts.length})`);
-          const raw=await callClaude(`Experto bioquímica clínica. IDIOMA: español. Fusiona contenido de Tietz y Henry para "${secTitle}".\n\nTIETZ:\n${JSON.stringify(tietzConcepts.slice(0,40))}\n\nHENRY:\n${JSON.stringify(henryConcepts.slice(0,40))}\n\nElimina duplicados, conserva variaciones. JSON:\n{"concepts":[{"t":"...","d":"...","source":"tietz|henry|ambos"}]}`,4096);
-          fusedContent=JSON.parse(repairJSON(raw));
+          const raw=await callClaude(`${JSON_HINT}\n\nExperto bioquímica clínica. IDIOMA: español. Fusiona contenido de Tietz y Henry para "${secTitle}".\n\nTIETZ:\n${JSON.stringify(tietzConcepts.slice(0,40))}\n\nHENRY:\n${JSON.stringify(henryConcepts.slice(0,40))}\n\nElimina duplicados, conserva variaciones.\n\n{"concepts":[{"t":"...","d":"...","source":"tietz|henry|ambos"}]}`,4096);
+          fusedContent=safeParse(raw,`fuse_${secTitle}`);
         }else{
           fusedContent={concepts:tietzConcepts.length?tietzConcepts:henryConcepts};
         }
