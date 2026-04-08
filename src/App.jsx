@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { PDFDocument } from "pdf-lib";
+import * as pdfjsLib from 'pdfjs-dist';
+pdfjsLib.GlobalWorkerOptions.workerSrc=new URL('pdfjs-dist/build/pdf.worker.mjs',import.meta.url).toString();
 
 // ── SM-2 ────────────────────────────────────────────────────────────────────
 function sm2Update(sr, q) {
@@ -2243,6 +2245,30 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
             <PdfProcessorUI topic={topic} pdfMeta={pdfMeta} learning={learning} saveLearningData={saveLearningData}/>
           )}
 
+          {/* Section index from learning data */}
+          {learning?.sections?.length>0&&(
+            <Card style={{padding:'14px 18px',marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:8}}>📑 Secciones del tema ({learning.sections.length})</div>
+              <div style={{display:'flex',flexDirection:'column',gap:3}}>
+                {learning.sections.map((sec,i)=>{
+                  const hasTietz=sec.text?.includes('[Fuente: Tietz]');
+                  const hasHenry=sec.text?.includes('[Fuente: Henry]');
+                  const src=hasTietz&&hasHenry?'T+H':hasTietz?'T':hasHenry?'H':null;
+                  const hasGen=!!sec.generated;
+                  return(
+                    <div key={sec.id||i} onClick={()=>setActiveTab('aprendizaje')} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',borderRadius:6,cursor:'pointer',background:T.bg,border:`0.5px solid ${T.border}`}} onMouseEnter={e=>e.currentTarget.style.borderColor=T.teal} onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
+                      <span style={{fontSize:9,color:T.dim,fontWeight:700,minWidth:16}}>{i+1}</span>
+                      <span style={{fontSize:11,color:T.text,flex:1}}>{sec.title}</span>
+                      {src&&<span style={{fontSize:8,color:T.teal,background:T.tealS,padding:'1px 4px',borderRadius:3,fontWeight:700}}>{src}</span>}
+                      {sec.pageStart&&<span style={{fontSize:9,color:T.dim}}>p.{sec.pageStart}</span>}
+                      {hasGen&&<span style={{fontSize:8,color:T.green}}>✓</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
           {/* Inline PDF viewer */}
           {viewingPdf&&(
             <PdfViewer topic={viewingPdf.topicKey} fileId={viewingPdf.fileId} name={viewingPdf.name} onClose={()=>setViewingPdf(null)}/>
@@ -2261,17 +2287,171 @@ function TopicPage({topic,onBack,stats,qs,pdfMeta,savePdfForTopic,deletePdfForTo
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PDF PROCESSOR — procesa PDFs párrafo a párrafo con checkpoints
+// PDF PROCESSOR — extracción local con pdf.js + 1 llamada API para títulos
 // ═══════════════════════════════════════════════════════════════════════════
 function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
-  const [processing,setProcessing]=useState(null); // 'tietz'|'henry'|'fuse'|null
-  const [progress,setProgress]=useState({step:'',pct:0,detail:'',log:[]});
-  const [pdfData,setPdfData]=useState(()=>load('olab_pdfproc_'+topic.replace(/[^a-z0-9]/gi,'').slice(0,30),{tietz:null,henry:null,fused:null}));
+  const storeKey='olab_pdfproc_'+topic.replace(/[^a-z0-9]/gi,'').slice(0,30);
+  const [processing,setProcessing]=useState(null);
+  const [progress,setProgress]=useState({step:'',pct:0,detail:''});
+  const [pdfData,setPdfData]=useState(()=>load(storeKey,{tietz:null,henry:null}));
+  const [editingSections,setEditingSections]=useState(null); // [{title,text}] for review before confirm
+  const [editSource,setEditSource]=useState(null); // 'tietz'|'henry'
 
-  const addLog=(msg)=>setProgress(p=>({...p,log:[...p.log.slice(-20),msg]}));
+  // ── Extract text from PDF locally using pdf.js ───────────────────────────
+  const extractPdfText=async(blob)=>{
+    const buf=await blob.arrayBuffer();
+    const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+    const totalPages=pdf.numPages;
+    const pages=[];
+    for(let p=1;p<=totalPages;p++){
+      setProgress(prev=>({...prev,step:`Extrayendo página ${p} de ${totalPages}...`,pct:Math.round(p/totalPages*80)}));
+      const page=await pdf.getPage(p);
+      const content=await page.getTextContent();
+      // Group items by approximate Y position to reconstruct lines
+      const items=content.items.filter(it=>it.str.trim());
+      let lines=[];let curLine='';let lastY=null;
+      for(const it of items){
+        const y=Math.round(it.transform[5]);
+        if(lastY!==null&&Math.abs(y-lastY)>3){
+          if(curLine.trim())lines.push({text:curLine.trim(),y:lastY,height:it.height||12});
+          curLine=it.str;
+        }else{curLine+=(curLine?' ':'')+it.str;}
+        lastY=y;
+      }
+      if(curLine.trim())lines.push({text:curLine.trim(),y:lastY,height:12});
+      pages.push({pageNum:p,lines});
+    }
+    return{pages,totalPages};
+  };
 
-  // Clean markdown/prose from Claude response before JSON parsing
-  const cleanRaw=(raw)=>{
+  // ── Detect sections from extracted pages ────────────────────────────────
+  const detectSections=(pages)=>{
+    const sections=[];
+    let currentSection={title:'Introducción',text:'',pageStart:1};
+    for(const page of pages){
+      for(const line of page.lines){
+        // Heuristic: a line is a heading if it's short (<80 chars), all-uppercase or followed by much longer text
+        const isShort=line.text.length<80;
+        const isUpper=line.text===line.text.toUpperCase()&&line.text.length>3&&/[A-Z]/.test(line.text);
+        const looksLikeHeading=isShort&&(isUpper||/^\d+[\.\)]\s/.test(line.text)||/^[A-Z][A-Za-záéíóúñ\s]{3,50}$/.test(line.text));
+        if(looksLikeHeading&&currentSection.text.length>200){
+          sections.push({...currentSection,pageEnd:page.pageNum});
+          currentSection={title:line.text,text:'',pageStart:page.pageNum};
+        }else{
+          currentSection.text+=(currentSection.text?'\n':'')+line.text;
+        }
+      }
+      currentSection.text+='\n\n'; // page break
+    }
+    if(currentSection.text.trim().length>50)sections.push({...currentSection,pageEnd:pages[pages.length-1]?.pageNum||0});
+    return sections;
+  };
+
+  // ── Process a PDF source ────────────────────────────────────────────────
+  const processPdf=async(source)=>{
+    const key=topicPdfKey(topic+'§'+source);
+    const files=pdfMeta[key]||[];
+    if(!files.length)return;
+    setProcessing(source);setProgress({step:'Cargando PDF...',pct:0,detail:''});
+    try{
+      const blob=await idbLoad(topicFilePdfKey(topic+'§'+source,files[0].id));
+      if(!blob)throw new Error('PDF no encontrado en almacenamiento');
+
+      // Phase 1: Local text extraction (no API calls)
+      const{pages,totalPages}=await extractPdfText(blob instanceof File?blob:new File([blob],files[0].name,{type:'application/pdf'}));
+
+      // Phase 2: Detect sections locally
+      setProgress({step:'Detectando secciones...',pct:85,detail:`${totalPages} páginas extraídas`});
+      const rawSections=detectSections(pages);
+
+      // Phase 3: One API call to refine section titles in Spanish
+      setProgress({step:'Refinando títulos de sección con IA...',pct:90,detail:`${rawSections.length} secciones detectadas`});
+      const summary=rawSections.map(s=>`"${s.title}" (${s.text.slice(0,150).replace(/\n/g,' ')}...)`).join('\n');
+      try{
+        const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:2048,messages:[{role:'user',content:`Responde SOLO con JSON puro, sin markdown.\n\nEstas son secciones detectadas de un capítulo de "${topic}" (${source==='tietz'?'Tietz':'Henry'}). Refina los títulos al español y limpia nombres.\n\n${summary}\n\n{"titles":[${rawSections.map((_,i)=>`"título refinado ${i+1}"`).join(',')}]}`}]})});
+        if(res.ok){
+          const d=await res.json();
+          const text=(d.content||[]).map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
+          // Clean # lines
+          const cleaned=text.split('\n').filter(l=>!/^\s*#/.test(l)).join('\n').trim();
+          const idx=cleaned.indexOf('{');
+          const jsonStr=idx>=0?cleaned.slice(idx):cleaned;
+          try{
+            const parsed=JSON.parse(jsonStr);
+            const titles=parsed.titles||[];
+            titles.forEach((t,i)=>{if(t&&rawSections[i])rawSections[i].title=t;});
+          }catch{}
+        }
+      }catch{}// Non-critical — raw titles are still usable
+
+      setProgress({step:'Listo para revisar',pct:100,detail:`${rawSections.length} secciones · ${totalPages} páginas`});
+      // Show sections for user review
+      setEditingSections(rawSections.map(s=>({title:s.title,text:s.text,pageStart:s.pageStart,pageEnd:s.pageEnd,words:s.text.split(/\s+/).length})));
+      setEditSource(source);
+    }catch(e){
+      setProgress({step:`Error: ${e.message}`,pct:0,detail:''});
+    }
+    setProcessing(null);
+  };
+
+  // ── Confirm sections and save ───────────────────────────────────────────
+  const confirmSections=async()=>{
+    if(!editingSections||!editSource)return;
+    const sourceLabel=editSource==='tietz'?'Tietz':'Henry';
+
+    // 1. Save raw extraction to localStorage for persistence
+    const result={sections:editingSections,processedAt:new Date().toISOString()};
+    const newPdfData={...pdfData,[editSource]:result};
+    setPdfData(newPdfData);save(storeKey,newPdfData);
+
+    // 2. Build the learning data with proper merge logic
+    const existingData=learning||{sections:[]};
+    const existingSections=[...(existingData.sections||[])];
+    const existingByTitle=new Map(existingSections.map((s,i)=>[s.title,i]));
+    let created=0,merged=0,skipped=0;
+
+    for(const sec of editingSections){
+      if(sec.text.trim().length<50)continue; // skip tiny fragments
+      const taggedText=`[Fuente: ${sourceLabel}]\n\n${sec.text}`;
+      const existingIdx=existingByTitle.get(sec.title);
+
+      if(existingIdx!=null){
+        // Section exists — check if this source is already there
+        const existing=existingSections[existingIdx];
+        if(existing.text.includes(`[Fuente: ${sourceLabel}]`)){
+          // Same source already merged — ask to overwrite
+          if(confirm(`La sección "${sec.title}" ya tiene contenido de ${sourceLabel}. ¿Sobreescribir?`)){
+            // Replace the source block
+            const otherSource=sourceLabel==='Tietz'?'Henry':'Tietz';
+            const otherMatch=existing.text.match(new RegExp(`\\[Fuente: ${otherSource}\\][\\s\\S]*`));
+            existingSections[existingIdx]={...existing,text:taggedText+(otherMatch?'\n\n'+otherMatch[0]:''),generated:null};
+            merged++;
+          }else{skipped++;}
+        }else{
+          // Different source — append
+          existingSections[existingIdx]={...existing,text:existing.text+'\n\n'+taggedText,generated:null};
+          merged++;
+        }
+      }else{
+        // New section
+        const newSec={id:uid(),title:sec.title,text:taggedText,generated:null,pageStart:sec.pageStart,pageEnd:sec.pageEnd};
+        existingSections.push(newSec);
+        existingByTitle.set(sec.title,existingSections.length-1);
+        created++;
+      }
+    }
+
+    // 3. Save to IndexedDB via saveLearningData (updates React state + persists)
+    await saveLearningData(topic,{...existingData,sections:existingSections});
+
+    // 4. Clear editing state and show result
+    setEditingSections(null);setEditSource(null);
+    setProgress({step:`✓ ${created} creadas · ${merged} fusionadas · ${skipped} omitidas`,pct:100,detail:`Secciones listas en Aprendizaje`});
+  };
+
+  /* OLD API-based code removed — replaced by local pdf.js extraction above */
+  if(false){const _x_cleanRaw=(raw)=>{
     let s=raw.trim();
     s=s.replace(/```(?:json)?\s*/gi,'').replace(/```\s*/g,'');
     s=s.split('\n').filter(l=>!/^\s*#{1,6}\s/.test(l)).join('\n').trim();
@@ -2291,24 +2471,54 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
   };
   const JSON_HINT='Responde ÚNICAMENTE con JSON puro. Sin markdown, sin backticks, sin #, sin texto antes o después del JSON.';
 
+  const delay=ms=>new Promise(r=>setTimeout(r,ms));
+
   const callClaude=async(prompt,maxTokens=2048,retries=3)=>{
     for(let a=1;a<=retries;a++){
       try{
         const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})});
-        if(!res.ok){if(a<retries&&(res.status===429||res.status>=500)){await new Promise(w=>setTimeout(w,a*5000));continue;}throw new Error(`HTTP ${res.status}`);}
+        if(!res.ok){
+          if(res.status===429&&a<retries){
+            addLog(`⏳ Rate limit — esperando 15s antes de reintentar (intento ${a}/${retries})...`);
+            setProgress(p=>({...p,detail:'Rate limit detectado — esperando 15s antes de continuar...'}));
+            await delay(15000);continue;
+          }
+          if(a<retries&&res.status>=500){await delay(a*5000);continue;}
+          throw new Error(`HTTP ${res.status}`);
+        }
         const r=await res.json();
         return(r.content||[]).map(c=>c.text||'').join('').trim();
-      }catch(e){if(a>=retries)throw e;await new Promise(w=>setTimeout(w,a*3000));}
+      }catch(e){
+        if(a>=retries)throw e;
+        addLog(`⚠ Error intento ${a}: ${e.message}. Reintentando en ${a*5}s...`);
+        await delay(a*5000);
+      }
     }
   };
 
-  const callClaudeWithDoc=async(content,maxTokens=4096)=>{
-    const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content}]})});
-    if(!res.ok)throw new Error(`HTTP ${res.status}`);
-    const r=await res.json();
-    return(r.content||[]).map(c=>c.text||'').join('').trim();
+  const callClaudeWithDoc=async(content,maxTokens=4096,retries=3)=>{
+    for(let a=1;a<=retries;a++){
+      try{
+        const res=await fetch('/api/anthropic',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:maxTokens,messages:[{role:'user',content}]})});
+        if(!res.ok){
+          if(res.status===429&&a<retries){
+            addLog(`⏳ Rate limit — esperando 15s antes de reintentar (intento ${a}/${retries})...`);
+            setProgress(p=>({...p,detail:'Rate limit detectado — esperando 15s antes de continuar...'}));
+            await delay(15000);continue;
+          }
+          if(a<retries&&res.status>=500){await delay(a*5000);continue;}
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const r=await res.json();
+        return(r.content||[]).map(c=>c.text||'').join('').trim();
+      }catch(e){
+        if(a>=retries)throw e;
+        addLog(`⚠ Error intento ${a}: ${e.message}. Reintentando en ${a*5}s...`);
+        await delay(a*5000);
+      }
+    }
   };
 
   // Split text into paragraph chunks of ~300 words
@@ -2348,7 +2558,8 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       const secs=struct.sections||struct;
       addLog(`✓ ${secs.length} secciones detectadas`);
 
-      // Phase 2: Extract full text
+      // Phase 2: Extract full text (delay to avoid rate limit after Phase 1)
+      await delay(2000);
       setProgress(p=>({...p,step:'Fase 2: Extrayendo texto...',pct:10}));
       addLog('Fase 2: Extrayendo texto del PDF...');
       const textRaw=await callClaudeWithDoc([
@@ -2365,8 +2576,13 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       const failed=[];
 
       for(let i=0;i<totalChunks;i++){
+        // 5s delay between chunks to respect rate limits
+        if(i>0){
+          setProgress(p=>({...p,detail:`Esperando 5s antes del bloque ${i+1}...`}));
+          await delay(5000);
+        }
         const secGuess=secs[Math.min(Math.floor(i/totalChunks*secs.length),secs.length-1)]?.title||'General';
-        setProgress(p=>({...p,step:`Fase 3: Procesando bloque ${i+1}/${totalChunks}`,pct:15+Math.round(i/totalChunks*60),detail:`Sección: ${secGuess}`}));
+        setProgress(p=>({...p,step:`Fase 3: Bloque ${i+1}/${totalChunks}`,pct:15+Math.round(i/totalChunks*60),detail:`Sección: ${secGuess}`}));
         try{
           const raw=await callClaude(`${JSON_HINT}\n\nExperto bioquímica clínica. IDIOMA: español. Extrae TODA la información SIN resumir.\n\nTEMA:"${topic}" SECCIÓN:"${secGuess}"\n\n${chunks[i]}\n\n{"concepts":[{"t":"nombre","d":"definición completa","cat":"concept|value|mechanism|clinical"}]}`,2048);
           const parsed=safeParse(raw,`chunk_${i+1}`);
@@ -2400,6 +2616,7 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       const fusedSections=[];
 
       for(let i=0;i<secs.length;i++){
+        if(i>0)await delay(5000);
         const secTitle=secs[i].title;
         setProgress(p=>({...p,step:`Fusionando sección ${i+1}/${secs.length}: ${secTitle}`,pct:Math.round(i/secs.length*80)}));
         const tietzConcepts=pdfData.tietz?.extracts?.filter(e=>e.section===secTitle).flatMap(e=>e.data)||[];
@@ -2443,32 +2660,52 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
       setProgress(p=>({...p,step:'Completado',pct:100}));
     }catch(e){addLog(`ERROR: ${e.message}`);}
     setProcessing(null);
-  };
+  };} /* END dead code block */
 
-  const tietzStatus=pdfData.tietz?'done':processing==='tietz'?'processing':'pending';
-  const henryStatus=pdfData.henry?'done':processing==='henry'?'processing':'pending';
-  const canFuse=(pdfData.tietz||pdfData.henry)&&!processing;
+  const tietzDone=!!pdfData.tietz;
+  const henryDone=!!pdfData.henry;
+  const hasTietzPdf=(pdfMeta[topicPdfKey(topic+'§tietz')]||[]).length>0;
+  const hasHenryPdf=(pdfMeta[topicPdfKey(topic+'§henry')]||[]).length>0;
+
+  // Section review/edit screen
+  if(editingSections) return(
+    <Card style={{padding:'16px 18px',marginBottom:16}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.text}}>{editingSections.length} secciones detectadas — {editSource==='tietz'?'📘 Tietz':'📙 Henry'}</div>
+        <div style={{display:'flex',gap:6}}>
+          <button onClick={()=>{setEditingSections(null);setEditSource(null);}} style={{fontSize:11,background:'none',border:`0.5px solid ${T.border}`,borderRadius:6,padding:'4px 10px',cursor:'pointer',color:T.muted,fontFamily:FONT}}>Cancelar</button>
+          <button onClick={confirmSections} style={{fontSize:11,background:T.green,color:'#000',border:'none',borderRadius:6,padding:'4px 14px',cursor:'pointer',fontWeight:700,fontFamily:FONT}}>✓ Confirmar y crear secciones</button>
+        </div>
+      </div>
+      <div style={{fontSize:11,color:T.dim,marginBottom:10}}>Revisa los títulos. Puedes editarlos antes de confirmar.</div>
+      <div style={{display:'flex',flexDirection:'column',gap:4}}>
+        {editingSections.map((sec,i)=>(
+          <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:T.bg,borderRadius:6,border:`0.5px solid ${T.border}`}}>
+            <span style={{fontSize:10,color:T.dim,fontWeight:700,minWidth:20}}>{i+1}</span>
+            <input value={sec.title} onChange={e=>{const n=[...editingSections];n[i]={...n[i],title:e.target.value};setEditingSections(n);}}
+              style={{flex:1,background:'transparent',color:T.text,border:'none',fontSize:12,fontWeight:600,outline:'none',fontFamily:FONT}}/>
+            <span style={{fontSize:9,color:T.dim,flexShrink:0}}>{sec.words} pal · pp.{sec.pageStart}-{sec.pageEnd}</span>
+            <button onClick={()=>setEditingSections(editingSections.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:T.dim,cursor:'pointer',fontSize:12}}>×</button>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
 
   return(
     <Card style={{padding:'14px 18px',marginBottom:16}}>
-      <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>📄 Procesamiento de PDFs</div>
+      <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>📄 Extracción de PDFs</div>
       <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
-        {(pdfMeta[topicPdfKey(topic+'§tietz')]||[]).length>0&&(
+        {hasTietzPdf&&(
           <button onClick={()=>processPdf('tietz')} disabled={!!processing}
-            style={{background:tietzStatus==='done'?T.greenS:T.blueS,border:`0.5px solid ${tietzStatus==='done'?T.green:T.blue}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:tietzStatus==='done'?T.green:T.blueText,fontFamily:FONT}}>
-            {tietzStatus==='done'?'✓ Tietz procesado':tietzStatus==='processing'?'⏳ Procesando Tietz...':'📘 Procesar Tietz'}
+            style={{background:tietzDone?T.greenS:T.blueS,border:`0.5px solid ${tietzDone?T.green:T.blue}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:tietzDone?T.green:T.blueText,fontFamily:FONT}}>
+            {tietzDone?`✓ Tietz (${pdfData.tietz.sections.length} sec)`:processing==='tietz'?'⏳ Extrayendo...':'📘 Extraer Tietz'}
           </button>
         )}
-        {(pdfMeta[topicPdfKey(topic+'§henry')]||[]).length>0&&(
+        {hasHenryPdf&&(
           <button onClick={()=>processPdf('henry')} disabled={!!processing}
-            style={{background:henryStatus==='done'?T.greenS:T.amberS,border:`0.5px solid ${henryStatus==='done'?T.green:T.amber}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:henryStatus==='done'?T.green:T.amberText,fontFamily:FONT}}>
-            {henryStatus==='done'?'✓ Henry procesado':henryStatus==='processing'?'⏳ Procesando Henry...':'📙 Procesar Henry'}
-          </button>
-        )}
-        {canFuse&&(
-          <button onClick={fuseAndCreate} disabled={!!processing}
-            style={{background:pdfData.fused?T.greenS:T.green,border:`0.5px solid ${T.green}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:pdfData.fused?T.green:'#000',fontFamily:FONT}}>
-            {pdfData.fused?'✓ Fusionado':'🔀 Fusionar y crear secciones'}
+            style={{background:henryDone?T.greenS:T.amberS,border:`0.5px solid ${henryDone?T.green:T.amber}`,borderRadius:8,padding:'6px 14px',fontSize:11,fontWeight:600,cursor:processing?'not-allowed':'pointer',color:henryDone?T.green:T.amberText,fontFamily:FONT}}>
+            {henryDone?`✓ Henry (${pdfData.henry.sections.length} sec)`:processing==='henry'?'⏳ Extrayendo...':'📙 Extraer Henry'}
           </button>
         )}
       </div>
@@ -2483,18 +2720,8 @@ function PdfProcessorUI({topic,pdfMeta,learning,saveLearningData}){
           {progress.detail&&<div style={{fontSize:10,color:T.dim,marginTop:2}}>{progress.detail}</div>}
         </div>
       )}
-      {/* Log */}
-      {progress.log.length>0&&(
-        <div style={{maxHeight:120,overflowY:'auto',background:T.bg,borderRadius:6,padding:'6px 8px',border:`0.5px solid ${T.border}`}}>
-          {progress.log.map((l,i)=>(
-            <div key={i} style={{fontSize:9,color:l.startsWith('✓')?T.green:l.startsWith('✗')||l.startsWith('ERROR')?T.red:T.dim,fontFamily:'monospace',lineHeight:1.5}}>{l}</div>
-          ))}
-        </div>
-      )}
-      {/* Status summary */}
-      {pdfData.tietz&&<div style={{fontSize:10,color:T.dim,marginTop:4}}>Tietz: {pdfData.tietz.extracts?.length||0} bloques · {pdfData.tietz.sections?.length||0} secciones{pdfData.tietz.failed?.length?` · ${pdfData.tietz.failed.length} fallidos`:''}</div>}
-      {pdfData.henry&&<div style={{fontSize:10,color:T.dim}}>Henry: {pdfData.henry.extracts?.length||0} bloques · {pdfData.henry.sections?.length||0} secciones{pdfData.henry.failed?.length?` · ${pdfData.henry.failed.length} fallidos`:''}</div>}
-      {pdfData.fused&&<div style={{fontSize:10,color:T.green}}>Fusionado: {pdfData.fused.length} secciones creadas</div>}
+      {!processing&&!hasTietzPdf&&!hasHenryPdf&&<div style={{fontSize:11,color:T.dim}}>Sube un PDF de Tietz o Henry arriba para extraer contenido.</div>}
+      {progress.step.startsWith('Error')&&<div style={{fontSize:11,color:T.red,marginTop:4}}>{progress.step}</div>}
     </Card>
   );
 }
@@ -3260,8 +3487,10 @@ function AprendizajeTab({topic,learning,saveLearningData,pdfMeta,bgJobs,startBgJ
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,fontWeight:600,color:T.text}}>{sec.title}</div>
                   <div style={{fontSize:10,color:T.muted}}>
+                    {(()=>{const hasTietz=sec.text?.includes('[Fuente: Tietz]');const hasHenry=sec.text?.includes('[Fuente: Henry]');const src=hasTietz&&hasHenry?'Tietz+Henry':hasTietz?'Tietz':hasHenry?'Henry':null;return src?<span style={{color:T.teal,marginRight:4}}>{src}</span>:null;})()}
                     {hasGen?`Generado · ${sec.generated.conceptMap?.length||0} conceptos`:'Sin generar'}
                     {score!==null&&<span style={{color:scoreColor,fontWeight:700}}> · {score}%</span>}
+                    {sec.pageStart&&<span style={{color:T.dim}}> · pp.{sec.pageStart}{sec.pageEnd?'-'+sec.pageEnd:''}</span>}
                   </div>
                 </div>
                 {isGen&&<span style={{fontSize:10,color:T.purple,fontWeight:600,background:T.purpleS,padding:'2px 8px',borderRadius:10}}>⏳ {genStep}</span>}
