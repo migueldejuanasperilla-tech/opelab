@@ -1457,23 +1457,453 @@ function ReviewPhase({item,onComplete}){
   return null;
 }
 
-// ── TestTab — Test OPE + Simulacro + Flashcards + Preguntas ─────────────────
-function TestTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs,bankPreselect,onBankPreselect,pdfMeta,stats,learningData,sessions}){
-  const [subTab,setSubTab]=useState('test');
+// ── TestTab — Topic-based test hub ──────────────────────────────────────────
+
+// JSON Import Modal for official questions
+function JsonImportModal({topic,qs,saveQs,onClose}){
+  const [raw,setRaw]=useState('');
+  const [error,setError]=useState('');
+  const [preview,setPreview]=useState(null);
+  const [result,setResult]=useState('');
+
+  const validate=()=>{
+    setError('');setPreview(null);setResult('');
+    if(!raw.trim()){setError('Pega el JSON de preguntas.');return;}
+    try{
+      let cleaned=raw.trim();
+      if(cleaned.startsWith('```'))cleaned=cleaned.replace(/```json?\s*/g,'').replace(/```/g,'').trim();
+      let parsed=JSON.parse(cleaned);
+      if(!Array.isArray(parsed))parsed=[parsed];
+      // Validate and normalize each question
+      const normalized=[];const errors=[];
+      parsed.forEach((q,i)=>{
+        const question=q.question||q.pregunta;
+        const options=q.options||q.opciones;
+        const correct=q.correct??q.respuesta_correcta;
+        if(!question){errors.push(`Pregunta ${i+1}: falta "question"/"pregunta"`);return;}
+        if(!options||!Array.isArray(options)||options.length<2){errors.push(`Pregunta ${i+1}: falta "options"/"opciones" (array)`);return;}
+        if(correct===undefined||correct===null||correct<0||correct>=options.length){errors.push(`Pregunta ${i+1}: "correct" inválido (debe ser 0-${options.length-1})`);return;}
+        normalized.push({
+          id:q.id||uid(),
+          question,
+          options,
+          correct:Number(correct),
+          explanation:q.explanation||q.explicacion||'',
+          type:'test',
+          topic:q.topic||topic,
+          tema:q.tema||'',
+          seccion:q.seccion||'',
+          fase:q.fase||'oficial',
+          tipo:q.tipo||'concepto',
+          dificultad:q.dificultad||'media',
+          ccaa:q.ccaa||'',
+          convocatoria:q.convocatoria||'',
+          source:'oficial',
+          fechaImportacion:new Date().toISOString().slice(0,10),
+        });
+      });
+      if(errors.length){setError(errors.slice(0,5).join('\n')+(errors.length>5?`\n... y ${errors.length-5} más`:'')); return;}
+      // Check duplicates
+      const existingIds=new Set(qs.map(q=>q.id));
+      const dupes=normalized.filter(q=>existingIds.has(q.id));
+      const fresh=normalized.filter(q=>!existingIds.has(q.id));
+      if(dupes.length&&!fresh.length){setError(`Las ${dupes.length} preguntas ya existen en el banco (IDs duplicados).`);return;}
+      setPreview({all:normalized,fresh,dupes});
+    }catch(e){setError(`JSON inválido: ${e.message}`);}
+  };
+
+  const doImport=async()=>{
+    if(!preview?.fresh.length)return;
+    await saveQs([...qs,...preview.fresh]);
+    setResult(`${preview.fresh.length} preguntas importadas correctamente${preview.dupes.length?` · ${preview.dupes.length} duplicadas omitidas`:''}`);
+    setPreview(null);setRaw('');
+  };
+
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,boxShadow:sh.lg,maxWidth:720,width:'100%',maxHeight:'85vh',overflow:'auto',padding:'28px 32px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+          <h3 style={{margin:0,fontSize:17,fontWeight:700,color:T.text}}>Importar preguntas oficiales</h3>
+          <button onClick={onClose} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:T.dim,lineHeight:1}}>×</button>
+        </div>
+        <div style={{fontSize:12,color:T.muted,marginBottom:14,lineHeight:1.6,background:T.bg,padding:'10px 14px',borderRadius:8}}>
+          Pega un JSON con formato: <code style={{background:T.tealS,padding:'1px 4px',borderRadius:3,fontSize:11}}>{'{"id","question","options":[],"correct":0}'}</code><br/>
+          Acepta un objeto o un array. Campos obligatorios: <strong>question/pregunta</strong>, <strong>options/opciones</strong>, <strong>correct</strong>.
+        </div>
+        <textarea value={raw} onChange={e=>{setRaw(e.target.value);setError('');setPreview(null);setResult('');}}
+          placeholder={'[\n  {\n    "id": "sescam2024_q001",\n    "question": "¿Cuál es el principal sustrato de la LDH?",\n    "options": ["Glucosa", "Lactato", "Piruvato", "Acetil-CoA"],\n    "correct": 1,\n    "explanation": "La LDH cataliza la conversión reversible de lactato a piruvato...",\n    "ccaa": "Castilla-La Mancha",\n    "convocatoria": "SESCAM 2024"\n  }\n]'}
+          style={{width:'100%',minHeight:180,background:T.bg,color:T.text,border:`1px solid ${T.border}`,borderRadius:10,padding:'12px 14px',fontSize:12,fontFamily:'Consolas,Monaco,monospace',resize:'vertical',outline:'none',boxSizing:'border-box',lineHeight:1.6}}/>
+        <div style={{display:'flex',gap:8,marginTop:12}}>
+          <Btn onClick={validate} disabled={!raw.trim()}>Validar JSON</Btn>
+          {preview?.fresh.length>0&&<Btn onClick={doImport} variant="green">Importar {preview.fresh.length} preguntas</Btn>}
+        </div>
+        {error&&<div style={{marginTop:10,padding:'10px 14px',background:T.redS,border:`1px solid ${T.red}`,borderRadius:8,fontSize:12,color:T.redText,whiteSpace:'pre-wrap',lineHeight:1.5}}>{error}</div>}
+        {result&&<div style={{marginTop:10,padding:'10px 14px',background:T.greenS,border:`1px solid ${T.green}`,borderRadius:8,fontSize:13,color:T.greenText,fontWeight:600}}>{result}</div>}
+        {preview&&(
+          <div style={{marginTop:14}}>
+            <div style={{display:'flex',gap:10,marginBottom:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,color:T.green,fontWeight:600}}>{preview.fresh.length} nuevas</span>
+              {preview.dupes.length>0&&<span style={{fontSize:12,color:T.amber,fontWeight:600}}>{preview.dupes.length} duplicadas (se omitirán)</span>}
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:260,overflowY:'auto'}}>
+              {preview.fresh.slice(0,10).map((q,i)=>(
+                <div key={i} style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,padding:'8px 12px'}}>
+                  <div style={{display:'flex',gap:6,marginBottom:4,flexWrap:'wrap'}}>
+                    {q.convocatoria&&<span style={{fontSize:9,background:T.purpleS,color:T.purpleText,padding:'1px 6px',borderRadius:10,fontWeight:600}}>{q.convocatoria}</span>}
+                    {q.ccaa&&<span style={{fontSize:9,background:T.blueS,color:T.blueText,padding:'1px 6px',borderRadius:10}}>{q.ccaa}</span>}
+                  </div>
+                  <div style={{fontSize:12,color:T.text,lineHeight:1.4,marginBottom:4}}>{q.question}</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:2}}>
+                    {q.options.map((opt,j)=>(
+                      <span key={j} style={{fontSize:10,color:q.correct===j?T.greenText:T.dim,background:q.correct===j?T.greenS:'transparent',borderRadius:4,padding:'1px 4px'}}>{['A','B','C','D'][j]}. {opt}</span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {preview.fresh.length>10&&<div style={{textAlign:'center',fontSize:11,color:T.dim,padding:6}}>... y {preview.fresh.length-10} más</div>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Topic Test Detail — practice options, stats, import
+function TopicTestDetail({topic,shared,recordAnswer,addSession,stats,sessions,learningData,qs,saveQs,onBack}){
+  const [mode,setMode]=useState(null); // null=menu, 'practice', 'simulacro'
+  const [filter,setFilter]=useState({source:'all',tipo:'all',dificultad:'all',status:'all'});
+  const [showImport,setShowImport]=useState(false);
+  const qStats=useMemo(()=>load('olab_qstats',{}),[]);
+
+  // All questions for this topic
+  const topicQs=useMemo(()=>{
+    const fromBank=qs.filter(q=>q.topic===topic&&q.type==='test');
+    const fromLearning=[];
+    const ld=learningData[topic];
+    if(ld?.sections){
+      ld.sections.forEach(sec=>{
+        const gen=sec.generated;if(!gen)return;
+        (gen.phases?.preTest||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'pretest',_section:sec.title}));
+        (gen.phases?.postTest||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'posttest',_section:sec.title}));
+        (gen.phases?.clinicalCases||[]).forEach(q=>fromLearning.push({...q,type:'test',topic,_source:'caso',_section:sec.title}));
+      });
+    }
+    const seen=new Set(fromBank.map(q=>q.id));
+    const merged=[...fromBank];
+    fromLearning.forEach(q=>{if(!seen.has(q.id)){seen.add(q.id);merged.push(q);}});
+    return merged;
+  },[qs,topic,learningData]);
+
+  const oficialQs=topicQs.filter(q=>q.source==='oficial'||q.fase==='oficial');
+  const generatedQs=topicQs.filter(q=>q.source!=='oficial'&&q.fase!=='oficial');
+
+  // Filtered pool
+  const pool=useMemo(()=>{
+    let p=topicQs;
+    if(filter.source==='oficial')p=p.filter(q=>q.source==='oficial'||q.fase==='oficial');
+    else if(filter.source==='generada')p=p.filter(q=>q.source!=='oficial'&&q.fase!=='oficial');
+    if(filter.tipo!=='all')p=p.filter(q=>(q.tipo||'concepto')===filter.tipo);
+    if(filter.dificultad!=='all')p=p.filter(q=>(q.dificultad||'media')===filter.dificultad);
+    if(filter.status==='falladas')p=p.filter(q=>qStats[q.id]?.t>0&&qStats[q.id].c/qStats[q.id].t<0.5);
+    if(filter.status==='sinResponder')p=p.filter(q=>!qStats[q.id]?.t);
+    return p;
+  },[topicQs,filter,qStats]);
+
+  // Stats
+  const ts=stats[topic];
+  const pct=ts?.t>0?Math.round(ts.c/ts.t*100):null;
+  const oficialStats=useMemo(()=>{
+    let c=0,t=0;
+    oficialQs.forEach(q=>{const s=qStats[q.id];if(s?.t){t+=s.t;c+=s.c;}});
+    return{c,t,pct:t>0?Math.round(c/t*100):null};
+  },[oficialQs,qStats]);
+  const genStats=useMemo(()=>{
+    let c=0,t=0;
+    generatedQs.forEach(q=>{const s=qStats[q.id];if(s?.t){t+=s.t;c+=s.c;}});
+    return{c,t,pct:t>0?Math.round(c/t*100):null};
+  },[generatedQs,qStats]);
+
+  // Most failed questions
+  const mostFailed=useMemo(()=>{
+    return topicQs
+      .filter(q=>qStats[q.id]?.t>=2)
+      .map(q=>({...q,rate:qStats[q.id].c/qStats[q.id].t,attempts:qStats[q.id].t}))
+      .filter(q=>q.rate<0.5)
+      .sort((a,b)=>a.rate-b.rate)
+      .slice(0,5);
+  },[topicQs,qStats]);
+
+  // History (from sessions)
+  const topicSessions=useMemo(()=>(sessions||[]).filter(s=>s.topics?.includes(topic)).slice(-10),[sessions,topic]);
+
+  // If in practice/simulacro mode, delegate to existing components
+  if(mode==='practice') return(
+    <div>
+      <button onClick={()=>setMode(null)} style={{background:'none',border:'none',cursor:'pointer',color:T.teal,fontSize:13,fontWeight:600,fontFamily:FONT,marginBottom:16,display:'flex',alignItems:'center',gap:4}}>← Volver a opciones</button>
+      <TestMode testQs={pool.length?pool:topicQs} marked={shared.marked} errSet={shared.errSet} toggleMark={shared.toggleMark} recordAnswer={recordAnswer} addSession={addSession}/>
+    </div>
+  );
+  if(mode==='simulacro') return(
+    <div>
+      <button onClick={()=>setMode(null)} style={{background:'none',border:'none',cursor:'pointer',color:T.teal,fontSize:13,fontWeight:600,fontFamily:FONT,marginBottom:16,display:'flex',alignItems:'center',gap:4}}>← Volver a opciones</button>
+      <Simulacro testQs={pool.length?pool:topicQs} recordAnswer={recordAnswer} addSession={addSession} sessions={sessions}/>
+    </div>
+  );
+
+  const topicShort=topic.split('.')[0]||topic;
+
   return(
     <div>
-      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:22,gap:0}}>
-        <button onClick={()=>setSubTab('test')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='test'?600:400,color:subTab==='test'?T.blue:T.muted,borderBottom:`2px solid ${subTab==='test'?T.blue:'transparent'}`,fontFamily:FONT}}>🧪 Test OPE</button>
-        <button onClick={()=>setSubTab('simulacro')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='simulacro'?600:400,color:subTab==='simulacro'?T.orange:T.muted,borderBottom:`2px solid ${subTab==='simulacro'?T.orange:'transparent'}`,fontFamily:FONT}}>⚡ Simulacro</button>
-        <button onClick={()=>setSubTab('flashcard')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='flashcard'?600:400,color:subTab==='flashcard'?T.teal:T.muted,borderBottom:`2px solid ${subTab==='flashcard'?T.teal:'transparent'}`,fontFamily:FONT}}>
-          🃏 Flashcards {dueQs.length>0&&<span style={{fontSize:10,background:T.amberS,color:T.amber,padding:'1px 6px',borderRadius:10,marginLeft:4,fontWeight:700}}>{dueQs.length}</span>}
-        </button>
-        <button onClick={()=>setSubTab('preguntas')} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:subTab==='preguntas'?600:400,color:subTab==='preguntas'?T.purple:T.muted,borderBottom:`2px solid ${subTab==='preguntas'?T.purple:'transparent'}`,fontFamily:FONT}}>📦 Preguntas</button>
+      {showImport&&<JsonImportModal topic={topic} qs={qs} saveQs={saveQs} onClose={()=>setShowImport(false)}/>}
+
+      {/* Header */}
+      <button onClick={onBack} style={{background:'none',border:'none',cursor:'pointer',color:T.teal,fontSize:13,fontWeight:600,fontFamily:FONT,marginBottom:12,display:'flex',alignItems:'center',gap:4}}>← Todos los temas</button>
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:17,fontWeight:700,color:T.text,lineHeight:1.4}}>{topic}</div>
+        <div style={{fontSize:12,color:T.dim,marginTop:4}}>{topicQs.length} preguntas · {oficialQs.length} oficiales · {generatedQs.length} generadas</div>
       </div>
-      {subTab==='test'      &&<TestMode {...shared}/>}
-      {subTab==='simulacro' &&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} sessions={sessions}/>}
-      {subTab==='flashcard' &&<FlashcardMode {...shared}/>}
-      {subTab==='preguntas' &&<BankManager {...shared} preselect={bankPreselect} onPreselect={onBankPreselect} pdfMeta={pdfMeta} apiKey={apiKey}/>}
+
+      {/* Stats cards */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:20}}>
+        <Card style={{padding:'14px 18px',textAlign:'center'}}>
+          <div style={{fontSize:28,fontWeight:800,color:pct!=null?(pct>=70?T.green:pct>=50?T.amber:T.red):T.dim,lineHeight:1}}>{pct!=null?`${pct}%`:'—'}</div>
+          <div style={{fontSize:10,color:T.muted,marginTop:4}}>Acierto global</div>
+          {ts&&<div style={{fontSize:10,color:T.dim}}>{ts.c}/{ts.t} respuestas</div>}
+        </Card>
+        <Card style={{padding:'14px 18px',textAlign:'center'}}>
+          <div style={{fontSize:28,fontWeight:800,color:oficialStats.pct!=null?(oficialStats.pct>=70?T.green:oficialStats.pct>=50?T.amber:T.red):T.dim,lineHeight:1}}>{oficialStats.pct!=null?`${oficialStats.pct}%`:'—'}</div>
+          <div style={{fontSize:10,color:T.muted,marginTop:4}}>Oficiales</div>
+          {oficialStats.t>0&&<div style={{fontSize:10,color:T.dim}}>{oficialStats.c}/{oficialStats.t}</div>}
+        </Card>
+        <Card style={{padding:'14px 18px',textAlign:'center'}}>
+          <div style={{fontSize:28,fontWeight:800,color:genStats.pct!=null?(genStats.pct>=70?T.green:genStats.pct>=50?T.amber:T.red):T.dim,lineHeight:1}}>{genStats.pct!=null?`${genStats.pct}%`:'—'}</div>
+          <div style={{fontSize:10,color:T.muted,marginTop:4}}>Generadas</div>
+          {genStats.t>0&&<div style={{fontSize:10,color:T.dim}}>{genStats.c}/{genStats.t}</div>}
+        </Card>
+      </div>
+
+      {/* Practice options */}
+      <Card style={{padding:'18px 22px',marginBottom:16}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:14}}>Modo de práctica</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10,marginBottom:16}}>
+          <button onClick={()=>{setFilter(f=>({...f,source:'generada'}));setMode('practice');}} disabled={!generatedQs.length}
+            style={{padding:'16px 14px',background:T.blueS,border:`1px solid ${T.blue}`,borderRadius:10,cursor:generatedQs.length?'pointer':'not-allowed',textAlign:'left',fontFamily:FONT,opacity:generatedQs.length?1:0.4}}>
+            <div style={{fontSize:14,fontWeight:700,color:T.blueText,marginBottom:4}}>🧠 Generadas por IA</div>
+            <div style={{fontSize:11,color:T.muted}}>{generatedQs.length} preguntas del contenido estudiado</div>
+          </button>
+          <button onClick={()=>{setFilter(f=>({...f,source:'oficial'}));setMode('practice');}} disabled={!oficialQs.length}
+            style={{padding:'16px 14px',background:T.purpleS,border:`1px solid ${T.purple}`,borderRadius:10,cursor:oficialQs.length?'pointer':'not-allowed',textAlign:'left',fontFamily:FONT,opacity:oficialQs.length?1:0.4}}>
+            <div style={{fontSize:14,fontWeight:700,color:T.purpleText,marginBottom:4}}>📋 Preguntas oficiales</div>
+            <div style={{fontSize:11,color:T.muted}}>{oficialQs.length} de convocatorias reales</div>
+          </button>
+          <button onClick={()=>{setFilter(f=>({...f,source:'all'}));setMode('practice');}} disabled={!topicQs.length}
+            style={{padding:'16px 14px',background:T.tealS,border:`1px solid ${T.teal}`,borderRadius:10,cursor:topicQs.length?'pointer':'not-allowed',textAlign:'left',fontFamily:FONT,opacity:topicQs.length?1:0.4}}>
+            <div style={{fontSize:14,fontWeight:700,color:T.tealText,marginBottom:4}}>🔀 Mixto</div>
+            <div style={{fontSize:11,color:T.muted}}>{topicQs.length} preguntas combinadas</div>
+          </button>
+        </div>
+
+        {/* Filters */}
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+          <select value={filter.status} onChange={e=>setFilter(f=>({...f,status:e.target.value}))} style={{background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:6,padding:'5px 8px',fontSize:11,fontFamily:FONT}}>
+            <option value="all">Todas</option>
+            <option value="falladas">Solo falladas</option>
+            <option value="sinResponder">Solo no respondidas</option>
+          </select>
+          <select value={filter.dificultad} onChange={e=>setFilter(f=>({...f,dificultad:e.target.value}))} style={{background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:6,padding:'5px 8px',fontSize:11,fontFamily:FONT}}>
+            <option value="all">Cualquier dificultad</option>
+            <option value="fácil">Fácil</option>
+            <option value="media">Media</option>
+            <option value="difícil">Difícil</option>
+          </select>
+          <span style={{fontSize:11,color:T.dim,alignSelf:'center',marginLeft:'auto'}}>{pool.length} preguntas disponibles</span>
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          <Btn onClick={()=>setMode('practice')} disabled={!pool.length} style={{padding:'8px 18px',fontSize:12}}>Practicar con feedback</Btn>
+          <Btn onClick={()=>setMode('simulacro')} disabled={!pool.length} variant="orange" style={{padding:'8px 18px',fontSize:12}}>Simulacro sin feedback</Btn>
+        </div>
+      </Card>
+
+      {/* Import */}
+      <Card style={{padding:'14px 18px',marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div>
+          <div style={{fontSize:13,fontWeight:600,color:T.text}}>Preguntas oficiales</div>
+          <div style={{fontSize:11,color:T.muted}}>Importa preguntas reales de convocatorias en formato JSON</div>
+        </div>
+        <Btn onClick={()=>setShowImport(true)} variant="purple" style={{padding:'8px 16px',fontSize:12}}>Importar JSON</Btn>
+      </Card>
+
+      {/* Evolution chart */}
+      {topicSessions.length>1&&(
+        <Card style={{padding:'16px 20px',marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>Evolución del rendimiento</div>
+          <div style={{display:'flex',alignItems:'flex-end',gap:4,height:70}}>
+            {topicSessions.map((s,i)=>{
+              const p=s.pct||0;
+              return(
+                <div key={s.id||i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                  <span style={{fontSize:9,fontWeight:700,color:p>=70?T.green:p>=50?T.amber:T.red}}>{p}%</span>
+                  <div style={{width:'100%',background:p>=70?T.green:p>=50?T.amber:T.red,borderRadius:4,height:`${Math.max(4,p/100*55)}px`,transition:'height 0.3s'}}/>
+                  <span style={{fontSize:8,color:T.dim}}>{s.date?.slice(5,10)||''}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Most failed */}
+      {mostFailed.length>0&&(
+        <Card style={{padding:'16px 20px'}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10}}>Preguntas más falladas</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {mostFailed.map(q=>(
+              <div key={q.id} style={{padding:'8px 12px',borderLeft:`3px solid ${T.red}`,borderRadius:4,background:T.bg}}>
+                <div style={{fontSize:12,color:T.text,lineHeight:1.4,marginBottom:3}}>{q.question}</div>
+                <div style={{display:'flex',gap:8,fontSize:10,color:T.dim}}>
+                  <span style={{color:T.red,fontWeight:700}}>{Math.round(q.rate*100)}% acierto</span>
+                  <span>{q.attempts} intentos</span>
+                  {q.source==='oficial'&&<span style={{color:T.purple}}>Oficial</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function TestTab({shared,recordAnswer,addSession,apiKey,testQs,fcQs,dueQs,bankPreselect,onBankPreselect,pdfMeta,stats,learningData,sessions}){
+  const [view,setView]=useState('topics'); // 'topics' | 'topic-detail' | 'simulacro' | 'flashcard' | 'preguntas'
+  const [selectedTopic,setSelectedTopic]=useState(null);
+  const [openSection,setOpenSection]=useState(null);
+  const qStats=useMemo(()=>load('olab_qstats',{}),[]);
+
+  // Global stats
+  const totalQs=testQs.length;
+  const totalAnswered=Object.values(stats).reduce((a,s)=>a+s.t,0);
+  const totalCorrect=Object.values(stats).reduce((a,s)=>a+s.c,0);
+  const globalPct=totalAnswered>0?Math.round(totalCorrect/totalAnswered*100):null;
+  const dominatedCount=ALL_TOPICS.filter(t=>getStatus(t,stats)==='dominado').length;
+
+  const topTabs=[
+    {id:'topics',label:'Temas',icon:'📋',color:T.blue},
+    {id:'simulacro',label:'Simulacro',icon:'⚡',color:T.orange},
+    {id:'flashcard',label:'Flashcards',icon:'🃏',color:T.teal,badge:dueQs.length||null},
+    {id:'preguntas',label:'Banco',icon:'📦',color:T.purple},
+  ];
+
+  // If a topic is selected, show detail
+  if(selectedTopic) return(
+    <TopicTestDetail topic={selectedTopic} shared={shared} recordAnswer={recordAnswer} addSession={addSession} stats={stats} sessions={sessions} learningData={learningData} qs={shared.qs} saveQs={shared.saveQs} onBack={()=>setSelectedTopic(null)}/>
+  );
+
+  return(
+    <div>
+      {/* Top tabs */}
+      <div style={{display:'flex',borderBottom:`1px solid ${T.border}`,marginBottom:18,gap:0}}>
+        {topTabs.map(t=>(
+          <button key={t.id} onClick={()=>setView(t.id)} style={{padding:'8px 14px',background:'none',border:'none',cursor:'pointer',fontSize:13,fontWeight:view===t.id?600:400,color:view===t.id?t.color:T.muted,borderBottom:`2px solid ${view===t.id?t.color:'transparent'}`,fontFamily:FONT,display:'flex',alignItems:'center',gap:4}}>
+            {t.icon} {t.label}
+            {t.badge&&<span style={{fontSize:10,background:T.amberS,color:T.amber,padding:'1px 6px',borderRadius:10,fontWeight:700}}>{t.badge}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* Sub-views */}
+      {view==='simulacro'&&<Simulacro testQs={testQs} recordAnswer={recordAnswer} addSession={addSession} sessions={sessions}/>}
+      {view==='flashcard'&&<FlashcardMode {...shared}/>}
+      {view==='preguntas'&&<BankManager {...shared} preselect={bankPreselect} onPreselect={onBankPreselect} pdfMeta={pdfMeta} apiKey={apiKey}/>}
+
+      {view==='topics'&&(
+        <div>
+          {/* Global stats bar */}
+          <div style={{display:'flex',gap:10,marginBottom:18,flexWrap:'wrap'}}>
+            <Card style={{padding:'12px 18px',flex:1,minWidth:120,textAlign:'center'}}>
+              <div style={{fontSize:22,fontWeight:800,color:T.blue,lineHeight:1}}>{totalQs}</div>
+              <div style={{fontSize:10,color:T.muted,marginTop:2}}>Preguntas</div>
+            </Card>
+            <Card style={{padding:'12px 18px',flex:1,minWidth:120,textAlign:'center'}}>
+              <div style={{fontSize:22,fontWeight:800,color:globalPct!=null?(globalPct>=70?T.green:globalPct>=50?T.amber:T.red):T.dim,lineHeight:1}}>{globalPct!=null?`${globalPct}%`:'—'}</div>
+              <div style={{fontSize:10,color:T.muted,marginTop:2}}>Acierto global</div>
+            </Card>
+            <Card style={{padding:'12px 18px',flex:1,minWidth:120,textAlign:'center'}}>
+              <div style={{fontSize:22,fontWeight:800,color:T.green,lineHeight:1}}>{dominatedCount}</div>
+              <div style={{fontSize:10,color:T.muted,marginTop:2}}>Temas dominados</div>
+            </Card>
+          </div>
+
+          {/* Section accordion list */}
+          <div style={{display:'flex',flexDirection:'column',borderRadius:14,overflow:'hidden',border:`1px solid ${T.border}`,boxShadow:sh.sm}}>
+            {SECTIONS.map((s,si)=>{
+              const sQs=testQs.filter(q=>s.topics.includes(q.topic));
+              const sStats=Object.entries(stats).filter(([t])=>s.topics.includes(t));
+              const sTot=sStats.reduce((a,[,v])=>a+v.t,0);
+              const sCor=sStats.reduce((a,[,v])=>a+v.c,0);
+              const sPct=sTot>0?Math.round(sCor/sTot*100):null;
+              const isOpen=openSection===s.id;
+
+              return(
+                <div key={s.id} style={{borderTop:si>0?`1px solid ${T.border}`:'none'}}>
+                  <div onClick={()=>setOpenSection(isOpen?null:s.id)}
+                    style={{display:'flex',alignItems:'center',gap:14,padding:'14px 20px',cursor:'pointer',background:isOpen?s.colorS:T.surface,transition:'background 0.15s'}}>
+                    <div style={{width:4,height:44,borderRadius:4,background:s.color,flexShrink:0}}/>
+                    <div style={{width:38,height:38,borderRadius:10,background:isOpen?T.surface:s.colorS,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>{s.emoji}</div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:14,color:T.text}}>{s.name}</div>
+                      <div style={{fontSize:11,color:T.muted,marginTop:2}}>T{s.temas[0]}{s.temas.length>1?`–T${s.temas[s.temas.length-1]}`:''} · {sQs.length} preg.</div>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+                      {sPct!==null&&<span style={{fontWeight:700,fontSize:15,color:sPct>=70?T.green:sPct>=50?T.amber:T.red,minWidth:36,textAlign:'right'}}>{sPct}%</span>}
+                      <span style={{color:T.dim,fontSize:18,transition:'transform 0.2s',transform:isOpen?'rotate(90deg)':'none',lineHeight:1}}>›</span>
+                    </div>
+                  </div>
+
+                  {isOpen&&(
+                    <div style={{background:T.card,borderTop:`1px solid ${T.border}`}}>
+                      {s.topics.map((t,ti)=>{
+                        const tQs=testQs.filter(q=>q.topic===t);
+                        const oficialCount=tQs.filter(q=>q.source==='oficial'||q.fase==='oficial').length;
+                        const ts_=stats[t];
+                        const tPct=ts_?.t>0?Math.round(ts_.c/ts_.t*100):null;
+                        const st=getStatus(t,stats);
+                        return(
+                          <div key={t} onClick={()=>setSelectedTopic(t)}
+                            style={{borderTop:ti>0?`1px solid ${T.border}`:'none',padding:'10px 20px 10px 44px',cursor:'pointer',transition:'background 0.1s'}}
+                            onMouseEnter={e=>{e.currentTarget.style.background=T.blueS;}}
+                            onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
+                            <div style={{display:'flex',alignItems:'center',gap:10}}>
+                              <span style={{width:7,height:7,borderRadius:'50%',background:STATUS_COLORS[st],flexShrink:0}}/>
+                              <span style={{fontSize:13,color:T.text,flex:1,lineHeight:1.4,fontWeight:500}}>{t}</span>
+                              <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+                                {oficialCount>0&&<span style={{fontSize:9,background:T.purpleS,color:T.purpleText,padding:'2px 7px',borderRadius:10,fontWeight:600}}>📋 {oficialCount}</span>}
+                                <span style={{fontSize:10,color:T.dim}}>{tQs.length} preg.</span>
+                                {tPct!==null?(
+                                  <>
+                                    <div style={{width:50,height:4,background:T.border,borderRadius:3}}>
+                                      <div style={{width:`${tPct}%`,height:'100%',borderRadius:3,background:tPct>=70?T.green:tPct>=50?T.amber:T.red}}/>
+                                    </div>
+                                    <span style={{fontSize:11,fontWeight:700,color:tPct>=70?T.green:tPct>=50?T.amber:T.red,minWidth:30,textAlign:'right'}}>{tPct}%</span>
+                                  </>
+                                ):(
+                                  <span style={{fontSize:10,color:STATUS_COLORS[st],background:STATUS_BG[st],padding:'2px 8px',borderRadius:10,fontWeight:600,whiteSpace:'nowrap'}}>{STATUS_LABELS[st]}</span>
+                                )}
+                                <span style={{color:T.dim,fontSize:14}}>›</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
